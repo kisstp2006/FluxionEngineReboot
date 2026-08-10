@@ -15,9 +15,9 @@ typedef struct FluxionFile
 
 typedef enum FluxionFileOpenMode
 {
-    FLUXION_FILE_OPEN_READ,
+    FLUXION_FILE_OPEN_READ,    // read-only
     FLUXION_FILE_OPEN_WRITE,   // create/truncate
-    FLUXION_FILE_OPEN_APPEND,
+    FLUXION_FILE_OPEN_APPEND, // create/append at the end
 } FluxionFileOpenMode;
 
 bool  Fluxion_Platform_FileOpen(FluxionFile* file, const char* path, FluxionFileOpenMode mode);
