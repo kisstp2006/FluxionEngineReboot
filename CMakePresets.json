@@ -1,0 +1,91 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 28,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "windows-msvc",
+            "displayName": "Windows (MSVC, Visual Studio 2026)",
+            "generator": "Visual Studio 18 2026",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/build/windows-msvc",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "codeblocks-mingw-debug",
+            "displayName": "Code::Blocks project (MinGW GCC, Debug)",
+            "generator": "CodeBlocks - Ninja",
+            "binaryDir": "${sourceDir}/build/codeblocks-mingw-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "C:/Program Files/CodeBlocks/MinGW/bin/gcc.exe",
+                "CMAKE_CXX_COMPILER": "C:/Program Files/CodeBlocks/MinGW/bin/g++.exe"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "codeblocks-mingw-release",
+            "displayName": "Code::Blocks project (MinGW GCC, Release)",
+            "generator": "CodeBlocks - Ninja",
+            "binaryDir": "${sourceDir}/build/codeblocks-mingw-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_C_COMPILER": "C:/Program Files/CodeBlocks/MinGW/bin/gcc.exe",
+                "CMAKE_CXX_COMPILER": "C:/Program Files/CodeBlocks/MinGW/bin/g++.exe"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "windows-msvc-debug",
+            "configurePreset": "windows-msvc",
+            "configuration": "Debug"
+        },
+        {
+            "name": "windows-msvc-release",
+            "configurePreset": "windows-msvc",
+            "configuration": "Release"
+        },
+        {
+            "name": "codeblocks-mingw-debug",
+            "configurePreset": "codeblocks-mingw-debug"
+        },
+        {
+            "name": "codeblocks-mingw-release",
+            "configurePreset": "codeblocks-mingw-release"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "windows-msvc-debug",
+            "configurePreset": "windows-msvc",
+            "configuration": "Debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "codeblocks-mingw-debug",
+            "configurePreset": "codeblocks-mingw-debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        }
+    ]
+}
