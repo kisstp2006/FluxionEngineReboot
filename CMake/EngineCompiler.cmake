@@ -21,6 +21,13 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "GNU
     set(ENGINE_COMPILER_GCC ON)
 endif()
 
+if(MSVC)
+    # <stdatomic.h> in MSVC's C mode is gated behind this experimental
+    # switch (as of this MSVC toolset); C++ <atomic> is unaffected and
+    # does not need it, hence scoping to the C compile language only.
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+endif()
+
 option(FLUXION_ENABLE_ASAN "Enable AddressSanitizer (and UndefinedBehaviorSanitizer where supported)" OFF)
 
 if(FLUXION_ENABLE_ASAN)

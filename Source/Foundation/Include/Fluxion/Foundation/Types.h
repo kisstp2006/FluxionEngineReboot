@@ -28,6 +28,13 @@ typedef double f64;
 typedef size_t    usize;
 typedef ptrdiff_t isize;
 
+// A safe default alignment for allocations with no stricter requirement.
+// Deliberately not `alignof(max_align_t)`/`_Alignof` — at the time this was
+// written, MSVC's C23 (`/std:clatest`) mode did not yet expose `alignof` as
+// a C keyword, so a fixed, portable constant is used instead. Revisit once
+// MSVC's C23 support matures (see the root ROADMAP.md).
+#define FLUXION_DEFAULT_ALIGNMENT ((usize)16)
+
 static_assert(sizeof(u8) == 1, "Fluxion: unexpected size for u8");
 static_assert(sizeof(u16) == 2, "Fluxion: unexpected size for u16");
 static_assert(sizeof(u32) == 4, "Fluxion: unexpected size for u32");

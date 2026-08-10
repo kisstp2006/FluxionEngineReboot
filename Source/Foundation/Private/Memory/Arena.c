@@ -16,7 +16,7 @@ void Fluxion_Arena_Init(FluxionArena* arena, FluxionAllocator* backingAllocator,
     FluxionAllocator* allocator = backingAllocator ? backingAllocator : Fluxion_DefaultAllocator();
 
     arena->backingAllocator = allocator;
-    arena->base = (u8*)Fluxion_Allocator_Alloc(allocator, capacity, alignof(max_align_t));
+    arena->base = (u8*)Fluxion_Allocator_Alloc(allocator, capacity, FLUXION_DEFAULT_ALIGNMENT);
     arena->capacity = capacity;
     arena->offset = 0;
 }

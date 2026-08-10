@@ -41,7 +41,7 @@ void Fluxion_DynamicArray_Reserve(FluxionDynamicArray* array, usize newCapacity)
 
     usize oldSizeBytes = array->capacity * array->elementSize;
     usize newSizeBytes = newCapacity * array->elementSize;
-    void* newData = Fluxion_Allocator_Realloc(array->allocator, array->data, oldSizeBytes, newSizeBytes, alignof(max_align_t));
+    void* newData = Fluxion_Allocator_Realloc(array->allocator, array->data, oldSizeBytes, newSizeBytes, FLUXION_DEFAULT_ALIGNMENT);
     FLUXION_ASSERT_MSG(newData != NULL, "Fluxion_DynamicArray_Reserve: allocation failed");
 
     array->data = (u8*)newData;

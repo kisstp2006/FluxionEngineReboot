@@ -85,9 +85,9 @@ static bool Fluxion_HashMap_Grow(FluxionHashMap* map, usize newCapacity)
     FluxionHashMap newMap = *map;
     newMap.capacity = newCapacity;
     newMap.count = 0;
-    newMap.keys = (u8*)Fluxion_Allocator_Alloc(map->allocator, newCapacity * map->keySize, alignof(max_align_t));
-    newMap.values = (u8*)Fluxion_Allocator_Alloc(map->allocator, newCapacity * map->valueSize, alignof(max_align_t));
-    newMap.occupied = (u8*)Fluxion_Allocator_Alloc(map->allocator, newCapacity * sizeof(u8), alignof(max_align_t));
+    newMap.keys = (u8*)Fluxion_Allocator_Alloc(map->allocator, newCapacity * map->keySize, FLUXION_DEFAULT_ALIGNMENT);
+    newMap.values = (u8*)Fluxion_Allocator_Alloc(map->allocator, newCapacity * map->valueSize, FLUXION_DEFAULT_ALIGNMENT);
+    newMap.occupied = (u8*)Fluxion_Allocator_Alloc(map->allocator, newCapacity * sizeof(u8), FLUXION_DEFAULT_ALIGNMENT);
 
     if (!newMap.keys || !newMap.values || !newMap.occupied)
     {
