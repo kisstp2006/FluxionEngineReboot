@@ -14,8 +14,8 @@ typedef struct FluxionVec4 { f32 x, y, z, w; } FluxionVec4;
 typedef struct FluxionQuat { f32 x, y, z, w; } FluxionQuat;
 
 // Row-major 4x4 matrix: m[row][col]. View/projection helpers (lookAt,
-// perspective, ...) are intentionally not here yet — those land with the
-// RHI/Renderer milestone.
+// perspective, ...) are intentionally not here — those belong with a
+// future renderer/RHI layer, not Foundation.
 typedef struct FluxionMat4 { f32 m[4][4]; } FluxionMat4;
 
 static inline FluxionVec3 Fluxion_Vec3_Add(FluxionVec3 a, FluxionVec3 b)

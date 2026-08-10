@@ -6,8 +6,7 @@
 extern "C" {
 #endif
 
-// Thin, C-ABI atomic wrappers usable identically from C and C++ (see the
-// C-ABI-boundary rule in the root plans/ARCHITECTURE_RULES.md). Do not
+// Thin, C-ABI atomic wrappers usable identically from C and C++. Do not
 // touch `value` directly — always go through the functions below, which
 // perform genuine atomic operations in Atomic.c.
 typedef struct FluxionAtomicI32 { i32 value; } FluxionAtomicI32;

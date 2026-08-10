@@ -4,18 +4,23 @@ include_guard(GLOBAL)
 #     NAME <name>
 #     [TYPE STATIC|SHARED|INTERFACE]     # default STATIC
 #     [LANGUAGE C CXX]                   # informational, for future per-module language gating
+#     [SOURCES <file>...]                # optional: use this exact list instead of auto-globbing Private/**/*.c(pp)
 #     [PUBLIC_DEPENDENCIES <target>...]
 #     [PRIVATE_DEPENDENCIES <target>...]
 # )
 #
-# Expects the calling CMakeLists.txt to live in a module directory with the
-# Include/ (public headers) and Private/ (implementation) layout described
-# in plans/Architecture_Plan_Part1.md section 11. Creates both `<name>` and
-# an `Fluxion::<name>` ALIAS target.
+# Expects the calling CMakeLists.txt to live in a module directory with an
+# Include/ (public headers) and Private/ (implementation) layout. Creates
+# both `<name>` and an `Fluxion::<name>` ALIAS target.
+#
+# By default, Private/**/*.c(pp) is auto-globbed. Pass SOURCES explicitly
+# when a module needs to select sources itself (e.g. Platform choosing
+# Private/Windows/*.c vs Private/Linux/*.c based on the host OS) — headers
+# are still auto-globbed from Include/ either way, only for IDE listing.
 function(engine_add_module)
     set(options)
     set(oneValueArgs NAME TYPE)
-    set(multiValueArgs LANGUAGE PUBLIC_DEPENDENCIES PRIVATE_DEPENDENCIES)
+    set(multiValueArgs LANGUAGE SOURCES PUBLIC_DEPENDENCIES PRIVATE_DEPENDENCIES)
     cmake_parse_arguments(ENGINE_MODULE "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     if(NOT ENGINE_MODULE_NAME)
@@ -35,10 +40,15 @@ function(engine_add_module)
     else()
         file(GLOB_RECURSE ENGINE_MODULE_PUBLIC_HEADERS CONFIGURE_DEPENDS
             "${ENGINE_MODULE_INCLUDE_DIR}/*.h" "${ENGINE_MODULE_INCLUDE_DIR}/*.hpp")
-        file(GLOB_RECURSE ENGINE_MODULE_PRIVATE_SOURCES CONFIGURE_DEPENDS
-            "${ENGINE_MODULE_PRIVATE_DIR}/*.c" "${ENGINE_MODULE_PRIVATE_DIR}/*.cpp")
         file(GLOB_RECURSE ENGINE_MODULE_PRIVATE_HEADERS CONFIGURE_DEPENDS
             "${ENGINE_MODULE_PRIVATE_DIR}/*.h" "${ENGINE_MODULE_PRIVATE_DIR}/*.hpp")
+
+        if(ENGINE_MODULE_SOURCES)
+            set(ENGINE_MODULE_PRIVATE_SOURCES ${ENGINE_MODULE_SOURCES})
+        else()
+            file(GLOB_RECURSE ENGINE_MODULE_PRIVATE_SOURCES CONFIGURE_DEPENDS
+                "${ENGINE_MODULE_PRIVATE_DIR}/*.c" "${ENGINE_MODULE_PRIVATE_DIR}/*.cpp")
+        endif()
 
         if(NOT ENGINE_MODULE_PRIVATE_SOURCES)
             message(FATAL_ERROR "engine_add_module(${ENGINE_MODULE_NAME}): no .c/.cpp sources found under ${ENGINE_MODULE_PRIVATE_DIR}")

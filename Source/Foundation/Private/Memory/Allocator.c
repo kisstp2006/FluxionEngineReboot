@@ -47,10 +47,9 @@ static void* Fluxion_DefaultAlloc(FluxionAllocator* self, usize size, usize alig
 static void* Fluxion_DefaultRealloc(FluxionAllocator* self, void* block, usize oldSize, usize newSize, usize alignment)
 {
     FLUXION_UNUSED(self);
-    usize effectiveAlignment = Fluxion_EffectiveAlignment(alignment);
 #if FLUXION_PLATFORM_WINDOWS
     FLUXION_UNUSED(oldSize);
-    return _aligned_realloc(block, newSize, effectiveAlignment);
+    return _aligned_realloc(block, newSize, Fluxion_EffectiveAlignment(alignment));
 #else
     // C11/C23 has no aligned realloc: allocate, copy, free.
     void* newBlock = Fluxion_DefaultAlloc(self, newSize, alignment);

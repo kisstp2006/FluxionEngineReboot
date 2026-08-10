@@ -7,8 +7,7 @@ include_guard(GLOBAL)
 # )
 #
 # Builds a plain executable and registers it with CTest. No external test
-# framework is used (see plans/ARCHITECTURE_RULES.md dependency policy in
-# the root) — the executable itself decides pass/fail via its exit code.
+# framework — the executable itself decides pass/fail via its exit code.
 function(engine_add_test)
     set(options)
     set(oneValueArgs NAME)

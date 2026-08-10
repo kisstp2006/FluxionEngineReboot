@@ -18,8 +18,7 @@ typedef enum FluxionLogLevel
 // Minimal leveled logger writing to stdout/stderr. `file`/`line` identify
 // the call site — always pass __FILE__/__LINE__, never call this directly;
 // use the FLUXION_LOG_* macros below, which fill those in automatically so
-// callers never have to think about it. NOT thread-safe yet — that lands
-// with the Platform/Core layers (see the root ROADMAP.md).
+// callers never have to think about it. NOT thread-safe yet.
 void Fluxion_Log(FluxionLogLevel level, const char* category, const char* file, int line, const char* format, ...);
 
 #ifdef __cplusplus

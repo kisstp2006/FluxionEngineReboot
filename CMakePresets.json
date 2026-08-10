@@ -49,6 +49,20 @@
                 "lhs": "${hostSystemName}",
                 "rhs": "Windows"
             }
+        },
+        {
+            "name": "linux-gcc",
+            "displayName": "Linux (GCC, via WSL)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/linux-gcc",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
         }
     ],
     "buildPresets": [
@@ -69,6 +83,10 @@
         {
             "name": "codeblocks-mingw-release",
             "configurePreset": "codeblocks-mingw-release"
+        },
+        {
+            "name": "linux-gcc",
+            "configurePreset": "linux-gcc"
         }
     ],
     "testPresets": [
@@ -83,6 +101,13 @@
         {
             "name": "codeblocks-mingw-debug",
             "configurePreset": "codeblocks-mingw-debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-gcc",
+            "configurePreset": "linux-gcc",
             "output": {
                 "outputOnFailure": true
             }

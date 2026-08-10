@@ -10,7 +10,7 @@ extern "C" {
 // is tracked so the same struct can describe a span of any element type;
 // callers cast `data` back to the appropriate pointer type at the call
 // site. C++ code that wants a type-safe span can use std::span directly
-// instead (see plans/Architecture_Plan_Part1.md section 7 in the root).
+// instead.
 typedef struct FluxionSpan
 {
     void* data;

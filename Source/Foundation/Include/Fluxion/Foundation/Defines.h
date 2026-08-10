@@ -133,8 +133,15 @@
     #define FLUXION_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #endif
 
-// C23/C++23 both have `alignas` as a standard keyword.
-#define FLUXION_ALIGN(N) alignas(N)
+// Not the standard `alignas` keyword: MSVC's C23 (`/std:clatest`) mode does
+// not yet implement `alignas` in C mode (same gap as `alignof`/
+// `max_align_t` — see FLUXION_DEFAULT_ALIGNMENT in Types.h). Compiler-
+// specific attributes work on all three toolchains today.
+#if FLUXION_COMPILER_MSVC
+    #define FLUXION_ALIGN(N) __declspec(align(N))
+#else
+    #define FLUXION_ALIGN(N) __attribute__((aligned(N)))
+#endif
 
 #if FLUXION_COMPILER_MSVC
     #define FLUXION_DEBUG_BREAK() __debugbreak()

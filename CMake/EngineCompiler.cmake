@@ -1,10 +1,6 @@
 include_guard(GLOBAL)
 
-# Language standards. C23/C++23 are the project-wide target (see
-# plans/Architecture_Plan_Part1.md, section 7, in the root — not in this
-# repo). If a toolchain rejects a specific C23 feature during
-# implementation, the fallback is documented in the root ROADMAP.md, not
-# here.
+# Language standards: C23/C++23 project-wide.
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
