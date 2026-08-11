@@ -34,3 +34,34 @@ if(FLUXION_ENABLE_ASAN)
         add_link_options(-fsanitize=address,undefined)
     endif()
 endif()
+
+# engine_set_cpp_policy(<target> [NO_EXCEPTIONS] [NO_RTTI])
+#
+# Applies the Core/Runtime C++ policy (exceptions off, RTTI off) to a
+# target's C++ translation units only -- flags are scoped to
+# COMPILE_LANGUAGE:CXX so a target mixing C and C++ sources doesn't pass
+# C++-only flags to its C compiles.
+function(engine_set_cpp_policy TARGET_NAME)
+    set(options NO_EXCEPTIONS NO_RTTI)
+    cmake_parse_arguments(ENGINE_CPP_POLICY "${options}" "" "" ${ARGN})
+
+    if(ENGINE_CPP_POLICY_NO_RTTI)
+        if(MSVC)
+            target_compile_options(${TARGET_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/GR->)
+        else()
+            target_compile_options(${TARGET_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+        endif()
+    endif()
+
+    if(ENGINE_CPP_POLICY_NO_EXCEPTIONS)
+        if(MSVC)
+            # No /EHsc is passed, and the MSVC STL is told not to rely on
+            # exceptions internally -- together this makes a stray
+            # try/throw/catch a hard compile error instead of a silently
+            # tolerated construct.
+            target_compile_definitions(${TARGET_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:_HAS_EXCEPTIONS=0>)
+        else()
+            target_compile_options(${TARGET_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>)
+        endif()
+    endif()
+endfunction()

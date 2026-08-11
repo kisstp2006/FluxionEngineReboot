@@ -4,6 +4,9 @@
 
 void Test_Reflection_Run(TestContext* ctx);
 void Test_Plugin_Run(TestContext* ctx);
+void Test_Startup_Run(TestContext* ctx);
+void Test_StartupCpp_Run(TestContext* ctx);
+void Test_PluginSubsystem_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -13,6 +16,9 @@ int main(void)
 
     Test_Reflection_Run(&ctx);
     Test_Plugin_Run(&ctx);
+    Test_Startup_Run(&ctx);
+    Test_StartupCpp_Run(&ctx);
+    Test_PluginSubsystem_Run(&ctx);
 
     if (ctx.failures == 0)
     {

@@ -1,5 +1,6 @@
 #include <Fluxion/Core/Plugin/Manager.h>
 
+#include <Fluxion/Core/Startup/SubsystemRegistry.h>
 #include <Fluxion/Foundation/Assert.h>
 #include <Fluxion/Foundation/Containers/DynamicArray.h>
 #include <Fluxion/Foundation/Containers/HashMap.h>
@@ -387,6 +388,7 @@ bool Fluxion_PluginManager_LoadAll(const char* const* pluginFilePaths, usize cou
         FluxionPluginHostAPI host;
         host.apiVersion = FLUXION_PLUGIN_HOST_API_VERSION;
         host.defaultAllocator = Fluxion_DefaultAllocator();
+        host.registerSubsystem = Fluxion_SubsystemRegistry_Register;
 
         for (usize k = 0; k < orderCount && ok; ++k)
         {

@@ -5,6 +5,8 @@ include_guard(GLOBAL)
 #     [TYPE STATIC|SHARED|INTERFACE]     # default STATIC
 #     [LANGUAGE C CXX]                   # informational, for future per-module language gating
 #     [SOURCES <file>...]                # optional: use this exact list instead of auto-globbing Private/**/*.c(pp)
+#     [NO_EXCEPTIONS]                    # disable C++ exceptions on this target's CXX sources
+#     [NO_RTTI]                          # disable C++ RTTI on this target's CXX sources
 #     [PUBLIC_DEPENDENCIES <target>...]
 #     [PRIVATE_DEPENDENCIES <target>...]
 # )
@@ -18,7 +20,7 @@ include_guard(GLOBAL)
 # Private/Windows/*.c vs Private/Linux/*.c based on the host OS) — headers
 # are still auto-globbed from Include/ either way, only for IDE listing.
 function(engine_add_module)
-    set(options)
+    set(options NO_EXCEPTIONS NO_RTTI)
     set(oneValueArgs NAME TYPE)
     set(multiValueArgs LANGUAGE SOURCES PUBLIC_DEPENDENCIES PRIVATE_DEPENDENCIES)
     cmake_parse_arguments(ENGINE_MODULE "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
@@ -66,6 +68,17 @@ function(engine_add_module)
         )
 
         engine_set_warnings(${ENGINE_MODULE_NAME})
+
+        if(ENGINE_MODULE_NO_EXCEPTIONS OR ENGINE_MODULE_NO_RTTI)
+            set(ENGINE_MODULE_CPP_POLICY_ARGS)
+            if(ENGINE_MODULE_NO_EXCEPTIONS)
+                list(APPEND ENGINE_MODULE_CPP_POLICY_ARGS NO_EXCEPTIONS)
+            endif()
+            if(ENGINE_MODULE_NO_RTTI)
+                list(APPEND ENGINE_MODULE_CPP_POLICY_ARGS NO_RTTI)
+            endif()
+            engine_set_cpp_policy(${ENGINE_MODULE_NAME} ${ENGINE_MODULE_CPP_POLICY_ARGS})
+        endif()
     endif()
 
     add_library(Fluxion::${ENGINE_MODULE_NAME} ALIAS ${ENGINE_MODULE_NAME})
