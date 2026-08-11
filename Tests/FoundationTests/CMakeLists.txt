@@ -19,6 +19,7 @@ engine_add_test(
         Test_FoundationUtilCpp.cpp
         Test_MemoryTracker.c
         Test_MemoryScopeCpp.cpp
+        Test_Stream.c
     DEPENDENCIES
         Fluxion::Foundation
     NO_EXCEPTIONS
@@ -42,4 +43,5 @@ engine_add_header_selfcontained_test(
         Fluxion/Foundation/Memory/MemoryTracker.h
         Fluxion/Foundation/Memory/TrackingAllocator.h
         Fluxion/Foundation/Memory/MemoryScope.hpp
+        Fluxion/Foundation/Serialization/Stream.h
 )

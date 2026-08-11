@@ -30,6 +30,9 @@ engine_add_test(
         Test_Service.c
         Test_ServiceCpp.cpp
         Test_ReflectionCpp.cpp
+        Test_Jobs.c
+        Test_JobsCpp.cpp
+        Test_BinarySerializer.c
     DEPENDENCIES
         Fluxion::Core
     NO_EXCEPTIONS
@@ -60,4 +63,9 @@ engine_add_header_selfcontained_test(
         Fluxion/Core/Service/ServiceRegistry.h
         Fluxion/Core/Service/Service.hpp
         Fluxion/Core/Reflection/Reflection.hpp
+        Fluxion/Core/Jobs/JobHandle.h
+        Fluxion/Core/Jobs/JobDesc.h
+        Fluxion/Core/Jobs/JobSystem.h
+        Fluxion/Core/Jobs/Jobs.hpp
+        Fluxion/Core/Serialization/BinarySerializer.h
 )

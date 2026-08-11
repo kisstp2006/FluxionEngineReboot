@@ -14,6 +14,7 @@ engine_add_test(
         Test_DynamicLibrary.c
         Test_Thread.c
         Test_Synchronization.c
+        Test_Semaphore.c
     DEPENDENCIES
         Fluxion::Platform
         Fluxion::Foundation

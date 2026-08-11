@@ -10,6 +10,9 @@ void Test_PluginSubsystem_Run(TestContext* ctx);
 void Test_Service_Run(TestContext* ctx);
 void Test_ServiceCpp_Run(TestContext* ctx);
 void Test_ReflectionCpp_Run(TestContext* ctx);
+void Test_Jobs_Run(TestContext* ctx);
+void Test_JobsCpp_Run(TestContext* ctx);
+void Test_BinarySerializer_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -25,6 +28,9 @@ int main(void)
     Test_Service_Run(&ctx);
     Test_ServiceCpp_Run(&ctx);
     Test_ReflectionCpp_Run(&ctx);
+    Test_Jobs_Run(&ctx);
+    Test_JobsCpp_Run(&ctx);
+    Test_BinarySerializer_Run(&ctx);
 
     if (ctx.failures == 0)
     {

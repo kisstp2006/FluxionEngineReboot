@@ -19,6 +19,7 @@ void Test_MathCpp_Run(TestContext* ctx);
 void Test_FoundationUtilCpp_Run(TestContext* ctx);
 void Test_MemoryTracker_Run(TestContext* ctx);
 void Test_MemoryScopeCpp_Run(TestContext* ctx);
+void Test_Stream_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -43,6 +44,7 @@ int main(void)
     Test_FoundationUtilCpp_Run(&ctx);
     Test_MemoryTracker_Run(&ctx);
     Test_MemoryScopeCpp_Run(&ctx);
+    Test_Stream_Run(&ctx);
 
     if (ctx.failures == 0)
     {

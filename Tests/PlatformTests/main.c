@@ -12,6 +12,7 @@ void Test_File_Run(TestContext* ctx);
 void Test_DynamicLibrary_Run(TestContext* ctx);
 void Test_Thread_Run(TestContext* ctx);
 void Test_Synchronization_Run(TestContext* ctx);
+void Test_Semaphore_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -29,6 +30,7 @@ int main(void)
     Test_DynamicLibrary_Run(&ctx);
     Test_Thread_Run(&ctx);
     Test_Synchronization_Run(&ctx);
+    Test_Semaphore_Run(&ctx);
 
     if (ctx.failures == 0)
     {
