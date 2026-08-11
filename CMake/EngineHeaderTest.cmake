@@ -5,11 +5,16 @@ include_guard(GLOBAL)
 #     HEADERS <include-path>...  # e.g. Fluxion/Core/Startup/Subsystem.hpp
 # )
 #
-# For every header, generates a standalone .cpp translation unit whose only
+# For every header, generates a standalone translation unit whose only
 # content is `#include <that-header>` -- proving the header compiles with no
 # reliance on include order or on some other header having pulled in its
-# dependencies first. All generated TUs, plus one shared main(), link into a
-# single `<Module>HeaderSelfContainedTests` executable registered with CTest.
+# dependencies first. A `.h` header is compiled as C (a generated `.c` TU);
+# a `.hpp` header is compiled as C++ (a generated `.cpp` TU) -- this
+# codebase's own convention is `.h` = C-compatible, `.hpp` = C++-only, so a
+# `.h` header that only ever got compiled as C++ here would never actually
+# prove it also compiles as plain C. All generated TUs, plus one shared
+# main(), link into a single `<Module>HeaderSelfContainedTests` executable
+# registered with CTest.
 function(engine_add_header_selfcontained_test)
     set(options)
     set(oneValueArgs MODULE)
@@ -30,7 +35,14 @@ function(engine_add_header_selfcontained_test)
     set(ENGINE_HEADER_TEST_SOURCES)
     foreach(ENGINE_HEADER_TEST_HEADER ${ENGINE_HEADER_TEST_HEADERS})
         string(MAKE_C_IDENTIFIER "${ENGINE_HEADER_TEST_HEADER}" ENGINE_HEADER_TEST_ID)
-        set(ENGINE_HEADER_TEST_TU "${ENGINE_HEADER_TEST_GENERATED_DIR}/${ENGINE_HEADER_TEST_ID}.cpp")
+
+        if(ENGINE_HEADER_TEST_HEADER MATCHES "\\.hpp$")
+            set(ENGINE_HEADER_TEST_EXT "cpp")
+        else()
+            set(ENGINE_HEADER_TEST_EXT "c")
+        endif()
+
+        set(ENGINE_HEADER_TEST_TU "${ENGINE_HEADER_TEST_GENERATED_DIR}/${ENGINE_HEADER_TEST_ID}.${ENGINE_HEADER_TEST_EXT}")
         file(GENERATE OUTPUT "${ENGINE_HEADER_TEST_TU}" CONTENT "#include <${ENGINE_HEADER_TEST_HEADER}>\n")
         list(APPEND ENGINE_HEADER_TEST_SOURCES "${ENGINE_HEADER_TEST_TU}")
     endforeach()

@@ -44,4 +44,5 @@ engine_add_header_selfcontained_test(
         Fluxion/Foundation/Memory/TrackingAllocator.h
         Fluxion/Foundation/Memory/MemoryScope.hpp
         Fluxion/Foundation/Serialization/Stream.h
+        Fluxion/Foundation/Diagnostics/SourceLocation.h
 )

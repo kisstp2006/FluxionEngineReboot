@@ -4,6 +4,7 @@
 #include <Fluxion/Core/Reflection/TypeInfo.h>
 #include <Fluxion/Core/Service/ServiceId.h>
 #include <Fluxion/Core/Startup/SubsystemDesc.h>
+#include <Fluxion/Foundation/Diagnostics/SourceLocation.h>
 #include <Fluxion/Foundation/Memory/Allocator.h>
 #include <Fluxion/Foundation/Types.h>
 
@@ -11,7 +12,7 @@
 extern "C" {
 #endif
 
-#define FLUXION_PLUGIN_HOST_API_VERSION 4u
+#define FLUXION_PLUGIN_HOST_API_VERSION 5u
 
 typedef struct FluxionPluginHostAPI
 {
@@ -42,6 +43,15 @@ typedef struct FluxionPluginHostAPI
     // for as long as anyone might look that type up.
     bool (*registerType)(const FluxionTypeInfo* typeInfo);
     const FluxionTypeInfo* (*findTypeById)(FluxionTypeId id);
+
+    // Added at version 5. A plugin links against Core headers only, not
+    // the Core static lib, so it cannot call Fluxion_Profiler_ZoneBegin/
+    // ZoneEnd/Marker directly -- these proxy into whichever profiler
+    // backend the host currently has attached (Profiler.h), same
+    // reasoning as registerSubsystem/registerService/registerType above.
+    void (*profilerZoneBegin)(const FluxionSourceLocation* location, const char* name);
+    void (*profilerZoneEnd)(void);
+    void (*profilerMarker)(const FluxionSourceLocation* location, const char* name);
 } FluxionPluginHostAPI;
 
 typedef struct FluxionPluginAPI

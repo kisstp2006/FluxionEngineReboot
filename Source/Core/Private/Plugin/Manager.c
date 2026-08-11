@@ -1,5 +1,6 @@
 #include <Fluxion/Core/Plugin/Manager.h>
 
+#include <Fluxion/Core/Diagnostics/Profiler.h>
 #include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/Core/Service/ServiceRegistry.h>
 #include <Fluxion/Core/Startup/SubsystemRegistry.h>
@@ -25,7 +26,7 @@ typedef struct FluxionLoadedPlugin
 
 static FluxionAllocator* s_allocator = NULL;
 static FluxionDynamicArray s_loadedPlugins; // FluxionLoadedPlugin
-static bool s_initialized = false;
+static bool s_pluginManagerInitialized = false;
 
 // Static storage, not a LoadAll-local -- a plugin's Fluxion_Plugin_Load
 // may stash this pointer (Fluxion_Plugin_Unload doesn't receive it again)
@@ -36,7 +37,7 @@ static FluxionPluginHostAPI s_host;
 
 void Fluxion_PluginManager_Init(FluxionAllocator* allocator)
 {
-    FLUXION_ASSERT_MSG(!s_initialized, "Fluxion_PluginManager_Init called twice without a Shutdown in between");
+    FLUXION_ASSERT_MSG(!s_pluginManagerInitialized, "Fluxion_PluginManager_Init called twice without a Shutdown in between");
     s_allocator = allocator ? allocator : Fluxion_DefaultAllocator();
     Fluxion_DynamicArray_Init(&s_loadedPlugins, s_allocator, sizeof(FluxionLoadedPlugin));
 
@@ -48,13 +49,16 @@ void Fluxion_PluginManager_Init(FluxionAllocator* allocator)
     s_host.getService = Fluxion_ServiceRegistry_Get;
     s_host.registerType = Fluxion_Reflection_RegisterType;
     s_host.findTypeById = Fluxion_Reflection_FindTypeById;
+    s_host.profilerZoneBegin = Fluxion_Profiler_ZoneBegin;
+    s_host.profilerZoneEnd = Fluxion_Profiler_ZoneEnd;
+    s_host.profilerMarker = Fluxion_Profiler_Marker;
 
-    s_initialized = true;
+    s_pluginManagerInitialized = true;
 }
 
 void Fluxion_PluginManager_Shutdown(void)
 {
-    FLUXION_ASSERT_MSG(s_initialized, "Fluxion_PluginManager_Shutdown called before Init");
+    FLUXION_ASSERT_MSG(s_pluginManagerInitialized, "Fluxion_PluginManager_Shutdown called before Init");
 
     for (usize i = s_loadedPlugins.count; i > 0; --i)
     {
@@ -69,7 +73,7 @@ void Fluxion_PluginManager_Shutdown(void)
     }
 
     Fluxion_DynamicArray_Destroy(&s_loadedPlugins);
-    s_initialized = false;
+    s_pluginManagerInitialized = false;
 }
 
 usize Fluxion_PluginManager_GetLoadedCount(void)
@@ -257,7 +261,7 @@ static bool Fluxion_ParsePluginDescriptor(const char* jsonText, usize jsonLength
 
 bool Fluxion_PluginManager_LoadAll(const char* const* pluginFilePaths, usize count)
 {
-    FLUXION_ASSERT(s_initialized);
+    FLUXION_ASSERT(s_pluginManagerInitialized);
 
     if (count == 0)
     {

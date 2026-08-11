@@ -20,7 +20,7 @@ typedef struct FluxionRegisteredSubsystem
 
 static FluxionRegisteredSubsystem s_subsystems[FLUXION_MAX_SUBSYSTEMS];
 static usize s_subsystemCount = 0;
-static bool s_initialized = false;
+static bool s_subsystemRegistryInitialized = false;
 
 // Indices into s_subsystems, in the order they were actually started --
 // ShutdownAll (and StartupAll's own rollback) walk this in reverse.
@@ -29,21 +29,21 @@ static usize s_startedCount = 0;
 
 void Fluxion_SubsystemRegistry_Init(void)
 {
-    FLUXION_ASSERT_MSG(!s_initialized, "Fluxion_SubsystemRegistry_Init called twice without a Shutdown in between");
+    FLUXION_ASSERT_MSG(!s_subsystemRegistryInitialized, "Fluxion_SubsystemRegistry_Init called twice without a Shutdown in between");
     s_subsystemCount = 0;
     s_startedCount = 0;
-    s_initialized = true;
+    s_subsystemRegistryInitialized = true;
 }
 
 void Fluxion_SubsystemRegistry_Shutdown(void)
 {
-    FLUXION_ASSERT_MSG(s_initialized, "Fluxion_SubsystemRegistry_Shutdown called before Init");
+    FLUXION_ASSERT_MSG(s_subsystemRegistryInitialized, "Fluxion_SubsystemRegistry_Shutdown called before Init");
     if (s_startedCount > 0)
     {
         Fluxion_SubsystemRegistry_ShutdownAll();
     }
     s_subsystemCount = 0;
-    s_initialized = false;
+    s_subsystemRegistryInitialized = false;
 }
 
 static usize Fluxion_FindSubsystemIndex(FluxionSubsystemId id)
@@ -60,7 +60,7 @@ static usize Fluxion_FindSubsystemIndex(FluxionSubsystemId id)
 
 bool Fluxion_SubsystemRegistry_Register(const FluxionSubsystemDesc* desc)
 {
-    FLUXION_ASSERT(s_initialized);
+    FLUXION_ASSERT(s_subsystemRegistryInitialized);
 
     if (s_subsystemCount >= FLUXION_MAX_SUBSYSTEMS) return false;
     if (desc->dependencyCount > FLUXION_SUBSYSTEM_MAX_DEPENDENCIES) return false;
@@ -80,7 +80,7 @@ bool Fluxion_SubsystemRegistry_Register(const FluxionSubsystemDesc* desc)
 
 FluxionResult Fluxion_SubsystemRegistry_StartupAll(void)
 {
-    FLUXION_ASSERT(s_initialized);
+    FLUXION_ASSERT(s_subsystemRegistryInitialized);
     FLUXION_ASSERT_MSG(s_startedCount == 0, "Fluxion_SubsystemRegistry_StartupAll called while subsystems are already running");
 
     for (usize i = 0; i < s_subsystemCount; ++i)
@@ -173,7 +173,7 @@ FluxionResult Fluxion_SubsystemRegistry_StartupAll(void)
 
 void Fluxion_SubsystemRegistry_ShutdownAll(void)
 {
-    FLUXION_ASSERT(s_initialized);
+    FLUXION_ASSERT(s_subsystemRegistryInitialized);
 
     for (usize r = s_startedCount; r > 0; --r)
     {

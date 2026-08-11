@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Fluxion/Foundation/Defines.h>
+#include <Fluxion/Foundation/Diagnostics/SourceLocation.h>
 #include <Fluxion/Foundation/Memory/MemoryDomain.h>
 #include <Fluxion/Foundation/Memory/MemoryTracker.h>
 
@@ -16,9 +17,10 @@ namespace Fluxion::Foundation
 class MemoryScope
 {
 public:
-    explicit MemoryScope(FluxionMemoryDomainId domain)
+    MemoryScope(FluxionMemoryDomainId domain, const char* file, u32 line, const char* function)
     {
-        Fluxion_MemoryTracker_PushDomain(domain);
+        FluxionSourceLocation location{ file, function, line };
+        Fluxion_MemoryTracker_PushDomain(domain, location);
     }
 
     ~MemoryScope()
@@ -35,4 +37,4 @@ public:
 } // namespace Fluxion::Foundation
 
 #define FLUXION_MEMORY_SCOPE(domainId) \
-    ::Fluxion::Foundation::MemoryScope FLUXION_CONCAT(fluxionMemoryScope_, __LINE__)(domainId)
+    ::Fluxion::Foundation::MemoryScope FLUXION_CONCAT(fluxionMemoryScope_, __LINE__)(domainId, __FILE__, __LINE__, __func__)

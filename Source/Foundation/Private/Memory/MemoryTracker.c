@@ -19,9 +19,17 @@ static FluxionTrackedDomain s_domains[FLUXION_MAX_MEMORY_DOMAINS];
 static usize s_domainCount = 0;
 static bool s_initialized = false;
 
+// Registration/attach-shaped state, same reasoning as the Service/
+// Subsystem Registry and the Profiler's backend slot -- set once during
+// startup, not written concurrently with threads already pushing/popping
+// domains.
+static FluxionMemoryTrackerHookFn s_hook = NULL;
+static void* s_hookUserData = NULL;
+
 // Thread-local: each thread has its own scope stack, since two threads
 // allocating "at the same time" are conceptually in different scopes.
 static FLUXION_THREAD_LOCAL FluxionMemoryDomainId s_domainStack[FLUXION_MAX_MEMORY_DOMAINS];
+static FLUXION_THREAD_LOCAL FluxionSourceLocation s_domainLocationStack[FLUXION_MAX_MEMORY_DOMAINS];
 static FLUXION_THREAD_LOCAL usize s_domainStackCount = 0;
 
 void Fluxion_MemoryTracker_Init(void)
@@ -88,23 +96,52 @@ bool Fluxion_MemoryTracker_RegisterDomain(const FluxionMemoryDomainDesc* desc)
     return true;
 }
 
-void Fluxion_MemoryTracker_PushDomain(FluxionMemoryDomainId id)
+const char* Fluxion_MemoryTracker_GetDomainName(FluxionMemoryDomainId id)
+{
+    usize index = Fluxion_FindMemoryDomainIndex(id);
+    if (index == FLUXION_MEMORY_DOMAIN_INDEX_NOT_FOUND) return NULL;
+    return s_domains[index].name;
+}
+
+void Fluxion_MemoryTracker_PushDomain(FluxionMemoryDomainId id, FluxionSourceLocation location)
 {
     FLUXION_ASSERT(s_initialized);
     FLUXION_ASSERT_MSG(s_domainStackCount < FLUXION_MAX_MEMORY_DOMAINS, "memory domain scope stack overflow");
-    s_domainStack[s_domainStackCount++] = id;
+    s_domainStack[s_domainStackCount] = id;
+    s_domainLocationStack[s_domainStackCount] = location;
+    ++s_domainStackCount;
+
+    if (s_hook != NULL)
+    {
+        s_hook(id, true, &location, s_hookUserData);
+    }
 }
 
 void Fluxion_MemoryTracker_PopDomain(void)
 {
     FLUXION_ASSERT_MSG(s_domainStackCount > 0, "Fluxion_MemoryTracker_PopDomain called with an empty scope stack");
     --s_domainStackCount;
+
+    if (s_hook != NULL)
+    {
+        s_hook(s_domainStack[s_domainStackCount], false, NULL, s_hookUserData);
+    }
 }
 
 FluxionMemoryDomainId Fluxion_MemoryTracker_GetCurrentDomain(void)
 {
     if (s_domainStackCount == 0) return FLUXION_MEMORY_DOMAIN_ID_INVALID;
     return s_domainStack[s_domainStackCount - 1];
+}
+
+FluxionSourceLocation Fluxion_MemoryTracker_GetCurrentLocation(void)
+{
+    if (s_domainStackCount == 0)
+    {
+        FluxionSourceLocation empty = { NULL, NULL, 0 };
+        return empty;
+    }
+    return s_domainLocationStack[s_domainStackCount - 1];
 }
 
 FluxionMemoryStatistics Fluxion_MemoryTracker_GetStatistics(FluxionMemoryDomainId id)
@@ -160,6 +197,18 @@ void Fluxion_MemoryTracker_RecordFree(FluxionMemoryDomainId id, usize size)
 
         current = s_domains[index].parent;
     }
+}
+
+void Fluxion_MemoryTracker_SetHook(FluxionMemoryTrackerHookFn hook, void* userData)
+{
+    s_hook = hook;
+    s_hookUserData = userData;
+}
+
+void Fluxion_MemoryTracker_ClearHook(void)
+{
+    s_hook = NULL;
+    s_hookUserData = NULL;
 }
 
 #endif // FLUXION_MEMORY_TRACKING

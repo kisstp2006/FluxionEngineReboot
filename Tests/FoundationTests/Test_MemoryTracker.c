@@ -1,5 +1,7 @@
 #include "TestFramework.h"
 
+#include <string.h>
+
 #include <Fluxion/Foundation/Memory/MemoryTracker.h>
 #include <Fluxion/Foundation/Memory/TrackingAllocator.h>
 
@@ -47,18 +49,28 @@ void Test_MemoryTracker_Run(TestContext* ctx)
         Fluxion_MemoryTracker_RegisterDomain(&descB);
 
         TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentDomain() == FLUXION_MEMORY_DOMAIN_ID_INVALID);
+        TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentLocation().file == NULL);
 
-        Fluxion_MemoryTracker_PushDomain(descA.id);
+        const FluxionSourceLocation locationA = { __FILE__, __func__, (u32)__LINE__ };
+        Fluxion_MemoryTracker_PushDomain(descA.id, locationA);
         TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentDomain() == descA.id);
+        TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentLocation().line == locationA.line);
 
-        Fluxion_MemoryTracker_PushDomain(descB.id);
+        const FluxionSourceLocation locationB = { __FILE__, __func__, (u32)__LINE__ };
+        Fluxion_MemoryTracker_PushDomain(descB.id, locationB);
         TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentDomain() == descB.id);
+        TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentLocation().line == locationB.line);
 
         Fluxion_MemoryTracker_PopDomain();
         TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentDomain() == descA.id);
+        TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentLocation().line == locationA.line);
 
         Fluxion_MemoryTracker_PopDomain();
         TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentDomain() == FLUXION_MEMORY_DOMAIN_ID_INVALID);
+        TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentLocation().file == NULL);
+
+        TEST_CHECK(ctx, strcmp(Fluxion_MemoryTracker_GetDomainName(descA.id), "A") == 0);
+        TEST_CHECK(ctx, Fluxion_MemoryTracker_GetDomainName(FLUXION_MEMORY_DOMAIN_ID_OF(TestUnregisteredDomain)) == NULL);
     }
     Fluxion_MemoryTracker_Shutdown();
 
@@ -74,7 +86,7 @@ void Test_MemoryTracker_Run(TestContext* ctx)
         FluxionAllocator tracking;
         Fluxion_TrackingAllocator_Init(&tracking, Fluxion_DefaultAllocator());
 
-        Fluxion_MemoryTracker_PushDomain(allocDomain);
+        Fluxion_MemoryTracker_PushDomain(allocDomain, (FluxionSourceLocation){ __FILE__, __func__, (u32)__LINE__ });
         void* a = Fluxion_Allocator_Alloc(&tracking, 64, 8);
         void* b = Fluxion_Allocator_Alloc(&tracking, 64, 8);
         Fluxion_MemoryTracker_PopDomain();
@@ -82,7 +94,7 @@ void Test_MemoryTracker_Run(TestContext* ctx)
         FluxionMemoryStatistics stats = Fluxion_MemoryTracker_GetStatistics(allocDomain);
         TEST_CHECK(ctx, stats.allocationCount == 2 && stats.currentBytes == 128 && stats.peakBytes == 128);
 
-        Fluxion_MemoryTracker_PushDomain(allocDomain);
+        Fluxion_MemoryTracker_PushDomain(allocDomain, (FluxionSourceLocation){ __FILE__, __func__, (u32)__LINE__ });
         Fluxion_Allocator_Free(&tracking, a, 64);
         Fluxion_Allocator_Free(&tracking, b, 64);
         Fluxion_MemoryTracker_PopDomain();

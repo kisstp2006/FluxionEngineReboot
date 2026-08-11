@@ -21,6 +21,7 @@ extern "C" void Test_MemoryScopeCpp_Run(TestContext* ctx)
         {
             FLUXION_MEMORY_SCOPE(domainA);
             TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentDomain() == domainA);
+            TEST_CHECK(ctx, Fluxion_MemoryTracker_GetCurrentLocation().file != nullptr);
 
             {
                 FLUXION_MEMORY_SCOPE(domainB);

@@ -30,3 +30,19 @@ target_compile_definitions(PlatformTests PRIVATE
 set_tests_properties(PlatformTests PROPERTIES
     ENVIRONMENT "FLUXION_TEST_ENV_VAR=FluxionValue123"
 )
+
+engine_add_header_selfcontained_test(
+    MODULE Platform
+    HEADERS
+        Fluxion/Platform/CPU.h
+        Fluxion/Platform/Debug.h
+        Fluxion/Platform/DynamicLibrary.h
+        Fluxion/Platform/Environment.h
+        Fluxion/Platform/File.h
+        Fluxion/Platform/Memory.h
+        Fluxion/Platform/Process.h
+        Fluxion/Platform/Semaphore.h
+        Fluxion/Platform/Synchronization.h
+        Fluxion/Platform/Thread.h
+        Fluxion/Platform/Time.h
+)

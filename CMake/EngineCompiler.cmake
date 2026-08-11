@@ -9,6 +9,15 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Every static module library (Foundation, Platform, Core, Application)
+# can end up linked into a SHARED plugin -- without this, GCC/Clang only
+# happen to get away with it because normal (non-unity) archive linking
+# pulls in just the specific .o members a plugin actually references; a
+# unity build collapses each module into a single .o, so as soon as that
+# one object contains anything not compiled -fPIC, linking any shared
+# plugin against it fails with a relocation error. A no-op on MSVC.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 if(MSVC)
     set(ENGINE_COMPILER_MSVC ON)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
@@ -35,6 +44,47 @@ if(FLUXION_ENABLE_ASAN)
     endif()
 endif()
 
+# ThreadSanitizer -- MSVC has no /fsanitize=thread, so this is a
+# Linux/GCC-only leg. Can't combine with ASan (the two instrumentations
+# are mutually incompatible), so both ON is a configure-time error rather
+# than one silently overriding the other.
+option(FLUXION_ENABLE_TSAN "Enable ThreadSanitizer (Linux/GCC only)" OFF)
+
+if(FLUXION_ENABLE_TSAN)
+    if(FLUXION_ENABLE_ASAN)
+        message(FATAL_ERROR "FLUXION_ENABLE_TSAN and FLUXION_ENABLE_ASAN cannot both be ON -- ASan and TSan instrumentation cannot be combined")
+    endif()
+    if(MSVC)
+        message(FATAL_ERROR "FLUXION_ENABLE_TSAN is not supported by MSVC (no /fsanitize=thread) -- use the linux-gcc preset instead")
+    endif()
+    add_compile_options(-fsanitize=thread)
+    add_link_options(-fsanitize=thread)
+endif()
+
+# The whole engine (modules, tests, samples) must always build without
+# unity build -- unity builds can mask a missing #include that a normal
+# build would catch, so this stays OFF by default and is only turned on
+# to spot-check that it still compiles, never as the everyday build mode.
+# CMAKE_UNITY_BUILD is CMake's own global switch (applies uniformly to
+# every target, unlike a per-target property that would miss test/sample
+# executables built outside engine_add_module).
+option(FLUXION_UNITY_BUILD "Build every target as a CMake unity/jumbo build" OFF)
+set(CMAKE_UNITY_BUILD ${FLUXION_UNITY_BUILD})
+
+# Off by default -- link-time optimization trades build time for runtime
+# performance, so it's an opt-in release/verification build, not the
+# everyday dev loop.
+option(FLUXION_ENABLE_LTO "Enable link-time / interprocedural optimization" OFF)
+
+if(FLUXION_ENABLE_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ENGINE_IPO_SUPPORTED OUTPUT ENGINE_IPO_ERROR)
+    if(NOT ENGINE_IPO_SUPPORTED)
+        message(FATAL_ERROR "FLUXION_ENABLE_LTO requested but IPO/LTO is not supported by this toolchain: ${ENGINE_IPO_ERROR}")
+    endif()
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
+
 # Gates Foundation's memory domain/allocation tracking (MemoryTracker.h).
 # Project-wide, not per-target: it's a public header behavior switch, so
 # every translation unit that includes MemoryTracker.h needs to see the
@@ -43,6 +93,13 @@ endif()
 # runtime branch.
 option(FLUXION_MEMORY_TRACKING "Enable Foundation memory domain/allocation tracking" ON)
 add_compile_definitions(FLUXION_MEMORY_TRACKING=$<BOOL:${FLUXION_MEMORY_TRACKING}>)
+
+# Gates Core's CPU profiling hooks (Profiler.h). Same rationale as
+# FLUXION_MEMORY_TRACKING above: project-wide because it's a public
+# header behavior switch, and OFF compiles the whole Profiler API down
+# to inline no-ops rather than a runtime branch.
+option(FLUXION_PROFILING "Enable Core CPU profiling hooks" ON)
+add_compile_definitions(FLUXION_PROFILING=$<BOOL:${FLUXION_PROFILING}>)
 
 # engine_set_cpp_policy(<target> [NO_EXCEPTIONS] [NO_RTTI])
 #

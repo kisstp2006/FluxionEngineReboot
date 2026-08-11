@@ -1,5 +1,6 @@
 #include <Fluxion/Core/Jobs/JobSystem.h>
 
+#include <Fluxion/Core/Diagnostics/Profiler.h>
 #include <Fluxion/Foundation/Assert.h>
 #include <Fluxion/Foundation/Atomic.h>
 #include <Fluxion/Foundation/Memory/Allocator.h>
@@ -68,7 +69,7 @@ static FluxionAtomicI32 s_shuttingDown;
 static FluxionAtomicI32 s_nextWorkerForRoundRobin;
 
 static bool s_singleThreaded;
-static bool s_initialized = false;
+static bool s_jobSystemInitialized = false;
 
 static FLUXION_THREAD_LOCAL i32 t_workerIndex = -1;
 static FLUXION_THREAD_LOCAL FluxionScratchAllocator* t_workerScratch = NULL;
@@ -229,7 +230,7 @@ static FluxionJobHandle Fluxion_SubmitInternal(
     bool hasDirectNotifyTarget,
     FluxionJobHandle directNotifyTarget)
 {
-    FLUXION_ASSERT(s_initialized);
+    FLUXION_ASSERT(s_jobSystemInitialized);
     FLUXION_ASSERT(dataSize <= FLUXION_JOB_INLINE_DATA_SIZE);
     FLUXION_ASSERT(dependencyCount <= FLUXION_JOB_MAX_DEPENDENCIES);
 
@@ -309,7 +310,7 @@ static FluxionJobHandle Fluxion_SubmitInternal(
 
 static FluxionJobHandle Fluxion_SubmitBarrier(u32 dependencyCount)
 {
-    FLUXION_ASSERT(s_initialized && !s_singleThreaded);
+    FLUXION_ASSERT(s_jobSystemInitialized && !s_singleThreaded);
 
     Fluxion_Platform_MutexLock(&s_poolMutex);
 
@@ -352,7 +353,7 @@ static void Fluxion_JobWorkerMain(void* userData)
 
     char name[32];
     snprintf(name, sizeof(name), "FluxionWorker%u", self->index);
-    Fluxion_Platform_SetCurrentThreadName(name);
+    Fluxion_Profiler_SetThreadName(name);
 
     for (;;)
     {
@@ -376,7 +377,7 @@ static void Fluxion_JobWorkerMain(void* userData)
 
 void Fluxion_JobSystem_Init(u32 workerCount, bool singleThreaded)
 {
-    FLUXION_ASSERT_MSG(!s_initialized, "Fluxion_JobSystem_Init called twice without a Shutdown in between");
+    FLUXION_ASSERT_MSG(!s_jobSystemInitialized, "Fluxion_JobSystem_Init called twice without a Shutdown in between");
 
     s_singleThreaded = singleThreaded;
     Fluxion_Platform_MutexInit(&s_poolMutex);
@@ -426,12 +427,12 @@ void Fluxion_JobSystem_Init(u32 workerCount, bool singleThreaded)
         }
     }
 
-    s_initialized = true;
+    s_jobSystemInitialized = true;
 }
 
 void Fluxion_JobSystem_Shutdown(void)
 {
-    FLUXION_ASSERT_MSG(s_initialized, "Fluxion_JobSystem_Shutdown called before Init");
+    FLUXION_ASSERT_MSG(s_jobSystemInitialized, "Fluxion_JobSystem_Shutdown called before Init");
 
     if (!s_singleThreaded)
     {
@@ -457,7 +458,7 @@ void Fluxion_JobSystem_Shutdown(void)
 
     Fluxion_Platform_MutexDestroy(&s_poolMutex);
     s_workerCount = 0;
-    s_initialized = false;
+    s_jobSystemInitialized = false;
 }
 
 FluxionJobHandle Fluxion_JobSystem_Submit(const FluxionJobDesc* desc)

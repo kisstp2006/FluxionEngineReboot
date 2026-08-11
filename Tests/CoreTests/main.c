@@ -13,6 +13,10 @@ void Test_ReflectionCpp_Run(TestContext* ctx);
 void Test_Jobs_Run(TestContext* ctx);
 void Test_JobsCpp_Run(TestContext* ctx);
 void Test_BinarySerializer_Run(TestContext* ctx);
+#if FLUXION_PROFILING
+void Test_Profile_Run(TestContext* ctx);
+void Test_ProfileCpp_Run(TestContext* ctx);
+#endif
 
 int main(void)
 {
@@ -31,6 +35,10 @@ int main(void)
     Test_Jobs_Run(&ctx);
     Test_JobsCpp_Run(&ctx);
     Test_BinarySerializer_Run(&ctx);
+#if FLUXION_PROFILING
+    Test_Profile_Run(&ctx);
+    Test_ProfileCpp_Run(&ctx);
+#endif
 
     if (ctx.failures == 0)
     {

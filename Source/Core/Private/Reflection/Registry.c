@@ -8,25 +8,25 @@
 // work directly on the fixed-size FluxionTypeId (u64) key, same pattern as
 // the Foundation HashMap tests.
 static FluxionHashMap s_typeRegistry;
-static bool s_initialized = false;
+static bool s_reflectionInitialized = false;
 
 void Fluxion_Reflection_Init(void)
 {
-    FLUXION_ASSERT_MSG(!s_initialized, "Fluxion_Reflection_Init called twice without a Shutdown in between");
+    FLUXION_ASSERT_MSG(!s_reflectionInitialized, "Fluxion_Reflection_Init called twice without a Shutdown in between");
     Fluxion_HashMap_Init(&s_typeRegistry, NULL, sizeof(FluxionTypeId), sizeof(const FluxionTypeInfo*), Fluxion_HashBytes64, Fluxion_BytesEqual);
-    s_initialized = true;
+    s_reflectionInitialized = true;
 }
 
 void Fluxion_Reflection_Shutdown(void)
 {
-    FLUXION_ASSERT_MSG(s_initialized, "Fluxion_Reflection_Shutdown called before Init");
+    FLUXION_ASSERT_MSG(s_reflectionInitialized, "Fluxion_Reflection_Shutdown called before Init");
     Fluxion_HashMap_Destroy(&s_typeRegistry);
-    s_initialized = false;
+    s_reflectionInitialized = false;
 }
 
 bool Fluxion_Reflection_RegisterType(const FluxionTypeInfo* typeInfo)
 {
-    FLUXION_ASSERT(s_initialized);
+    FLUXION_ASSERT(s_reflectionInitialized);
     FLUXION_ASSERT(typeInfo != NULL);
 
     return Fluxion_HashMap_Set(&s_typeRegistry, &typeInfo->id, &typeInfo);
@@ -34,7 +34,7 @@ bool Fluxion_Reflection_RegisterType(const FluxionTypeInfo* typeInfo)
 
 const FluxionTypeInfo* Fluxion_Reflection_FindTypeById(FluxionTypeId id)
 {
-    FLUXION_ASSERT(s_initialized);
+    FLUXION_ASSERT(s_reflectionInitialized);
 
     const FluxionTypeInfo** found = (const FluxionTypeInfo**)Fluxion_HashMap_Find(&s_typeRegistry, &id);
     return found ? *found : NULL;

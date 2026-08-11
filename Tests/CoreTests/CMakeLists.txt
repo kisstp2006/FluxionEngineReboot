@@ -18,25 +18,45 @@ add_subdirectory(CyclicPluginA)
 add_subdirectory(CyclicPluginB)
 add_subdirectory(PluginSubsystemPlugin)
 
+set(CORE_TESTS_SOURCES
+    main.c
+    Test_Reflection.c
+    Test_Plugin.c
+    Test_Startup.c
+    Test_StartupCpp.cpp
+    Test_PluginSubsystem.c
+    Test_Service.c
+    Test_ServiceCpp.cpp
+    Test_ReflectionCpp.cpp
+    Test_Jobs.c
+    Test_JobsCpp.cpp
+    Test_BinarySerializer.c
+)
+
+# Excluded (rather than compiled-but-failing) when FLUXION_PROFILING is
+# OFF: the Profiler API itself compiles down to no-ops in that
+# configuration (Profiler.h), so these tests' own assertions about
+# backend calls actually being made would not hold.
+if(FLUXION_PROFILING)
+    list(APPEND CORE_TESTS_SOURCES Test_Profile.c Test_ProfileCpp.cpp)
+endif()
+
+# PCH lives here rather than on the Core module itself -- Core's own
+# Private/ sources are entirely .c (its C++ facades like Service.hpp/
+# Jobs.hpp are header-only, consumed by whoever includes them), so
+# CoreTests is the target that actually compiles a meaningful number of
+# C++ TUs against these headers.
 engine_add_test(
     NAME CoreTests
-    SOURCES
-        main.c
-        Test_Reflection.c
-        Test_Plugin.c
-        Test_Startup.c
-        Test_StartupCpp.cpp
-        Test_PluginSubsystem.c
-        Test_Service.c
-        Test_ServiceCpp.cpp
-        Test_ReflectionCpp.cpp
-        Test_Jobs.c
-        Test_JobsCpp.cpp
-        Test_BinarySerializer.c
+    SOURCES ${CORE_TESTS_SOURCES}
     DEPENDENCIES
         Fluxion::Core
     NO_EXCEPTIONS
     NO_RTTI
+    PCH
+        <type_traits>
+        <span>
+        <cstring>
 )
 
 add_dependencies(CoreTests HelloPlugin HelloPluginDependent CyclicPluginA CyclicPluginB PluginSubsystemPlugin)
@@ -68,4 +88,8 @@ engine_add_header_selfcontained_test(
         Fluxion/Core/Jobs/JobSystem.h
         Fluxion/Core/Jobs/Jobs.hpp
         Fluxion/Core/Serialization/BinarySerializer.h
+        Fluxion/Core/Diagnostics/ProfileBackend.h
+        Fluxion/Core/Diagnostics/Profiler.h
+        Fluxion/Core/Diagnostics/ProfileScope.hpp
+        Fluxion/Core/Plugin/ABI.hpp
 )

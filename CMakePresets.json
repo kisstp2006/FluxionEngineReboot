@@ -63,6 +63,20 @@
                 "lhs": "${hostSystemName}",
                 "rhs": "Linux"
             }
+        },
+        {
+            "name": "linux-gcc-release",
+            "displayName": "Linux (GCC, via WSL, Release)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/linux-gcc-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
         }
     ],
     "buildPresets": [
@@ -87,6 +101,10 @@
         {
             "name": "linux-gcc",
             "configurePreset": "linux-gcc"
+        },
+        {
+            "name": "linux-gcc-release",
+            "configurePreset": "linux-gcc-release"
         }
     ],
     "testPresets": [
@@ -94,6 +112,14 @@
             "name": "windows-msvc-debug",
             "configurePreset": "windows-msvc",
             "configuration": "Debug",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "windows-msvc-release",
+            "configurePreset": "windows-msvc",
+            "configuration": "Release",
             "output": {
                 "outputOnFailure": true
             }
@@ -108,6 +134,13 @@
         {
             "name": "linux-gcc",
             "configurePreset": "linux-gcc",
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "linux-gcc-release",
+            "configurePreset": "linux-gcc-release",
             "output": {
                 "outputOnFailure": true
             }

@@ -11,6 +11,7 @@
 #include <Fluxion/Foundation/Containers/Span.h>
 #include <Fluxion/Foundation/Containers/StringView.h>
 #include <Fluxion/Foundation/Defines.h>
+#include <Fluxion/Foundation/Diagnostics/SourceLocation.h>
 #include <Fluxion/Foundation/Result.h>
 
 static FluxionResult PluginSubsystem_Startup(void* userdata)
@@ -61,7 +62,8 @@ FLUXION_EXPORT bool Fluxion_Plugin_Load(const FluxionPluginHostAPI* host, Fluxio
     outApi->userData = NULL;
     s_host = host;
 
-    if (!host->registerSubsystem || !host->registerService || !host->registerType)
+    if (!host->registerSubsystem || !host->registerService || !host->registerType ||
+        !host->profilerZoneBegin || !host->profilerZoneEnd || !host->profilerMarker)
     {
         return false;
     }
@@ -91,6 +93,16 @@ FLUXION_EXPORT bool Fluxion_Plugin_Load(const FluxionPluginHostAPI* host, Fluxio
         return false;
     }
 
+    // Proves a plugin can drive the host's profiler across the DLL
+    // boundary too (via profilerZoneBegin/profilerMarker/profilerZoneEnd
+    // in the Host API), not just the registries above -- wraps the type
+    // registration below in a zone with a marker in the middle.
+    FluxionSourceLocation location;
+    location.file = __FILE__;
+    location.function = __func__;
+    location.line = (u32)__LINE__;
+    host->profilerZoneBegin(&location, "PluginSubsystemPlugin.RegisterReflectedType");
+
     // FLUXION_TYPE_ID_OF hashes at runtime, so this can't be a file-scope
     // static initializer -- assigned here instead, as a C99 compound
     // literal (this file is always compiled as C, so unlike the other
@@ -107,7 +119,12 @@ FLUXION_EXPORT bool Fluxion_Plugin_Load(const FluxionPluginHostAPI* host, Fluxio
     s_pluginTypeInfo.version = 1;
     s_pluginTypeInfo.members = Fluxion_Span_Make(s_pluginTypeProperties, FLUXION_ARRAY_COUNT(s_pluginTypeProperties), sizeof(FluxionPropertyInfo));
 
-    return host->registerType(&s_pluginTypeInfo);
+    bool typeRegistered = host->registerType(&s_pluginTypeInfo);
+
+    host->profilerMarker(&location, "PluginSubsystemPlugin.TypeRegistered");
+    host->profilerZoneEnd();
+
+    return typeRegistered;
 }
 
 FLUXION_EXPORT void Fluxion_Plugin_Unload(FluxionPluginAPI* api)

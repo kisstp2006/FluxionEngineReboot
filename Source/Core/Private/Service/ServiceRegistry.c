@@ -13,20 +13,20 @@ typedef struct FluxionRegisteredService
 
 static FluxionRegisteredService s_services[FLUXION_MAX_SERVICES];
 static usize s_serviceCount = 0;
-static bool s_initialized = false;
+static bool s_serviceRegistryInitialized = false;
 
 void Fluxion_ServiceRegistry_Init(void)
 {
-    FLUXION_ASSERT_MSG(!s_initialized, "Fluxion_ServiceRegistry_Init called twice without a Shutdown in between");
+    FLUXION_ASSERT_MSG(!s_serviceRegistryInitialized, "Fluxion_ServiceRegistry_Init called twice without a Shutdown in between");
     s_serviceCount = 0;
-    s_initialized = true;
+    s_serviceRegistryInitialized = true;
 }
 
 void Fluxion_ServiceRegistry_Shutdown(void)
 {
-    FLUXION_ASSERT_MSG(s_initialized, "Fluxion_ServiceRegistry_Shutdown called before Init");
+    FLUXION_ASSERT_MSG(s_serviceRegistryInitialized, "Fluxion_ServiceRegistry_Shutdown called before Init");
     s_serviceCount = 0;
-    s_initialized = false;
+    s_serviceRegistryInitialized = false;
 }
 
 static usize Fluxion_FindServiceIndex(FluxionServiceId id)
@@ -43,7 +43,7 @@ static usize Fluxion_FindServiceIndex(FluxionServiceId id)
 
 bool Fluxion_ServiceRegistry_Register(const void* interfacePointer)
 {
-    FLUXION_ASSERT(s_initialized);
+    FLUXION_ASSERT(s_serviceRegistryInitialized);
     FLUXION_ASSERT(interfacePointer != NULL);
 
     const FluxionServiceHeader* header = (const FluxionServiceHeader*)interfacePointer;
@@ -62,7 +62,7 @@ bool Fluxion_ServiceRegistry_Register(const void* interfacePointer)
 
 void Fluxion_ServiceRegistry_Unregister(FluxionServiceId id)
 {
-    FLUXION_ASSERT(s_initialized);
+    FLUXION_ASSERT(s_serviceRegistryInitialized);
 
     usize index = Fluxion_FindServiceIndex(id);
     if (index == FLUXION_SERVICE_INDEX_NOT_FOUND) return;
@@ -76,7 +76,7 @@ void Fluxion_ServiceRegistry_Unregister(FluxionServiceId id)
 
 const void* Fluxion_ServiceRegistry_Get(FluxionServiceId id, u32 minVersion)
 {
-    FLUXION_ASSERT(s_initialized);
+    FLUXION_ASSERT(s_serviceRegistryInitialized);
 
     usize index = Fluxion_FindServiceIndex(id);
     if (index == FLUXION_SERVICE_INDEX_NOT_FOUND) return NULL;

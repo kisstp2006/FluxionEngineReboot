@@ -24,3 +24,19 @@ if(UNIX)
     target_include_directories(ApplicationTests PRIVATE ${X11_INCLUDE_DIR})
     target_link_libraries(ApplicationTests PRIVATE ${X11_LIBRARIES})
 endif()
+
+engine_add_header_selfcontained_test(
+    MODULE Application
+    HEADERS
+        Fluxion/Application/Events/Event.h
+        Fluxion/Application/Events/EventQueue.h
+        Fluxion/Application/Input/Gamepad.h
+        Fluxion/Application/Input/Input.h
+        Fluxion/Application/Input/InputAction.h
+        Fluxion/Application/Input/KeyCode.h
+        Fluxion/Application/Input/MouseButton.h
+        Fluxion/Application/Window/Clipboard.h
+        Fluxion/Application/Window/Display.h
+        Fluxion/Application/Window/Window.h
+        Fluxion/Application/Window/WindowHandle.h
+)
