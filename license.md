@@ -1,3 +1,5 @@
+SPDX-License-Identifier: 0BSD
+
 Copyright (C) 2026 by Kiss Tibor Péter kisstp2006@gmail.com
 
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted.
