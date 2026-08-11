@@ -35,6 +35,15 @@ if(FLUXION_ENABLE_ASAN)
     endif()
 endif()
 
+# Gates Foundation's memory domain/allocation tracking (MemoryTracker.h).
+# Project-wide, not per-target: it's a public header behavior switch, so
+# every translation unit that includes MemoryTracker.h needs to see the
+# same value. When OFF, MemoryTracker.h's own API compiles to inline
+# no-ops -- this define disables the tracking at compile time, not with a
+# runtime branch.
+option(FLUXION_MEMORY_TRACKING "Enable Foundation memory domain/allocation tracking" ON)
+add_compile_definitions(FLUXION_MEMORY_TRACKING=$<BOOL:${FLUXION_MEMORY_TRACKING}>)
+
 # engine_set_cpp_policy(<target> [NO_EXCEPTIONS] [NO_RTTI])
 #
 # Applies the Core/Runtime C++ policy (exceptions off, RTTI off) to a

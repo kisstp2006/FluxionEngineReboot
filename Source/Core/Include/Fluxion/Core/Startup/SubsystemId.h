@@ -1,8 +1,8 @@
 #pragma once
 
-#include <Fluxion/Core/StableId.h>
 #include <Fluxion/Foundation/Containers/StringView.h>
 #include <Fluxion/Foundation/Hashing.h>
+#include <Fluxion/Foundation/StableId.h>
 #include <Fluxion/Foundation/Types.h>
 
 #ifdef __cplusplus

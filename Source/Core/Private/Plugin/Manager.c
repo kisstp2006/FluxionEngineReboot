@@ -1,5 +1,6 @@
 #include <Fluxion/Core/Plugin/Manager.h>
 
+#include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/Core/Service/ServiceRegistry.h>
 #include <Fluxion/Core/Startup/SubsystemRegistry.h>
 #include <Fluxion/Foundation/Assert.h>
@@ -45,6 +46,8 @@ void Fluxion_PluginManager_Init(FluxionAllocator* allocator)
     s_host.registerService = Fluxion_ServiceRegistry_Register;
     s_host.unregisterService = Fluxion_ServiceRegistry_Unregister;
     s_host.getService = Fluxion_ServiceRegistry_Get;
+    s_host.registerType = Fluxion_Reflection_RegisterType;
+    s_host.findTypeById = Fluxion_Reflection_FindTypeById;
 
     s_initialized = true;
 }

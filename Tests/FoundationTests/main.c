@@ -17,6 +17,8 @@ void Test_HandleCpp_Run(TestContext* ctx);
 void Test_SpanStringViewCpp_Run(TestContext* ctx);
 void Test_MathCpp_Run(TestContext* ctx);
 void Test_FoundationUtilCpp_Run(TestContext* ctx);
+void Test_MemoryTracker_Run(TestContext* ctx);
+void Test_MemoryScopeCpp_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -39,6 +41,8 @@ int main(void)
     Test_SpanStringViewCpp_Run(&ctx);
     Test_MathCpp_Run(&ctx);
     Test_FoundationUtilCpp_Run(&ctx);
+    Test_MemoryTracker_Run(&ctx);
+    Test_MemoryScopeCpp_Run(&ctx);
 
     if (ctx.failures == 0)
     {

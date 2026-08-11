@@ -17,6 +17,8 @@ engine_add_test(
         Test_SpanStringViewCpp.cpp
         Test_MathCpp.cpp
         Test_FoundationUtilCpp.cpp
+        Test_MemoryTracker.c
+        Test_MemoryScopeCpp.cpp
     DEPENDENCIES
         Fluxion::Foundation
     NO_EXCEPTIONS
@@ -26,6 +28,7 @@ engine_add_test(
 engine_add_header_selfcontained_test(
     MODULE Foundation
     HEADERS
+        Fluxion/Foundation/StableId.h
         Fluxion/Foundation/Result.hpp
         Fluxion/Foundation/Handle.hpp
         Fluxion/Foundation/Containers/Span.hpp
@@ -35,4 +38,8 @@ engine_add_header_selfcontained_test(
         Fluxion/Foundation/ScopeExit.hpp
         Fluxion/Foundation/FunctionRef.hpp
         Fluxion/Foundation/BitFlags.hpp
+        Fluxion/Foundation/Memory/MemoryDomain.h
+        Fluxion/Foundation/Memory/MemoryTracker.h
+        Fluxion/Foundation/Memory/TrackingAllocator.h
+        Fluxion/Foundation/Memory/MemoryScope.hpp
 )

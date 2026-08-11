@@ -11,12 +11,12 @@
 // never a compiler RTTI hash -- stable across recompiles as long as the
 // source name string is unchanged.
 //
-// Each concrete ID header (TypeId.h, SubsystemId.h, ServiceId.h, ...)
-// invokes this once, then adds its own <PREFIX>_INVALID constant and
-// <PREFIX>_ID_OF(Name) call-site macro as plain #defines -- the C
-// preprocessor cannot generate #define directives from inside another
-// macro, so those two stay one line each per ID type rather than being
-// generated here too.
+// Each concrete ID header (TypeId.h, SubsystemId.h, ServiceId.h,
+// MemoryDomain.h, ...) invokes this once, then adds its own
+// <PREFIX>_INVALID constant and <PREFIX>_ID_OF(Name) call-site macro as
+// plain #defines -- the C preprocessor cannot generate #define
+// directives from inside another macro, so those two stay one line each
+// per ID type rather than being generated here too.
 #define FLUXION_DEFINE_STABLE_ID(IdType, ShortName) \
     typedef u64 IdType; \
     \

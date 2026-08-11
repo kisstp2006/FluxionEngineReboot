@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Fluxion/Core/Reflection/TypeId.h>
+#include <Fluxion/Core/Reflection/TypeInfo.h>
 #include <Fluxion/Core/Service/ServiceId.h>
 #include <Fluxion/Core/Startup/SubsystemDesc.h>
 #include <Fluxion/Foundation/Memory/Allocator.h>
@@ -9,7 +11,7 @@
 extern "C" {
 #endif
 
-#define FLUXION_PLUGIN_HOST_API_VERSION 3u
+#define FLUXION_PLUGIN_HOST_API_VERSION 4u
 
 typedef struct FluxionPluginHostAPI
 {
@@ -32,6 +34,14 @@ typedef struct FluxionPluginHostAPI
     bool (*registerService)(const void* interfacePointer);
     void (*unregisterService)(FluxionServiceId id);
     const void* (*getService)(FluxionServiceId id, u32 minVersion);
+
+    // Added at version 4, same reasoning again, now for the Reflection
+    // Registry. Unlike subsystems/services, reflected types have no
+    // per-type unregister (Fluxion_Reflection_Shutdown clears all of
+    // them at once) -- a plugin that registers a type must stay loaded
+    // for as long as anyone might look that type up.
+    bool (*registerType)(const FluxionTypeInfo* typeInfo);
+    const FluxionTypeInfo* (*findTypeById)(FluxionTypeId id);
 } FluxionPluginHostAPI;
 
 typedef struct FluxionPluginAPI
