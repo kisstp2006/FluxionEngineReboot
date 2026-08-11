@@ -39,6 +39,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The Application module's X11 backend needs these dev packages
+      # (Xlib + Xrandr extension) to configure -- not present on a bare
+      # ubuntu-latest runner image, unlike a desktop dev machine.
+      - name: Install X11 dev packages
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev
+
       - name: Check CMake version
         run: cmake --version
 
@@ -59,6 +65,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install X11 dev packages
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev
 
       - name: Configure (ASan + UBSan)
         run: cmake --preset linux-gcc -DFLUXION_ENABLE_ASAN=ON
