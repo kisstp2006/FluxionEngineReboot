@@ -22,6 +22,7 @@ typedef struct FluxionRHIBackendVTable
 
     FluxionRHIDeviceHandle (*CreateDevice)(FluxionRHIAdapterHandle adapter, const FluxionRHIDeviceDesc* desc);
     void (*DestroyDevice)(FluxionRHIDeviceHandle device);
+    void (*CollectGarbage)(FluxionRHIDeviceHandle device);
     FluxionRHIQueueHandle (*GetQueue)(FluxionRHIDeviceHandle device, FluxionRHIQueueType type);
 
     FluxionRHICommandListHandle (*CreateCommandList)(FluxionRHIDeviceHandle device, FluxionRHIQueueType type);
@@ -45,6 +46,8 @@ typedef struct FluxionRHIBackendVTable
 
     FluxionRHIBufferHandle (*CreateBuffer)(FluxionRHIDeviceHandle device, const FluxionRHIBufferDesc* desc);
     void (*DestroyBuffer)(FluxionRHIBufferHandle buffer);
+    void* (*MapBuffer)(FluxionRHIBufferHandle buffer);
+    void (*UnmapBuffer)(FluxionRHIBufferHandle buffer);
     FluxionRHITextureHandle (*CreateTexture)(FluxionRHIDeviceHandle device, const FluxionRHITextureDesc* desc);
     void (*DestroyTexture)(FluxionRHITextureHandle texture);
     FluxionRHITextureViewHandle (*CreateTextureView)(FluxionRHIDeviceHandle device, const FluxionRHITextureViewDesc* desc);
@@ -62,6 +65,7 @@ typedef struct FluxionRHIBackendVTable
     u32 (*SwapchainAcquireNextImage)(FluxionRHISwapchainHandle swapchain, FluxionRHISemaphoreHandle signalSemaphore);
     FluxionRHITextureHandle (*SwapchainGetTexture)(FluxionRHISwapchainHandle swapchain, u32 imageIndex);
     void (*SwapchainPresent)(FluxionRHISwapchainHandle swapchain, u32 imageIndex, FluxionRHISemaphoreHandle waitSemaphore);
+    void (*SwapchainGetExtent)(FluxionRHISwapchainHandle swapchain, u32* outWidth, u32* outHeight);
 
     FluxionRHIFenceHandle (*CreateFence)(FluxionRHIDeviceHandle device, bool signaled);
     void (*DestroyFence)(FluxionRHIFenceHandle fence);
@@ -78,9 +82,9 @@ typedef struct FluxionRHIBackendVTable
 } FluxionRHIBackendVTable;
 
 // Each backend exposes exactly one of these, matching the naming used in
-// Private/Null/NullBackend.c (Fluxion_RHI_Null_CreateInstance) and, from
-// Milestone 19 on, Private/Vulkan/VulkanBackend.c
-// (Fluxion_RHI_Vulkan_CreateInstance). Fills outInstance and returns the
+// Private/Null/NullBackend.c (Fluxion_RHI_Null_CreateInstance) and
+// Private/Vulkan/VulkanBackend.c (Fluxion_RHI_Vulkan_CreateInstance).
+// Fills outInstance and returns the
 // vtable to dispatch every subsequent call on this instance through, or
 // NULL (outInstance left invalid) if the backend failed to initialize.
 typedef const FluxionRHIBackendVTable* (*FluxionRHIBackendCreateInstanceFn)(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);

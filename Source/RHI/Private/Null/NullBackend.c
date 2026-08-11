@@ -2,14 +2,16 @@
 // RHI contract itself (handle lifetime, command-list recording order)
 // with zero GPU/driver dependency, so RHITests can run everywhere,
 // including CI with no graphics hardware. Deeper resource-state-mismatch
-// validation is Milestone 28's job (RHI Validation Layer); this backend
-// only covers handle validity, double-free/use-after-destroy, and
-// command-list recording order.
+// validation (a full RHI validation layer) is a larger, separate concern
+// that would build on top of this same handle/state-machine foundation;
+// this backend only covers handle validity, double-free/use-after-destroy,
+// and command-list recording order.
 
 #include "../RHIBackendVTable.h"
 
 #include <Fluxion/Foundation/Assert.h>
 
+#include <stdlib.h>
 #include <string.h>
 
 #define FLUXION_RHI_NULL_MAX_DEVICES 2
@@ -101,6 +103,13 @@ static void Fluxion_RHINull_Free(FluxionRHINullSlot* slots, u32 capacity, u32 in
     }
 
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIBufferHandle, s_bufferPool, FLUXION_RHI_NULL_MAX_BUFFERS)
+
+// Real (malloc'd) host memory backs each Null-backend buffer purely so
+// Fluxion_RHI_MapBuffer has something legitimate to hand back -- the Null
+// backend still renders nothing, this only exists so RHITests (and any
+// caller written generically against the RHI contract) can exercise a
+// real Map/Unmap/write/read round trip with zero GPU/driver dependency.
+static void* s_bufferData[FLUXION_RHI_NULL_MAX_BUFFERS];
 FLUXION_RHI_NULL_DEFINE_VALIDATABLE_POOL(FluxionRHITextureHandle, s_texturePool, FLUXION_RHI_NULL_MAX_TEXTURES)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHITextureViewHandle, s_textureViewPool, FLUXION_RHI_NULL_MAX_TEXTURE_VIEWS)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHISamplerHandle, s_samplerPool, FLUXION_RHI_NULL_MAX_SAMPLERS)
@@ -154,6 +163,8 @@ typedef struct FluxionRHINullSwapchainState
     FluxionRHITextureHandle images[FLUXION_RHI_NULL_MAX_SWAPCHAIN_IMAGES];
     u32 imageCount;
     u32 currentImageIndex;
+    u32 width;
+    u32 height;
 } FluxionRHINullSwapchainState;
 
 static FluxionRHINullSlot s_swapchainSlots[FLUXION_RHI_NULL_MAX_SWAPCHAINS];
@@ -174,6 +185,11 @@ static bool Fluxion_RHI_Null_IsFakeAdapter(FluxionRHIAdapterHandle adapter)
 
 static void Fluxion_RHI_Null_ResetAllState(void)
 {
+    for (u32 i = 0; i < FLUXION_RHI_NULL_MAX_BUFFERS; ++i)
+    {
+        free(s_bufferData[i]);
+        s_bufferData[i] = NULL;
+    }
     memset(s_bufferPool, 0, sizeof(s_bufferPool));
     memset(s_texturePool, 0, sizeof(s_texturePool));
     memset(s_textureViewPool, 0, sizeof(s_textureViewPool));
@@ -270,6 +286,14 @@ static FluxionRHIDeviceHandle Fluxion_RHI_Null_CreateDevice(FluxionRHIAdapterHan
 static void Fluxion_RHI_Null_DestroyDevice(FluxionRHIDeviceHandle device)
 {
     Fluxion_RHINull_Free(s_deviceSlots, FLUXION_RHI_NULL_MAX_DEVICES, device.index, device.generation);
+}
+
+// No real GPU timeline exists here, so Destroy* already frees a slot
+// immediately -- nothing is ever left retired for CollectGarbage to
+// reclaim.
+static void Fluxion_RHI_Null_CollectGarbage(FluxionRHIDeviceHandle device)
+{
+    FLUXION_UNUSED(device);
 }
 
 static FluxionRHIQueueHandle Fluxion_RHI_Null_GetQueue(FluxionRHIDeviceHandle device, FluxionRHIQueueType type)
@@ -457,14 +481,31 @@ static void Fluxion_RHI_Null_QueueSubmit(FluxionRHIQueueHandle queue, const Flux
 
 static FluxionRHIBufferHandle Fluxion_RHI_Null_CreateBuffer(FluxionRHIDeviceHandle device, const FluxionRHIBufferDesc* desc)
 {
-    FLUXION_UNUSED(desc);
     FluxionRHIBufferHandle handle = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     if (!Fluxion_RHINull_IsValid(s_deviceSlots, FLUXION_RHI_NULL_MAX_DEVICES, device.index, device.generation)) return handle;
-    s_bufferPool_Allocate(&handle);
+    if (!s_bufferPool_Allocate(&handle)) return handle;
+    usize size = (desc != NULL && desc->size > 0) ? desc->size : 1;
+    s_bufferData[handle.index] = malloc(size);
     return handle;
 }
 
-static void Fluxion_RHI_Null_DestroyBuffer(FluxionRHIBufferHandle buffer) { s_bufferPool_Free(buffer); }
+static void Fluxion_RHI_Null_DestroyBuffer(FluxionRHIBufferHandle buffer)
+{
+    if (Fluxion_RHINull_IsValid(s_bufferPool, FLUXION_RHI_NULL_MAX_BUFFERS, buffer.index, buffer.generation))
+    {
+        free(s_bufferData[buffer.index]);
+        s_bufferData[buffer.index] = NULL;
+    }
+    s_bufferPool_Free(buffer);
+}
+
+static void* Fluxion_RHI_Null_MapBuffer(FluxionRHIBufferHandle buffer)
+{
+    if (!Fluxion_RHINull_IsValid(s_bufferPool, FLUXION_RHI_NULL_MAX_BUFFERS, buffer.index, buffer.generation)) return NULL;
+    return s_bufferData[buffer.index];
+}
+
+static void Fluxion_RHI_Null_UnmapBuffer(FluxionRHIBufferHandle buffer) { FLUXION_UNUSED(buffer); }
 
 static FluxionRHITextureHandle Fluxion_RHI_Null_CreateTexture(FluxionRHIDeviceHandle device, const FluxionRHITextureDesc* desc)
 {
@@ -544,6 +585,8 @@ static FluxionRHISwapchainHandle Fluxion_RHI_Null_CreateSwapchain(FluxionRHIDevi
     FluxionRHINullSwapchainState* state = &s_swapchainState[index];
     state->imageCount = 0;
     state->currentImageIndex = 0;
+    state->width = desc->width;
+    state->height = desc->height;
     for (u32 i = 0; i < imageCount; ++i)
     {
         FluxionRHITextureHandle image = { FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -601,6 +644,18 @@ static void Fluxion_RHI_Null_SwapchainPresent(FluxionRHISwapchainHandle swapchai
     {
         FLUXION_ASSERT_MSG(false, "Fluxion RHI Null backend: Present called with an invalid swapchain handle");
     }
+}
+
+static void Fluxion_RHI_Null_SwapchainGetExtent(FluxionRHISwapchainHandle swapchain, u32* outWidth, u32* outHeight)
+{
+    if (!Fluxion_RHINull_IsValid(s_swapchainSlots, FLUXION_RHI_NULL_MAX_SWAPCHAINS, swapchain.index, swapchain.generation))
+    {
+        if (outWidth) *outWidth = 0;
+        if (outHeight) *outHeight = 0;
+        return;
+    }
+    if (outWidth) *outWidth = s_swapchainState[swapchain.index].width;
+    if (outHeight) *outHeight = s_swapchainState[swapchain.index].height;
 }
 
 // --- Synchronization ----------------------------------------------------------
@@ -702,6 +757,7 @@ static const FluxionRHIBackendVTable s_nullVTable = {
 
     Fluxion_RHI_Null_CreateDevice,
     Fluxion_RHI_Null_DestroyDevice,
+    Fluxion_RHI_Null_CollectGarbage,
     Fluxion_RHI_Null_GetQueue,
 
     Fluxion_RHI_Null_CreateCommandList,
@@ -725,6 +781,8 @@ static const FluxionRHIBackendVTable s_nullVTable = {
 
     Fluxion_RHI_Null_CreateBuffer,
     Fluxion_RHI_Null_DestroyBuffer,
+    Fluxion_RHI_Null_MapBuffer,
+    Fluxion_RHI_Null_UnmapBuffer,
     Fluxion_RHI_Null_CreateTexture,
     Fluxion_RHI_Null_DestroyTexture,
     Fluxion_RHI_Null_CreateTextureView,
@@ -742,6 +800,7 @@ static const FluxionRHIBackendVTable s_nullVTable = {
     Fluxion_RHI_Null_SwapchainAcquireNextImage,
     Fluxion_RHI_Null_SwapchainGetTexture,
     Fluxion_RHI_Null_SwapchainPresent,
+    Fluxion_RHI_Null_SwapchainGetExtent,
 
     Fluxion_RHI_Null_CreateFence,
     Fluxion_RHI_Null_DestroyFence,

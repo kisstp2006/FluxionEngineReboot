@@ -6,6 +6,7 @@ engine_add_test(
         Test_Capabilities.c
         Test_NullBackend.c
         Test_NativeHandle.c
+        Test_VulkanBackend.c
     DEPENDENCIES
         Fluxion::RHI
 )

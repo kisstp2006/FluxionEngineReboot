@@ -24,3 +24,4 @@ and extensibility model draw ideas from established AAA engines.
 | Library | Used for | License |
 |---|---|---|
 | [pdjson](https://github.com/skeeto/pdjson) | Parsing `.plugin` descriptor files | Unlicense (Public Domain) |
+| [VulkanMemoryAllocator (VMA)](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | GPU memory sub-allocation in the Vulkan RHI backend | MIT |

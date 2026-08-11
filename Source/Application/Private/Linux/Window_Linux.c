@@ -414,3 +414,8 @@ FluxionNativeWindowHandle Fluxion_Window_GetNativeHandle(FluxionWindowHandle han
     native.value = slot ? (void*)(uintptr_t)slot->xwindow : NULL;
     return native;
 }
+
+void* Fluxion_WindowSystem_GetNativeDisplayHandle(void)
+{
+    return (void*)s_display;
+}

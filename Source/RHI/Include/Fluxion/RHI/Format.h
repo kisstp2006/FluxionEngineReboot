@@ -4,9 +4,9 @@
 extern "C" {
 #endif
 
-// Starting set, sized for the Milestone 19 triangle demo (color +
-// depth-stencil + a couple of common vertex-attribute formats) --
-// purely additive to extend: new entries never renumber existing ones,
+// Starting set (color + depth-stencil + a couple of common
+// vertex-attribute formats) -- purely additive to extend: new entries
+// never renumber existing ones,
 // since the enum values are never persisted (a shader/pipeline cache key
 // hashes the whole descriptor, not this integer alone, so a reordering
 // would only matter within a single process run).

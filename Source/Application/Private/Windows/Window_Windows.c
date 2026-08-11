@@ -364,3 +364,10 @@ FluxionNativeWindowHandle Fluxion_Window_GetNativeHandle(FluxionWindowHandle han
     native.value = slot ? (void*)slot->hwnd : NULL;
     return native;
 }
+
+void* Fluxion_WindowSystem_GetNativeDisplayHandle(void)
+{
+    // HWNDs are self-sufficient on Windows -- a Vulkan backend gets the
+    // HINSTANCE it needs from GetModuleHandle(NULL) instead of here.
+    return NULL;
+}

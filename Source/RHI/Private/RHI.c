@@ -5,10 +5,11 @@
 #include <Fluxion/Foundation/Assert.h>
 
 extern const FluxionRHIBackendVTable* Fluxion_RHI_Null_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
+extern const FluxionRHIBackendVTable* Fluxion_RHI_Vulkan_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
 
-// One active backend at a time, matching the doc's own framing (a
-// shipping run picks one backend via --graphics=X, not several
-// simultaneously) -- this keeps every object handle unambiguous without
+// One active backend at a time (a shipping run picks one backend via
+// --graphics=X, not several simultaneously) -- this keeps every object
+// handle unambiguous without
 // each one needing to carry its own back-reference to which instance/
 // backend created it. Attach/detach is startup/shutdown-shaped, same
 // unsynchronized-global pattern as the Service/Subsystem Registry and the
@@ -32,6 +33,9 @@ FluxionRHIInstanceHandle Fluxion_RHI_CreateInstance(FluxionRHIBackendType backen
     {
         case FLUXION_RHI_BACKEND_NULL:
             vtable = Fluxion_RHI_Null_CreateInstance(desc, &instance);
+            break;
+        case FLUXION_RHI_BACKEND_VULKAN:
+            vtable = Fluxion_RHI_Vulkan_CreateInstance(desc, &instance);
             break;
         default:
             FLUXION_ASSERT_MSG(false, "Fluxion_RHI_CreateInstance: unknown or not-yet-implemented backend");
@@ -79,6 +83,12 @@ void Fluxion_RHI_DestroyDevice(FluxionRHIDeviceHandle device)
 {
     if (s_backend == NULL) return;
     s_backend->DestroyDevice(device);
+}
+
+void Fluxion_RHI_Device_CollectGarbage(FluxionRHIDeviceHandle device)
+{
+    if (s_backend == NULL) return;
+    s_backend->CollectGarbage(device);
 }
 
 FluxionRHIQueueHandle Fluxion_RHI_GetQueue(FluxionRHIDeviceHandle device, FluxionRHIQueueType type)
@@ -201,6 +211,18 @@ void Fluxion_RHI_DestroyBuffer(FluxionRHIBufferHandle buffer)
     s_backend->DestroyBuffer(buffer);
 }
 
+void* Fluxion_RHI_MapBuffer(FluxionRHIBufferHandle buffer)
+{
+    if (s_backend == NULL) return NULL;
+    return s_backend->MapBuffer(buffer);
+}
+
+void Fluxion_RHI_UnmapBuffer(FluxionRHIBufferHandle buffer)
+{
+    if (s_backend == NULL) return;
+    s_backend->UnmapBuffer(buffer);
+}
+
 FluxionRHITextureHandle Fluxion_RHI_CreateTexture(FluxionRHIDeviceHandle device, const FluxionRHITextureDesc* desc)
 {
     if (s_backend == NULL) { FluxionRHITextureHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 }; return invalid; }
@@ -289,6 +311,12 @@ void Fluxion_RHI_Swapchain_Present(FluxionRHISwapchainHandle swapchain, u32 imag
 {
     if (s_backend == NULL) return;
     s_backend->SwapchainPresent(swapchain, imageIndex, waitSemaphore);
+}
+
+void Fluxion_RHI_Swapchain_GetExtent(FluxionRHISwapchainHandle swapchain, u32* outWidth, u32* outHeight)
+{
+    if (s_backend == NULL) { if (outWidth) *outWidth = 0; if (outHeight) *outHeight = 0; return; }
+    s_backend->SwapchainGetExtent(swapchain, outWidth, outHeight);
 }
 
 FluxionRHIFenceHandle Fluxion_RHI_CreateFence(FluxionRHIDeviceHandle device, bool signaled)

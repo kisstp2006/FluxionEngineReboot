@@ -55,6 +55,14 @@ void Fluxion_Window_SetCursorVisible(FluxionWindowHandle handle, bool visible);
 
 FluxionNativeWindowHandle Fluxion_Window_GetNativeHandle(FluxionWindowHandle handle);
 
+// A second native escape hatch, at the window-*system* level rather than
+// per-window: some native surface APIs (e.g. Vulkan's
+// vkCreateXlibSurfaceKHR) need the connection/display object a window
+// belongs to, not just the window itself. Returns NULL on Windows (HWNDs
+// are self-sufficient there -- a Vulkan backend gets HINSTANCE from
+// GetModuleHandle(NULL) instead) and the X11 Display* on Linux.
+void* Fluxion_WindowSystem_GetNativeDisplayHandle(void);
+
 #ifdef __cplusplus
 }
 #endif

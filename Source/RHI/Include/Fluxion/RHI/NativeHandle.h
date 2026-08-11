@@ -17,9 +17,9 @@ typedef struct FluxionRHINativeHandle
     void* value;
 } FluxionRHINativeHandle;
 
-// Only a representative subset is exposed for now (the objects Milestone
-// 19's Vulkan backend actually needs to hand out a native handle for) --
-// the same one-getter-per-type pattern extends to any other handle type
+// Only a representative subset is exposed for now (the objects a real
+// backend actually needs to hand out a native handle for so far) -- the
+// same one-getter-per-type pattern extends to any other handle type
 // exactly when something needs it, rather than pre-generating all 15.
 FluxionRHINativeHandle Fluxion_RHI_GetNativeDeviceHandle(FluxionRHIDeviceHandle device);
 FluxionRHINativeHandle Fluxion_RHI_GetNativeBufferHandle(FluxionRHIBufferHandle buffer);

@@ -49,6 +49,16 @@ typedef struct FluxionRHIDeviceDesc
 FluxionRHIDeviceHandle Fluxion_RHI_CreateDevice(FluxionRHIAdapterHandle adapter, const FluxionRHIDeviceDesc* desc);
 void Fluxion_RHI_DestroyDevice(FluxionRHIDeviceHandle device);
 
+// A backend may not be able to free a resource's GPU memory the instant
+// Destroy* is called -- the GPU could still be reading it from a
+// command buffer submitted earlier. Destroy* only marks a resource for
+// retirement; the caller must call this once per frame (e.g. alongside
+// Swapchain_Present) so the backend can reclaim anything whose GPU
+// timeline has actually completed. A backend with nothing GPU-timeline-
+// bound to defer against (e.g. the Null backend) may treat this as a
+// no-op.
+void Fluxion_RHI_Device_CollectGarbage(FluxionRHIDeviceHandle device);
+
 typedef enum FluxionRHIQueueType
 {
     FLUXION_RHI_QUEUE_TYPE_GRAPHICS = 0,
@@ -124,6 +134,17 @@ void Fluxion_RHI_Queue_Submit(FluxionRHIQueueHandle queue, const FluxionRHIComma
 FluxionRHIBufferHandle Fluxion_RHI_CreateBuffer(FluxionRHIDeviceHandle device, const FluxionRHIBufferDesc* desc);
 void Fluxion_RHI_DestroyBuffer(FluxionRHIBufferHandle buffer);
 
+// Only valid for a buffer created with a CPU-visible FluxionRHIMemoryClass
+// (CPU_TO_GPU/GPU_TO_CPU/READBACK) -- returns NULL for a GPU_ONLY/
+// TRANSIENT buffer. This is the only portable way to get CPU data into a
+// buffer the RHI contract offers (no raw-pointer "initial data" field on
+// FluxionRHIBufferDesc, deliberately, since the caller may want to write
+// into a persistently-mapped ring/staging buffer many times); the copy
+// onto a GPU_ONLY destination still goes through
+// Fluxion_RHI_CommandList_CopyBuffer as usual.
+void* Fluxion_RHI_MapBuffer(FluxionRHIBufferHandle buffer);
+void Fluxion_RHI_UnmapBuffer(FluxionRHIBufferHandle buffer);
+
 FluxionRHITextureHandle Fluxion_RHI_CreateTexture(FluxionRHIDeviceHandle device, const FluxionRHITextureDesc* desc);
 void Fluxion_RHI_DestroyTexture(FluxionRHITextureHandle texture);
 
@@ -145,10 +166,11 @@ void Fluxion_RHI_DestroySampler(FluxionRHISamplerHandle sampler);
 
 // --- Shaders / pipelines ------------------------------------------------------
 //
-// This is the shape the doc's Milestone 21 (binding model + pipeline cache +
-// bindless) builds on top of -- Milestone 18/19 only need a minimal,
-// hand-fed path (no reflection, no logical binding groups yet) to prove a
-// single hardcoded triangle draws.
+// This is a deliberately minimal, hand-fed path (no reflection, no
+// logical binding groups yet) -- enough to create shaders and draw with
+// them, with a full binding model (descriptor sets, reflection-driven
+// layouts, a pipeline cache, bindless resources) built on top of this
+// same shape once something actually needs it.
 
 typedef enum FluxionRHIShaderStage
 {
@@ -212,11 +234,11 @@ typedef struct FluxionRHIDepthState
 
 typedef struct FluxionRHIBlendState
 {
+    // When enabled, a backend applies the common "src alpha, one minus
+    // src alpha" blend factors -- a fuller per-factor/per-op blend
+    // descriptor is only worth adding once something actually needs more
+    // control than that.
     bool blendEnable;
-    // FLUXION_RHI_BLEND_STATE_STANDARD_ALPHA below covers the common
-    // "src alpha, one minus src alpha" case; a fuller per-factor/per-op
-    // blend descriptor is Milestone 21's job once a real material system
-    // needs more than that.
 } FluxionRHIBlendState;
 
 #define FLUXION_RHI_MAX_VERTEX_ATTRIBUTES 16
@@ -271,6 +293,14 @@ void Fluxion_RHI_DestroySwapchain(FluxionRHISwapchainHandle swapchain);
 u32 Fluxion_RHI_Swapchain_AcquireNextImage(FluxionRHISwapchainHandle swapchain, FluxionRHISemaphoreHandle signalSemaphore);
 FluxionRHITextureHandle Fluxion_RHI_Swapchain_GetTexture(FluxionRHISwapchainHandle swapchain, u32 imageIndex);
 void Fluxion_RHI_Swapchain_Present(FluxionRHISwapchainHandle swapchain, u32 imageIndex, FluxionRHISemaphoreHandle waitSemaphore);
+
+// The swapchain's actual current image extent -- can differ from the
+// width/height originally passed to Fluxion_RHI_CreateSwapchain (window
+// resize, DPI adjustments, a resize the backend already absorbed on a
+// prior Acquire/Present). A caller building a FluxionRHIRenderingDesc
+// around a swapchain-acquired texture must use this, not a separately
+// queried window size, or risk a size mismatch between the two.
+void Fluxion_RHI_Swapchain_GetExtent(FluxionRHISwapchainHandle swapchain, u32* outWidth, u32* outHeight);
 
 // --- Synchronization ----------------------------------------------------------
 
