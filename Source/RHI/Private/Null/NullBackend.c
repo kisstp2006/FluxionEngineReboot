@@ -83,20 +83,28 @@ static void Fluxion_RHINull_Free(FluxionRHINullSlot* slots, u32 capacity, u32 in
         outHandle->generation = generation; \
         return true; \
     } \
-    static bool PoolVar##_IsValid(HandleType handle) \
-    { \
-        return Fluxion_RHINull_IsValid(PoolVar, (Capacity), handle.index, handle.generation); \
-    } \
     static void PoolVar##_Free(HandleType handle) \
     { \
         Fluxion_RHINull_Free(PoolVar, (Capacity), handle.index, handle.generation); \
     }
 
+// Adds an _IsValid accessor on top of FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL --
+// only for pools another object kind cross-validates against when it's
+// created (a texture view against its owning texture, a pipeline against
+// its shaders). The rest only need Allocate/Free, so they skip this to
+// avoid an unused-function warning on GCC/Clang.
+#define FLUXION_RHI_NULL_DEFINE_VALIDATABLE_POOL(HandleType, PoolVar, Capacity) \
+    FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(HandleType, PoolVar, Capacity) \
+    static bool PoolVar##_IsValid(HandleType handle) \
+    { \
+        return Fluxion_RHINull_IsValid(PoolVar, (Capacity), handle.index, handle.generation); \
+    }
+
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIBufferHandle, s_bufferPool, FLUXION_RHI_NULL_MAX_BUFFERS)
-FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHITextureHandle, s_texturePool, FLUXION_RHI_NULL_MAX_TEXTURES)
+FLUXION_RHI_NULL_DEFINE_VALIDATABLE_POOL(FluxionRHITextureHandle, s_texturePool, FLUXION_RHI_NULL_MAX_TEXTURES)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHITextureViewHandle, s_textureViewPool, FLUXION_RHI_NULL_MAX_TEXTURE_VIEWS)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHISamplerHandle, s_samplerPool, FLUXION_RHI_NULL_MAX_SAMPLERS)
-FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIShaderHandle, s_shaderPool, FLUXION_RHI_NULL_MAX_SHADERS)
+FLUXION_RHI_NULL_DEFINE_VALIDATABLE_POOL(FluxionRHIShaderHandle, s_shaderPool, FLUXION_RHI_NULL_MAX_SHADERS)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIPipelineHandle, s_pipelinePool, FLUXION_RHI_NULL_MAX_PIPELINES)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHISemaphoreHandle, s_semaphorePool, FLUXION_RHI_NULL_MAX_SEMAPHORES)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIQueryPoolHandle, s_queryPoolPool, FLUXION_RHI_NULL_MAX_QUERY_POOLS)
@@ -471,6 +479,10 @@ static void Fluxion_RHI_Null_DestroyTexture(FluxionRHITextureHandle texture) { s
 
 static FluxionRHITextureViewHandle Fluxion_RHI_Null_CreateTextureView(FluxionRHIDeviceHandle device, const FluxionRHITextureViewDesc* desc)
 {
+    // The Null backend doesn't track which device owns which texture, so
+    // there's nothing to cross-check device against here -- the texture
+    // itself is still validated below.
+    FLUXION_UNUSED(device);
     FluxionRHITextureViewHandle handle = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     if (desc == NULL || !s_texturePool_IsValid(desc->texture)) return handle;
     s_textureViewPool_Allocate(&handle);
