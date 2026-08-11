@@ -51,6 +51,21 @@ static FluxionWindowSlot* Fluxion_ResolveSlot(FluxionWindowHandle handle)
     return slot;
 }
 
+// Matches the Windows backend's mouse button ordering (0=left, 1=right,
+// 2=middle) instead of X11's native Button1/2/3 = left/middle/right.
+static i32 Fluxion_TranslateMouseButton(unsigned int x11Button)
+{
+    switch (x11Button)
+    {
+        case Button1: return 0; // left
+        case Button3: return 1; // right
+        case Button2: return 2; // middle
+        case 8:       return 3; // X1 / back (common convention, not X11-standardized)
+        case 9:       return 4; // X2 / forward
+        default:      return (i32)x11Button;
+    }
+}
+
 static usize Fluxion_FindSlotByXWindow(Window xwindow)
 {
     for (usize i = 0; i < s_slotCount; ++i)
@@ -242,14 +257,19 @@ void Fluxion_WindowSystem_PollEvents(void)
                 break;
 
             case KeyPress:
+                // A raw X11 keycode is hardware/layout-dependent. The
+                // KeySym XLookupKeysym resolves it to (XK_a, XK_F1, ...)
+                // is the stable, documented, portable-within-X11
+                // identifier — that's what Input's keycode translation
+                // tables are built against.
                 event.type = FLUXION_EVENT_KEY_DOWN;
-                event.data.key.keyCode = (i32)xevent.xkey.keycode;
+                event.data.key.keyCode = (i32)XLookupKeysym(&xevent.xkey, 0);
                 Fluxion_EventQueue_Push(s_eventQueue, &event);
                 break;
 
             case KeyRelease:
                 event.type = FLUXION_EVENT_KEY_UP;
-                event.data.key.keyCode = (i32)xevent.xkey.keycode;
+                event.data.key.keyCode = (i32)XLookupKeysym(&xevent.xkey, 0);
                 Fluxion_EventQueue_Push(s_eventQueue, &event);
                 break;
 
@@ -270,7 +290,7 @@ void Fluxion_WindowSystem_PollEvents(void)
                 else
                 {
                     event.type = FLUXION_EVENT_MOUSE_BUTTON_DOWN;
-                    event.data.mouseButton.button = (i32)xevent.xbutton.button - Button1;
+                    event.data.mouseButton.button = Fluxion_TranslateMouseButton(xevent.xbutton.button);
                     event.data.mouseButton.x = xevent.xbutton.x;
                     event.data.mouseButton.y = xevent.xbutton.y;
                     Fluxion_EventQueue_Push(s_eventQueue, &event);
@@ -281,7 +301,7 @@ void Fluxion_WindowSystem_PollEvents(void)
                 if (xevent.xbutton.button != Button4 && xevent.xbutton.button != Button5)
                 {
                     event.type = FLUXION_EVENT_MOUSE_BUTTON_UP;
-                    event.data.mouseButton.button = (i32)xevent.xbutton.button - Button1;
+                    event.data.mouseButton.button = Fluxion_TranslateMouseButton(xevent.xbutton.button);
                     event.data.mouseButton.x = xevent.xbutton.x;
                     event.data.mouseButton.y = xevent.xbutton.y;
                     Fluxion_EventQueue_Push(s_eventQueue, &event);
