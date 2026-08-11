@@ -8,6 +8,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake")
 include(Engine)
 
 option(FLUXION_BUILD_TESTS "Build Fluxion Engine tests" ON)
+option(FLUXION_BUILD_SAMPLES "Build Fluxion Engine sample programs" ON)
 
 if(FLUXION_BUILD_TESTS)
     enable_testing()
@@ -25,4 +26,8 @@ if(FLUXION_BUILD_TESTS)
     add_subdirectory(Tests/PlatformTests)
     add_subdirectory(Tests/CoreTests)
     add_subdirectory(Tests/ApplicationTests)
+endif()
+
+if(FLUXION_BUILD_SAMPLES)
+    add_subdirectory(Samples/InputDemo)
 endif()

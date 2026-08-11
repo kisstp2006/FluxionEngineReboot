@@ -7,6 +7,10 @@ void Test_Window_Run(TestContext* ctx);
 void Test_WindowEvents_Run(TestContext* ctx);
 void Test_Display_Run(TestContext* ctx);
 void Test_Clipboard_Run(TestContext* ctx);
+void Test_Input_Keyboard_Run(TestContext* ctx);
+void Test_Input_Mouse_Run(TestContext* ctx);
+void Test_Input_Gamepad_Run(TestContext* ctx);
+void Test_InputAction_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -19,6 +23,10 @@ int main(void)
     Test_WindowEvents_Run(&ctx);
     Test_Display_Run(&ctx);
     Test_Clipboard_Run(&ctx);
+    Test_Input_Keyboard_Run(&ctx);
+    Test_Input_Mouse_Run(&ctx);
+    Test_Input_Gamepad_Run(&ctx);
+    Test_InputAction_Run(&ctx);
 
     if (ctx.failures == 0)
     {

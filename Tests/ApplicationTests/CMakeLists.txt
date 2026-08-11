@@ -7,6 +7,10 @@ engine_add_test(
         Test_WindowEvents.c
         Test_Display.c
         Test_Clipboard.c
+        Test_Input_Keyboard.c
+        Test_Input_Mouse.c
+        Test_Input_Gamepad.c
+        Test_InputAction.c
     DEPENDENCIES
         Fluxion::Application
         Fluxion::Foundation

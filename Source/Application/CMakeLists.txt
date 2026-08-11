@@ -1,6 +1,10 @@
-# Private/Events/*.c is platform-independent (pure Foundation-backed ring
-# buffer) and always compiled in, alongside whichever OS backend applies.
-file(GLOB APPLICATION_COMMON_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Private/Events/*.c")
+# Private/Events/*.c and Private/Input/*.c are platform-independent (pure
+# Foundation-backed logic) and always compiled in, alongside whichever OS
+# backend applies.
+file(GLOB APPLICATION_COMMON_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/Private/Events/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Private/Input/*.c"
+)
 
 set(APPLICATION_SOURCES ${APPLICATION_COMMON_SOURCES})
 
@@ -24,9 +28,10 @@ engine_add_module(
 )
 
 if(WIN32)
-    # GetDpiForMonitor (Display_Windows.c) lives in Shcore, which isn't
-    # part of MSVC's default link set.
-    target_link_libraries(Application PRIVATE Shcore)
+    # GetDpiForMonitor (Display_Windows.c) lives in Shcore, and
+    # XInputGetState (Input_Windows.c) in Xinput — neither is part of the
+    # default link set.
+    target_link_libraries(Application PRIVATE Shcore Xinput)
 elseif(UNIX)
     find_package(X11 REQUIRED)
     if(NOT X11_Xrandr_FOUND)
