@@ -3,6 +3,7 @@
 #include <Fluxion/Foundation/Log.h>
 
 void Test_Reflection_Run(TestContext* ctx);
+void Test_Plugin_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -11,6 +12,7 @@ int main(void)
     FLUXION_LOG_INFO("CoreTests", "Running CoreTests...");
 
     Test_Reflection_Run(&ctx);
+    Test_Plugin_Run(&ctx);
 
     if (ctx.failures == 0)
     {

@@ -18,3 +18,9 @@ written in C and C++ — to natively support more platforms with as few
 wrappers as possible, to support at least the scenes of the original
 Fluxion, and to be faster than the current C#/C++ version. Its architecture
 and extensibility model draw ideas from established AAA engines.
+
+## Third party
+
+| Library | Used for | License |
+|---|---|---|
+| [pdjson](https://github.com/skeeto/pdjson) | Parsing `.plugin` descriptor files | Unlicense (Public Domain) |

@@ -4,4 +4,7 @@ engine_add_module(
     LANGUAGE C CXX
     PUBLIC_DEPENDENCIES
         Fluxion::Foundation
+    PRIVATE_DEPENDENCIES
+        Fluxion::Platform
+        pdjson
 )
