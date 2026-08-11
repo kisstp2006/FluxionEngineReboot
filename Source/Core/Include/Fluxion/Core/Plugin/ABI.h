@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Fluxion/Core/Service/ServiceId.h>
 #include <Fluxion/Core/Startup/SubsystemDesc.h>
 #include <Fluxion/Foundation/Memory/Allocator.h>
 #include <Fluxion/Foundation/Types.h>
@@ -8,7 +9,7 @@
 extern "C" {
 #endif
 
-#define FLUXION_PLUGIN_HOST_API_VERSION 2u
+#define FLUXION_PLUGIN_HOST_API_VERSION 3u
 
 typedef struct FluxionPluginHostAPI
 {
@@ -20,9 +21,17 @@ typedef struct FluxionPluginHostAPI
     // plugin links against Core headers only, not the Core static lib, so
     // it cannot call Fluxion_SubsystemRegistry_Register directly; this
     // function pointer is how the host exposes that service across the
-    // plugin boundary instead. A minimal, additive precursor to a full
-    // Service Registry, not a replacement for one.
+    // plugin boundary instead.
     bool (*registerSubsystem)(const FluxionSubsystemDesc* desc);
+
+    // Added at version 3, same reasoning as registerSubsystem, now for the
+    // Service Registry. If a plugin registers a service, it must
+    // unregister it in Fluxion_Plugin_Unload -- the interface pointer
+    // lives inside the plugin's own DLL/SO, so it would dangle in the
+    // registry once the library is unloaded.
+    bool (*registerService)(const void* interfacePointer);
+    void (*unregisterService)(FluxionServiceId id);
+    const void* (*getService)(FluxionServiceId id, u32 minVersion);
 } FluxionPluginHostAPI;
 
 typedef struct FluxionPluginAPI

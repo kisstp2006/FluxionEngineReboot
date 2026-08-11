@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Fluxion/Core/StableId.h>
 #include <Fluxion/Foundation/Containers/StringView.h>
 #include <Fluxion/Foundation/Hashing.h>
 #include <Fluxion/Foundation/Types.h>
@@ -8,14 +9,9 @@
 extern "C" {
 #endif
 
-typedef u64 FluxionTypeId;
+FLUXION_DEFINE_STABLE_ID(FluxionTypeId, TypeId)
 
 #define FLUXION_TYPE_ID_INVALID ((FluxionTypeId)0)
-
-static inline FluxionTypeId Fluxion_TypeId_FromName(FluxionStringView name)
-{
-    return Fluxion_HashBytes64(name.data, name.length);
-}
 
 #ifdef __cplusplus
 }

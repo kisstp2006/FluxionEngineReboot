@@ -1,5 +1,6 @@
 #include <Fluxion/Core/Plugin/Manager.h>
 
+#include <Fluxion/Core/Service/ServiceRegistry.h>
 #include <Fluxion/Core/Startup/SubsystemRegistry.h>
 #include <Fluxion/Foundation/Assert.h>
 #include <Fluxion/Foundation/Containers/DynamicArray.h>
@@ -25,11 +26,26 @@ static FluxionAllocator* s_allocator = NULL;
 static FluxionDynamicArray s_loadedPlugins; // FluxionLoadedPlugin
 static bool s_initialized = false;
 
+// Static storage, not a LoadAll-local -- a plugin's Fluxion_Plugin_Load
+// may stash this pointer (Fluxion_Plugin_Unload doesn't receive it again)
+// for later use, e.g. to unregister a service on unload. It must stay
+// valid for the Plugin Manager's whole lifetime, not just one LoadAll
+// call's stack frame.
+static FluxionPluginHostAPI s_host;
+
 void Fluxion_PluginManager_Init(FluxionAllocator* allocator)
 {
     FLUXION_ASSERT_MSG(!s_initialized, "Fluxion_PluginManager_Init called twice without a Shutdown in between");
     s_allocator = allocator ? allocator : Fluxion_DefaultAllocator();
     Fluxion_DynamicArray_Init(&s_loadedPlugins, s_allocator, sizeof(FluxionLoadedPlugin));
+
+    s_host.apiVersion = FLUXION_PLUGIN_HOST_API_VERSION;
+    s_host.defaultAllocator = Fluxion_DefaultAllocator();
+    s_host.registerSubsystem = Fluxion_SubsystemRegistry_Register;
+    s_host.registerService = Fluxion_ServiceRegistry_Register;
+    s_host.unregisterService = Fluxion_ServiceRegistry_Unregister;
+    s_host.getService = Fluxion_ServiceRegistry_Get;
+
     s_initialized = true;
 }
 
@@ -385,11 +401,6 @@ bool Fluxion_PluginManager_LoadAll(const char* const* pluginFilePaths, usize cou
 
     if (ok)
     {
-        FluxionPluginHostAPI host;
-        host.apiVersion = FLUXION_PLUGIN_HOST_API_VERSION;
-        host.defaultAllocator = Fluxion_DefaultAllocator();
-        host.registerSubsystem = Fluxion_SubsystemRegistry_Register;
-
         for (usize k = 0; k < orderCount && ok; ++k)
         {
             usize i = order[k];
@@ -408,7 +419,7 @@ bool Fluxion_PluginManager_LoadAll(const char* const* pluginFilePaths, usize cou
             }
 
             FluxionPluginLoadFn load = (FluxionPluginLoadFn)Fluxion_Platform_GetSymbol(&loaded.library, FLUXION_PLUGIN_LOAD_SYMBOL_NAME);
-            if (!load || !load(&host, &loaded.api))
+            if (!load || !load(&s_host, &loaded.api))
             {
                 FLUXION_LOG_ERROR("Plugin", "Plugin '%s' failed to load (missing or failing %s)", descriptor->name, FLUXION_PLUGIN_LOAD_SYMBOL_NAME);
                 Fluxion_Platform_UnloadDynamicLibrary(&loaded.library);

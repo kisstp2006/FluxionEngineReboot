@@ -27,8 +27,12 @@ engine_add_test(
         Test_Startup.c
         Test_StartupCpp.cpp
         Test_PluginSubsystem.c
+        Test_Service.c
+        Test_ServiceCpp.cpp
     DEPENDENCIES
         Fluxion::Core
+    NO_EXCEPTIONS
+    NO_RTTI
 )
 
 add_dependencies(CoreTests HelloPlugin HelloPluginDependent CyclicPluginA CyclicPluginB PluginSubsystemPlugin)
@@ -45,9 +49,14 @@ target_compile_definitions(CoreTests PRIVATE
 engine_add_header_selfcontained_test(
     MODULE Core
     HEADERS
+        Fluxion/Core/StableId.h
         Fluxion/Core/Startup/StartupPhase.h
         Fluxion/Core/Startup/SubsystemId.h
         Fluxion/Core/Startup/SubsystemDesc.h
         Fluxion/Core/Startup/SubsystemRegistry.h
         Fluxion/Core/Startup/Subsystem.hpp
+        Fluxion/Core/Service/ServiceId.h
+        Fluxion/Core/Service/ServiceHeader.h
+        Fluxion/Core/Service/ServiceRegistry.h
+        Fluxion/Core/Service/Service.hpp
 )
