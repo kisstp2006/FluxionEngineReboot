@@ -2,9 +2,14 @@
 
 #include <Fluxion/Application/Input/Input.h>
 
-// No physical gamepad exists on either build machine, so this can only
-// verify the "nothing connected" path doesn't crash and reports cleanly —
-// not the actual button/axis mapping, which needs real hardware.
+// Whether any slot reports connected depends on what the host exposes at
+// /dev/input (Linux) or via XInput (Windows) -- some CI runner images
+// expose a virtual joystick device even with no physical hardware
+// plugged in, so this can't assert "nothing is ever connected" as a
+// build-machine guarantee. What it does verify: the query itself is
+// well-formed for every valid slot (doesn't crash, rejects an
+// out-of-range index), and that a slot reporting NOT connected reports
+// an all-zero state rather than stale/garbage data.
 void Test_Input_Gamepad_Run(TestContext* ctx)
 {
     Fluxion_Input_Init();
@@ -14,7 +19,18 @@ void Test_Input_Gamepad_Run(TestContext* ctx)
     {
         FluxionGamepadState state;
         TEST_CHECK(ctx, Fluxion_Input_GetGamepadState(i, &state));
-        TEST_CHECK(ctx, state.connected == false);
+
+        if (!state.connected)
+        {
+            for (u32 axis = 0; axis < FLUXION_GAMEPAD_AXIS_COUNT; ++axis)
+            {
+                TEST_CHECK(ctx, state.axes[axis] == 0.0f);
+            }
+            for (u32 button = 0; button < FLUXION_GAMEPAD_BUTTON_COUNT; ++button)
+            {
+                TEST_CHECK(ctx, state.buttons[button] == false);
+            }
+        }
     }
 
     FluxionGamepadState outOfRange;
