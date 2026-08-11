@@ -1,8 +1,18 @@
 name: Build
 
 on:
+  # Unfiltered on purpose -- the build/test jobs below must keep running
+  # on every ordinary branch push too, not just version tags. The release
+  # job further down has its own `if:` gating it to tag pushes/manual
+  # runs only, so a normal push never publishes a release.
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to publish under (e.g. v0.1.0-dev) -- only used for a manual run, ignored when triggered by a pushed tag"
+        required: false
+        default: ''
 
 jobs:
   windows-msvc:
@@ -29,6 +39,31 @@ jobs:
       - name: Test (${{ matrix.build_type }})
         run: ctest --preset windows-msvc-${{ matrix.build_type }}
 
+      # Packaged once, from the Release leg only -- Debug binaries aren't
+      # meant to be distributed. Include/ is the same across configs, so
+      # it's copied straight from source rather than from the build tree.
+      - name: Package release artifact
+        if: matrix.build_type == 'release'
+        shell: bash
+        run: |
+          set -e
+          PKG=dist/FluxionEngine-windows-msvc
+          mkdir -p "$PKG/lib" "$PKG/bin" "$PKG/Include"
+          for m in Foundation Platform Core Application; do
+            cp -r "Source/$m/Include/." "$PKG/Include/"
+          done
+          shopt -s globstar nullglob
+          cp build/windows-msvc/**/Release/*.lib "$PKG/lib/"
+          cp build/windows-msvc/Samples/InputDemo/Release/InputDemo.exe "$PKG/bin/"
+          cp license.md README.md "$PKG/"
+
+      - name: Upload release artifact
+        if: matrix.build_type == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: FluxionEngine-windows-msvc
+          path: dist/FluxionEngine-windows-msvc
+
   linux-gcc:
     # ubuntu-latest is Ubuntu 24.04 with GCC 13 by default
     runs-on: ubuntu-latest
@@ -41,9 +76,12 @@ jobs:
 
       # The Application module's X11 backend needs these dev packages
       # (Xlib + Xrandr extension) to configure -- not present on a bare
-      # ubuntu-latest runner image, unlike a desktop dev machine.
+      # ubuntu-latest runner image, unlike a desktop dev machine. Xvfb
+      # provides a virtual X server for ApplicationTests to actually open
+      # a window against -- the runner itself is headless, unlike a local
+      # WSL2/WSLg setup which already has a real DISPLAY.
       - name: Install X11 dev packages
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev xvfb
 
       - name: Check CMake version
         run: cmake --version
@@ -55,7 +93,28 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
-        run: ctest --preset ${{ matrix.preset }}
+        run: xvfb-run -a ctest --preset ${{ matrix.preset }}
+
+      - name: Package release artifact
+        if: matrix.preset == 'linux-gcc-release'
+        run: |
+          set -e
+          PKG=dist/FluxionEngine-linux-gcc
+          mkdir -p "$PKG/lib" "$PKG/bin" "$PKG/Include"
+          for m in Foundation Platform Core Application; do
+            cp -r "Source/$m/Include/." "$PKG/Include/"
+          done
+          shopt -s globstar nullglob
+          cp build/linux-gcc-release/**/*.a "$PKG/lib/"
+          cp build/linux-gcc-release/Samples/InputDemo/InputDemo "$PKG/bin/"
+          cp license.md README.md "$PKG/"
+
+      - name: Upload release artifact
+        if: matrix.preset == 'linux-gcc-release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: FluxionEngine-linux-gcc
+          path: dist/FluxionEngine-linux-gcc
 
   linux-gcc-asan:
     # AddressSanitizer/UndefinedBehaviorSanitizer are opt-in
@@ -67,7 +126,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install X11 dev packages
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev xvfb
 
       - name: Configure (ASan + UBSan)
         run: cmake --preset linux-gcc -DFLUXION_ENABLE_ASAN=ON
@@ -76,4 +135,54 @@ jobs:
         run: cmake --build --preset linux-gcc
 
       - name: Test
-        run: ctest --preset linux-gcc
+        run: xvfb-run -a ctest --preset linux-gcc
+
+  release:
+    # Packages the Windows + Linux release artifacts from the two build
+    # jobs above into a GitHub Release -- only on a pushed version tag or
+    # an explicit manual run, never on an ordinary push/PR.
+    needs: [windows-msvc, linux-gcc, linux-gcc-asan]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -z "${{ github.event.inputs.version }}" ]; then
+              echo "workflow_dispatch requires a non-empty 'version' input (e.g. v0.1.0-dev)" >&2
+              exit 1
+            fi
+            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: FluxionEngine-windows-msvc
+          path: dist/FluxionEngine-windows-msvc
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: FluxionEngine-linux-gcc
+          path: dist/FluxionEngine-linux-gcc
+
+      - name: Zip artifacts
+        run: |
+          cd dist
+          zip -r FluxionEngine-windows-msvc.zip FluxionEngine-windows-msvc
+          zip -r FluxionEngine-linux-gcc.zip FluxionEngine-linux-gcc
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/FluxionEngine-windows-msvc.zip
+            dist/FluxionEngine-linux-gcc.zip
