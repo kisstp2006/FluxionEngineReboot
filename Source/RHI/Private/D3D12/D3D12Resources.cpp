@@ -50,9 +50,22 @@ FluxionRHIBufferHandle Fluxion_RHID3D12_CreateBuffer(FluxionRHIDeviceHandle devi
 
     D3D12_HEAP_TYPE heapType = Fluxion_RHID3D12_MapHeapType(desc->memoryClass);
 
+    // A constant-buffer-usable resource's allocated size must itself be
+    // a 256-byte multiple -- D3D12_CONSTANT_BUFFER_VIEW_DESC::SizeInBytes
+    // is required to be one (and this backend's BindGroup code, see
+    // D3D12Binding.cpp, rounds the CBV's SizeInBytes up to the next 256
+    // regardless of the caller's actual desc.size), so an unpadded
+    // resource smaller than that would have its CBV's BufferLocation +
+    // SizeInBytes read past the resource's own GPU VA range -- exactly
+    // the D3D12 debug layer's CREATE_CONSTANT_BUFFER_VIEW_INVALID_RESOURCE
+    // error this padding avoids.
+    usize allocatedSize = desc->size;
+    if (desc->usageFlags & FLUXION_RHI_BUFFER_USAGE_CONSTANT_BUFFER)
+        allocatedSize = (allocatedSize + 255) & ~(usize)255;
+
     D3D12_RESOURCE_DESC resourceDesc = {};
     resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    resourceDesc.Width = desc->size;
+    resourceDesc.Width = allocatedSize;
     resourceDesc.Height = 1;
     resourceDesc.DepthOrArraySize = 1;
     resourceDesc.MipLevels = 1;

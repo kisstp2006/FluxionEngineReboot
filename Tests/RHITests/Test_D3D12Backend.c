@@ -10,7 +10,7 @@
 // Test_VulkanBackend.c/Test_OpenGLBackend.c as closely as this backend's
 // differences allow -- plus a BindGroup + compute pipeline round trip,
 // since this backend's root-signature/descriptor-heap plumbing (unlike
-// the other two) is new in this milestone and has no earlier test
+// the other two) is new to this backend and has no earlier test
 // coverage to lean on. Only compiled on Windows (see
 // Tests/RHITests/CMakeLists.txt) -- D3D12 doesn't exist elsewhere.
 //

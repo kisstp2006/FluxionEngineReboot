@@ -112,7 +112,12 @@ struct FluxionRHID3D12RetiredEntry
 struct FluxionRHID3D12Device
 {
     ComPtr<IDXGIAdapter1> adapter;
-    ComPtr<ID3D12Device> device;
+    // ID3D12Device1 (not the base ID3D12Device) so CreatePipelineLibrary
+    // is available directly -- introduced in the Windows 10 1607 SDK,
+    // universally present on any machine with a current D3D12 driver, so
+    // this isn't a meaningfully narrower device-creation requirement than
+    // requesting the base interface would be.
+    ComPtr<ID3D12Device1> device;
     ComPtr<D3D12MA::Allocator> allocator;
 
     ComPtr<ID3D12CommandQueue> graphicsQueue;
@@ -312,7 +317,7 @@ struct FluxionRHID3D12Pipeline
 {
     ComPtr<ID3D12RootSignature> rootSignature;
     ComPtr<ID3D12PipelineState> pipelineState;
-    D3D12_PRIMITIVE_TOPOLOGY topology = D3D12_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    D3D_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     u32 vertexStride = 0; // from FluxionRHIVertexLayout::stride, needed by CommandListSetVertexBuffer -- the RHI contract doesn't repeat it per SetVertexBuffer call
     bool isCompute = false;
     FluxionRHID3D12RootParamSlot groupSlots[FLUXION_RHI_MAX_BIND_GROUPS];

@@ -378,7 +378,12 @@ void Fluxion_RHID3D12_CommandListCopyBufferToTexture(FluxionRHICommandListHandle
     if (cl == nullptr || srcState == nullptr || dstState == nullptr || deviceState == nullptr) return;
 
     D3D12_RESOURCE_DESC textureDesc = dstState->resource->GetDesc();
-    UINT subresource = D3D12CalcSubresource(mipLevel, arrayLayer, 0, textureDesc.MipLevels, (UINT16)(dstState->depth > 1 ? 1 : dstState->arrayLayers));
+    // The standard D3D12CalcSubresource formula (normally pulled in via
+    // the community d3dx12.h helper header, which this backend doesn't
+    // vendor for a single one-line function) -- MipSlice + ArraySlice *
+    // MipLevels + PlaneSlice * MipLevels * ArraySize, PlaneSlice always 0
+    // here (no planar/YUV formats in this contract).
+    UINT subresource = mipLevel + arrayLayer * textureDesc.MipLevels;
 
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
     deviceState->device->GetCopyableFootprints(&textureDesc, subresource, 1, srcOffset, &footprint, nullptr, nullptr, nullptr);
@@ -579,9 +584,9 @@ void Fluxion_RHID3D12_DestroySemaphore(FluxionRHISemaphoreHandle semaphore)
     Fluxion_RHID3D12_PoolFree(s_semaphoreSlots, FLUXION_RHI_D3D12_MAX_SEMAPHORES, semaphore.index, semaphore.generation);
 }
 
-// D3D12 query heaps aren't exercised by anything in this milestone
-// (no caller resolves query results yet) -- same minimal, real-pool-but-
-// no-native-object shape as the semaphore pool above, until something
+// D3D12 query heaps aren't exercised by any caller yet (nothing resolves
+// query results) -- same minimal, real-pool-but-no-native-object shape
+// as the semaphore pool above, until something
 // actually needs GPU timestamp/occlusion queries.
 static FluxionRHID3D12Slot s_queryPoolSlots[FLUXION_RHI_D3D12_MAX_QUERY_POOLS];
 
@@ -693,6 +698,22 @@ void Fluxion_RHID3D12_DestroySwapchain(FluxionRHISwapchainHandle swapchain)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: destroy called with an invalid or already-destroyed swapchain handle");
         return;
     }
+    // Wait for the GPU to be fully idle before releasing the back-buffer
+    // resources -- a Present() just issued against this swap chain may
+    // still be in flight on the presentation engine/command queue, and
+    // final-releasing an ID3D12Resource while GPU work still references
+    // it is corruption the D3D12 debug layer treats as fatal (matches
+    // the Vulkan backend's own vkDeviceWaitIdle before
+    // DestroySwapchainImages).
+    FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
+    if (deviceState != nullptr && deviceState->graphicsQueue && deviceState->gcFence)
+    {
+        u64 waitValue = ++deviceState->gcCounter;
+        deviceState->graphicsQueue->Signal(deviceState->gcFence.Get(), waitValue);
+        deviceState->gcFence->SetEventOnCompletion(waitValue, deviceState->gcEvent);
+        WaitForSingleObject(deviceState->gcEvent, INFINITE);
+    }
+
     FluxionRHID3D12SwapchainState* state = &s_swapchains[swapchain.index];
     for (u32 i = 0; i < state->imageCount; ++i) Fluxion_RHID3D12_FreeTextureSlotDirect(state->images[i]);
     *state = FluxionRHID3D12SwapchainState{};

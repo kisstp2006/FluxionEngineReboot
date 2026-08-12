@@ -9,6 +9,12 @@ void Test_NativeHandle_Run(TestContext* ctx);
 void Test_VulkanBackend_Run(TestContext* ctx);
 void Test_OpenGLBackend_Run(TestContext* ctx);
 void Test_BindGroup_Run(TestContext* ctx);
+#if defined(_WIN32)
+// D3D12 doesn't exist outside Windows -- Test_D3D12Backend.c is only
+// compiled into this executable on that platform (see CMakeLists.txt),
+// so this declaration/call must stay behind the same guard.
+void Test_D3D12Backend_Run(TestContext* ctx);
+#endif
 
 int main(void)
 {
@@ -23,6 +29,9 @@ int main(void)
     Test_VulkanBackend_Run(&ctx);
     Test_OpenGLBackend_Run(&ctx);
     Test_BindGroup_Run(&ctx);
+#if defined(_WIN32)
+    Test_D3D12Backend_Run(&ctx);
+#endif
 
     if (ctx.failures == 0)
     {

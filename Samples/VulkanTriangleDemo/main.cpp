@@ -576,6 +576,15 @@ int main(int argc, char** argv)
     bool running = true;
     u32 frameIndex = 0;
     f32 rotationAngle = 0.0f;
+    // The brightness buffer's very first GPU-visible state is backend-
+    // defined (whatever Fluxion_RHI_CreateBuffer left it in), not
+    // already SHADER_READ the way every later frame leaves it after its
+    // own write->read barrier below -- a backend that validates a
+    // barrier's declared "before" state against what the resource
+    // actually last transitioned to (D3D12's debug layer does) rejects
+    // a write->read barrier on frame 0 if it claims a "before" state
+    // that never really applied yet.
+    bool firstFrame = true;
     while (running)
     {
         Fluxion_WindowSystem_PollEvents();
@@ -620,7 +629,18 @@ int main(int argc, char** argv)
 
         // --- Compute pass: refresh the brightness storage buffer, then
         // barrier it from shader-write to shader-read before the cube's
-        // fragment shader reads it later in this same command list. ---------
+        // fragment shader reads it later in this same command list. Every
+        // frame after the first also needs a read->write barrier first --
+        // the previous frame's own write->read transition (below) is the
+        // buffer's real last-known state, so re-dispatching without
+        // transitioning back to shader-write first would claim a "before"
+        // state (shader-write) that doesn't match what actually happened. ---
+        FluxionRHIBarrier brightnessToWrite = { noTexture, brightnessBuffer,
+            firstFrame ? FLUXION_RHI_RESOURCE_STATE_UNDEFINED : FLUXION_RHI_RESOURCE_STATE_SHADER_READ,
+            FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE };
+        Fluxion_RHI_CommandList_Barrier(cmd, &brightnessToWrite, 1);
+        firstFrame = false;
+
         Fluxion_RHI_CommandList_SetPipeline(cmd, computePipeline);
         Fluxion_RHI_CommandList_SetBindGroup(cmd, FLUXION_RHI_BIND_GROUP_OBJECT, objectBindGroup);
         Fluxion_RHI_CommandList_Dispatch(cmd, 1, 1, 1);

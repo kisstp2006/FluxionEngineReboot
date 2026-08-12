@@ -86,13 +86,53 @@ static bool Fluxion_RHID3D12_BuildRootSignature(FluxionRHID3D12Device* deviceSta
 
         FluxionRHID3D12LayoutCounts counts = Fluxion_RHID3D12_CountLayoutEntries(layout);
 
+        // One descriptor range PER ENTRY, not one coalesced range per
+        // type -- a coalesced range starting at BaseShaderRegister=0
+        // only matches a shader whose registers for that type happen to
+        // start at 0 within this group, which isn't true in general
+        // (e.g. a Material group with a uniform buffer at CBV b0 and an
+        // opaque texture+sampler pair numbered from the *next* free
+        // binding, per ShaderIR.cpp's BuildIR, lands its texture SRV at
+        // t1/t2 not t0). BaseShaderRegister is set to the entry's own
+        // `binding` here so it always matches whatever register number
+        // the ShaderCompiler's HLSL backend actually emitted for that
+        // same entry. D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND packs each
+        // range's descriptor-table slot right after the previous one in
+        // the SAME table, so ranges must be emitted in CBV-block, then
+        // SRV-block, then UAV-block order (grouped by type, entries
+        // within a type in their original entries[] order) to land at
+        // the exact same table offsets Fluxion_RHID3D12_CreateBindGroup
+        // (D3D12Binding.cpp) already writes descriptors to
+        // (cbvBase+cbvCursor / srvBase+srvCursor / uavBase+uavCursor,
+        // incremented in that same entries[]-order).
+        // DATA_VOLATILE (not the D3D12_DESCRIPTOR_RANGE_FLAG_NONE default,
+        // which resolves to DATA_STATIC_WHILE_SET_AT_EXECUTE for these
+        // range types) on every range: a storage buffer's SRV and UAV
+        // range both exist on the SAME root-signature table regardless
+        // of which single one a given pipeline's shader actually reads,
+        // and this engine legitimately transitions such a buffer between
+        // UAV (compute write) and SRV (fragment read) states across a
+        // frame -- DATA_STATIC_WHILE_SET_AT_EXECUTE requires the
+        // resource already be in the range's expected state at the
+        // SetComputeRootDescriptorTable/SetGraphicsRootDescriptorTable
+        // call itself (not just by actual GPU execution time), which a
+        // compute dispatch's UAV-state bind trips for the same table's
+        // now-inconsistent SRV range. DATA_VOLATILE defers that check to
+        // real execution time instead, matching how this backend's
+        // resource states actually change over a command list's life.
         if (counts.cbvCount + counts.srvCount + counts.uavCount > 0)
         {
             allRanges.emplace_back();
             std::vector<D3D12_DESCRIPTOR_RANGE1>& ranges = allRanges.back();
-            if (counts.cbvCount > 0) ranges.push_back({ D3D12_DESCRIPTOR_RANGE_TYPE_CBV, counts.cbvCount, 0, g, D3D12_DESCRIPTOR_RANGE_FLAG_NONE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND });
-            if (counts.srvCount > 0) ranges.push_back({ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, counts.srvCount, 0, g, D3D12_DESCRIPTOR_RANGE_FLAG_NONE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND });
-            if (counts.uavCount > 0) ranges.push_back({ D3D12_DESCRIPTOR_RANGE_TYPE_UAV, counts.uavCount, 0, g, D3D12_DESCRIPTOR_RANGE_FLAG_NONE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND });
+            for (u32 i = 0; i < layout->entryCount; ++i)
+                if (layout->entries[i].type == FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER)
+                    ranges.push_back({ D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, layout->entries[i].binding, g, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND });
+            for (u32 i = 0; i < layout->entryCount; ++i)
+                if (layout->entries[i].type == FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE || layout->entries[i].type == FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER)
+                    ranges.push_back({ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, layout->entries[i].binding, g, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND });
+            for (u32 i = 0; i < layout->entryCount; ++i)
+                if (layout->entries[i].type == FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER)
+                    ranges.push_back({ D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, layout->entries[i].binding, g, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND });
 
             D3D12_ROOT_PARAMETER1 param = {};
             param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -107,7 +147,9 @@ static bool Fluxion_RHID3D12_BuildRootSignature(FluxionRHID3D12Device* deviceSta
         {
             allRanges.emplace_back();
             std::vector<D3D12_DESCRIPTOR_RANGE1>& ranges = allRanges.back();
-            ranges.push_back({ D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, counts.samplerCount, 0, g, D3D12_DESCRIPTOR_RANGE_FLAG_NONE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND });
+            for (u32 i = 0; i < layout->entryCount; ++i)
+                if (layout->entries[i].type == FLUXION_RHI_BINDING_TYPE_SAMPLER)
+                    ranges.push_back({ D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, layout->entries[i].binding, g, D3D12_DESCRIPTOR_RANGE_FLAG_NONE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND });
 
             D3D12_ROOT_PARAMETER1 param = {};
             param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -127,7 +169,11 @@ static bool Fluxion_RHID3D12_BuildRootSignature(FluxionRHID3D12Device* deviceSta
 
     ComPtr<ID3DBlob> serialized, error;
     if (FAILED(D3D12SerializeVersionedRootSignature(&versionedDesc, &serialized, &error))) return false;
-    return SUCCEEDED(deviceState->device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(outRootSignature)));
+    // outRootSignature is a ComPtr<T>* (pointer to the caller's ComPtr),
+    // not a T** -- IID_PPV_ARGS_Helper has no overload for that, only for
+    // T** and ComPtr<T>& (via ComPtr::operator&), so dereference first to
+    // get the ComPtr<T> lvalue IID_PPV_ARGS expects.
+    return SUCCEEDED(deviceState->device->CreateRootSignature(0, serialized->GetBufferPointer(), serialized->GetBufferSize(), IID_PPV_ARGS(&*outRootSignature)));
 }
 
 // --- Pipeline cache ------------------------------------------------------
