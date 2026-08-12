@@ -10,6 +10,9 @@
 
 #include "VulkanCommon.h"
 
+#include <Fluxion/Foundation/Log.h>
+
+#include <cstdio>
 #include <cstring>
 
 // --- Format mapping -----------------------------------------------------
@@ -546,5 +549,10 @@ void Fluxion_RHIVulkan_QueueSubmit(FluxionRHIQueueHandle queue, const FluxionRHI
     submitInfo.signalSemaphoreInfoCount = signalCount;
     submitInfo.pSignalSemaphoreInfos = signalInfos;
 
-    deviceState->queueSubmit2(vkQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    VkResult submitResult = deviceState->queueSubmit2(vkQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (submitResult != VK_SUCCESS)
+    {
+        FLUXION_LOG_ERROR("RHIVulkan", "vkQueueSubmit2 failed with VkResult=%d", (int)submitResult);
+        fflush(nullptr);
+    }
 }

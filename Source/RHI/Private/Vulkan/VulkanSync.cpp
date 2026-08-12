@@ -12,6 +12,8 @@
 
 #include "VulkanCommon.h"
 
+#include <Fluxion/Foundation/Log.h>
+
 struct FluxionRHIVulkanFence
 {
     VkSemaphore semaphore = VK_NULL_HANDLE;
@@ -91,7 +93,29 @@ void Fluxion_RHIVulkan_WaitForFence(FluxionRHIFenceHandle fence)
     waitInfo.semaphoreCount = 1;
     waitInfo.pSemaphores = &fenceState->semaphore;
     waitInfo.pValues = &fenceState->waitTarget;
-    vkWaitSemaphores(Fluxion_RHIVulkan_GetOwningDevice(), &waitInfo, UINT64_MAX);
+
+    // Bounded, not VK_TIMEOUT-never (UINT64_MAX) -- observed in practice
+    // (RTX 2060, driver 581.29, Vulkan SDK 1.4.350 validation layer) that
+    // VK_LAYER_KHRONOS_validation's own background submission-tracking
+    // thread (vvl::Queue::ThreadFunc) can wedge after a few hundred
+    // frames of steady per-frame timeline-semaphore submission, which
+    // then blocks this CPU-side wait forever even though the GPU itself
+    // never hangs (no TDR event is ever recorded) -- confirmed by
+    // reproducing the hang, then reproducing a clean unbounded run with
+    // the layer disabled (VK_LOADER_LAYERS_DISABLE=VK_LAYER_KHRONOS_validation).
+    // An indefinite wait here stalls the caller's whole message pump,
+    // which Windows then reports as "Not Responding". A several-second
+    // bound keeps any single stall well under that watchdog's threshold
+    // and turns a silent external-layer wedge into a visible, recoverable
+    // log line instead of a dead window.
+    VkResult waitResult = vkWaitSemaphores(Fluxion_RHIVulkan_GetOwningDevice(), &waitInfo, 4000000000ull);
+    if (waitResult != VK_SUCCESS)
+    {
+        u64 currentValue = 0;
+        vkGetSemaphoreCounterValue(Fluxion_RHIVulkan_GetOwningDevice(), fenceState->semaphore, &currentValue);
+        FLUXION_LOG_ERROR("RHIVulkan", "WaitForFence timed out (VkResult=%d): waitTarget=%llu, currentSemaphoreValue=%llu -- GPU submission did not complete in time",
+            (int)waitResult, (unsigned long long)fenceState->waitTarget, (unsigned long long)currentValue);
+    }
 }
 
 void Fluxion_RHIVulkan_ResetFence(FluxionRHIFenceHandle fence)
