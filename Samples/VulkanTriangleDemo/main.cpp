@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -702,7 +703,22 @@ int main(int argc, char** argv)
         // invalid semaphore handle, which the backend correctly turns
         // into "0 wait semaphores" rather than a present that waits on
         // something that can never be signaled.
-        Fluxion_RHI_WaitForFence(frameFences[frameIndex]);
+        // WaitForFence can time out (backend-defined bound, not
+        // infinite) instead of observing the GPU submission actually
+        // finish -- e.g. a wedged driver/validation-layer thread rather
+        // than a real GPU hang (see VulkanSync.cpp). When that happens,
+        // this frame's resources (backbufferView, and anything the
+        // submission touched) cannot safely be reclaimed or presented,
+        // and continuing to run risks cascading into further, harder to
+        // diagnose failures. Exiting immediately, without running the
+        // rest of this iteration or the normal teardown path below,
+        // keeps that failure a single clear log line instead of an
+        // unresponsive window or a crash during device destruction.
+        if (!Fluxion_RHI_WaitForFence(frameFences[frameIndex]))
+        {
+            FLUXION_LOG_ERROR("VulkanTriangleDemo", "GPU submission did not complete in time -- exiting rather than risk using unfinished GPU resources.");
+            std::exit(1);
+        }
         Fluxion_RHI_ResetFence(frameFences[frameIndex]); // ready for this slot's next use, FLUXION_DEMO_FRAMES_IN_FLIGHT frames from now
         Fluxion_RHI_Swapchain_Present(swapchain, imageIndex, noSemaphore);
 
@@ -717,7 +733,11 @@ int main(int argc, char** argv)
 
     for (u32 i = 0; i < FLUXION_DEMO_FRAMES_IN_FLIGHT; ++i)
     {
-        Fluxion_RHI_WaitForFence(frameFences[i]);
+        if (!Fluxion_RHI_WaitForFence(frameFences[i]))
+        {
+            FLUXION_LOG_ERROR("VulkanTriangleDemo", "GPU submission did not complete in time during shutdown -- exiting rather than risk destroying resources still in use.");
+            std::exit(1);
+        }
     }
 
     FLUXION_LOG_INFO("VulkanTriangleDemo", "Closing.");

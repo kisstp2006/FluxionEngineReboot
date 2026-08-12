@@ -78,15 +78,15 @@ void Fluxion_RHIVulkan_DestroyFence(FluxionRHIFenceHandle fence)
     Fluxion_RHIVulkan_PoolFree(s_fenceSlots, FLUXION_RHI_VULKAN_MAX_FENCES, fence.index, fence.generation);
 }
 
-void Fluxion_RHIVulkan_WaitForFence(FluxionRHIFenceHandle fence)
+bool Fluxion_RHIVulkan_WaitForFence(FluxionRHIFenceHandle fence)
 {
     if (!Fluxion_RHIVulkan_PoolIsValid(s_fenceSlots, FLUXION_RHI_VULKAN_MAX_FENCES, fence.index, fence.generation))
     {
         FLUXION_ASSERT_MSG(false, "Fluxion RHI Vulkan backend: WaitForFence called with an invalid fence handle");
-        return;
+        return false;
     }
     FluxionRHIVulkanFence* fenceState = &s_fences[fence.index];
-    if (fenceState->waitTarget == 0) return; // created/reset-to-signaled, nothing to wait for
+    if (fenceState->waitTarget == 0) return true; // created/reset-to-signaled, nothing to wait for
 
     VkSemaphoreWaitInfo waitInfo = {};
     waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
@@ -115,7 +115,9 @@ void Fluxion_RHIVulkan_WaitForFence(FluxionRHIFenceHandle fence)
         vkGetSemaphoreCounterValue(Fluxion_RHIVulkan_GetOwningDevice(), fenceState->semaphore, &currentValue);
         FLUXION_LOG_ERROR("RHIVulkan", "WaitForFence timed out (VkResult=%d): waitTarget=%llu, currentSemaphoreValue=%llu -- GPU submission did not complete in time",
             (int)waitResult, (unsigned long long)fenceState->waitTarget, (unsigned long long)currentValue);
+        return false;
     }
+    return true;
 }
 
 void Fluxion_RHIVulkan_ResetFence(FluxionRHIFenceHandle fence)

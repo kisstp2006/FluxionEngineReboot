@@ -258,7 +258,7 @@ FluxionRHIFormat Fluxion_RHIVulkan_MapFormatBack(VkFormat format);
 
 FluxionRHIFenceHandle Fluxion_RHIVulkan_CreateFence(FluxionRHIDeviceHandle device, bool signaled);
 void Fluxion_RHIVulkan_DestroyFence(FluxionRHIFenceHandle fence);
-void Fluxion_RHIVulkan_WaitForFence(FluxionRHIFenceHandle fence);
+bool Fluxion_RHIVulkan_WaitForFence(FluxionRHIFenceHandle fence);
 void Fluxion_RHIVulkan_ResetFence(FluxionRHIFenceHandle fence);
 // Called once by QueueSubmit: returns the timeline semaphore + value the
 // submit should add to its signal list for this fence (or VK_NULL_HANDLE

@@ -343,7 +343,7 @@ void Fluxion_RHIOpenGL_SwapchainGetExtent(FluxionRHISwapchainHandle swapchain, u
 
 FluxionRHIFenceHandle Fluxion_RHIOpenGL_CreateFence(FluxionRHIDeviceHandle device, bool signaled);
 void Fluxion_RHIOpenGL_DestroyFence(FluxionRHIFenceHandle fence);
-void Fluxion_RHIOpenGL_WaitForFence(FluxionRHIFenceHandle fence);
+bool Fluxion_RHIOpenGL_WaitForFence(FluxionRHIFenceHandle fence);
 void Fluxion_RHIOpenGL_ResetFence(FluxionRHIFenceHandle fence);
 FluxionRHISemaphoreHandle Fluxion_RHIOpenGL_CreateSemaphore(FluxionRHIDeviceHandle device);
 void Fluxion_RHIOpenGL_DestroySemaphore(FluxionRHISemaphoreHandle semaphore);

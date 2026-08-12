@@ -400,10 +400,10 @@ void Fluxion_RHI_DestroyFence(FluxionRHIFenceHandle fence)
     s_backend->DestroyFence(fence);
 }
 
-void Fluxion_RHI_WaitForFence(FluxionRHIFenceHandle fence)
+bool Fluxion_RHI_WaitForFence(FluxionRHIFenceHandle fence)
 {
-    if (s_backend == NULL) return;
-    s_backend->WaitForFence(fence);
+    if (s_backend == NULL) return false;
+    return s_backend->WaitForFence(fence);
 }
 
 void Fluxion_RHI_ResetFence(FluxionRHIFenceHandle fence)

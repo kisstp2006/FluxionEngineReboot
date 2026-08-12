@@ -446,7 +446,11 @@ void Fluxion_RHI_Swapchain_GetExtent(FluxionRHISwapchainHandle swapchain, u32* o
 
 FluxionRHIFenceHandle Fluxion_RHI_CreateFence(FluxionRHIDeviceHandle device, bool signaled);
 void Fluxion_RHI_DestroyFence(FluxionRHIFenceHandle fence);
-void Fluxion_RHI_WaitForFence(FluxionRHIFenceHandle fence);
+// Returns false if the wait timed out (a bounded internal timeout, not a
+// caller-supplied one) instead of observing the fence actually signal --
+// the caller cannot then assume the underlying GPU submission is done, and
+// should not touch/destroy any resource that submission may still be using.
+bool Fluxion_RHI_WaitForFence(FluxionRHIFenceHandle fence);
 void Fluxion_RHI_ResetFence(FluxionRHIFenceHandle fence);
 
 FluxionRHISemaphoreHandle Fluxion_RHI_CreateSemaphore(FluxionRHIDeviceHandle device);

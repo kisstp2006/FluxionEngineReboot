@@ -347,7 +347,7 @@ D3D12_RESOURCE_STATES Fluxion_RHID3D12_MapResourceState(FluxionRHIResourceState 
 
 FluxionRHIFenceHandle Fluxion_RHID3D12_CreateFence(FluxionRHIDeviceHandle device, bool signaled);
 void Fluxion_RHID3D12_DestroyFence(FluxionRHIFenceHandle fence);
-void Fluxion_RHID3D12_WaitForFence(FluxionRHIFenceHandle fence);
+bool Fluxion_RHID3D12_WaitForFence(FluxionRHIFenceHandle fence);
 void Fluxion_RHID3D12_ResetFence(FluxionRHIFenceHandle fence);
 // Called once by QueueSubmit: returns the ID3D12Fence + value the submit
 // should signal for this fence (or nullptr if the handle is invalid).

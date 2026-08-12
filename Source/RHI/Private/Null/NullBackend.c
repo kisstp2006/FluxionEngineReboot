@@ -753,16 +753,17 @@ static void Fluxion_RHI_Null_DestroyFence(FluxionRHIFenceHandle fence)
     Fluxion_RHINull_Free(s_fenceSlots, FLUXION_RHI_NULL_MAX_FENCES, fence.index, fence.generation);
 }
 
-static void Fluxion_RHI_Null_WaitForFence(FluxionRHIFenceHandle fence)
+static bool Fluxion_RHI_Null_WaitForFence(FluxionRHIFenceHandle fence)
 {
     if (!Fluxion_RHINull_IsValid(s_fenceSlots, FLUXION_RHI_NULL_MAX_FENCES, fence.index, fence.generation))
     {
         FLUXION_ASSERT_MSG(false, "Fluxion RHI Null backend: WaitForFence called with an invalid fence handle");
-        return;
+        return false;
     }
     // Nothing is ever actually submitted to a GPU timeline here, so
     // "waiting" completes instantly.
     s_fenceSignaled[fence.index] = true;
+    return true;
 }
 
 static void Fluxion_RHI_Null_ResetFence(FluxionRHIFenceHandle fence)

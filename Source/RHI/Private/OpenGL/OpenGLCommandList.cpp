@@ -575,12 +575,12 @@ void Fluxion_RHIOpenGL_DestroyFence(FluxionRHIFenceHandle fence)
     Fluxion_RHIOpenGL_PoolFree(s_fenceSlots, FLUXION_RHI_OPENGL_MAX_FENCES, fence.index, fence.generation);
 }
 
-void Fluxion_RHIOpenGL_WaitForFence(FluxionRHIFenceHandle fence)
+bool Fluxion_RHIOpenGL_WaitForFence(FluxionRHIFenceHandle fence)
 {
     if (!Fluxion_RHIOpenGL_PoolIsValid(s_fenceSlots, FLUXION_RHI_OPENGL_MAX_FENCES, fence.index, fence.generation))
     {
         FLUXION_ASSERT_MSG(false, "Fluxion RHI OpenGL backend: WaitForFence called with an invalid fence handle");
-        return;
+        return false;
     }
     // Every GL call up to and including the Submit that would signal this
     // fence has already been issued synchronously (design decision #1) --
@@ -589,6 +589,7 @@ void Fluxion_RHIOpenGL_WaitForFence(FluxionRHIFenceHandle fence)
     // to mean.
     glFinish();
     s_fenceSignaled[fence.index] = true;
+    return true;
 }
 
 void Fluxion_RHIOpenGL_ResetFence(FluxionRHIFenceHandle fence)

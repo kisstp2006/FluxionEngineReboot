@@ -11,6 +11,7 @@
 #include "D3D12Common.h"
 
 #include <Fluxion/Application/Window/Window.h>
+#include <Fluxion/Foundation/Log.h>
 
 #include <cstring>
 
@@ -519,19 +520,26 @@ void Fluxion_RHID3D12_DestroyFence(FluxionRHIFenceHandle fence)
     Fluxion_RHID3D12_PoolFree(s_fenceSlots, FLUXION_RHI_D3D12_MAX_FENCES, fence.index, fence.generation);
 }
 
-void Fluxion_RHID3D12_WaitForFence(FluxionRHIFenceHandle fence)
+bool Fluxion_RHID3D12_WaitForFence(FluxionRHIFenceHandle fence)
 {
     if (!Fluxion_RHID3D12_PoolIsValid(s_fenceSlots, FLUXION_RHI_D3D12_MAX_FENCES, fence.index, fence.generation))
     {
         FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: WaitForFence called with an invalid fence handle");
-        return;
+        return false;
     }
     FluxionRHID3D12FenceState* fenceState = &s_fences[fence.index];
-    if (fenceState->fence->GetCompletedValue() >= fenceState->targetValue) return;
+    if (fenceState->fence->GetCompletedValue() >= fenceState->targetValue) return true;
     HANDLE event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     fenceState->fence->SetEventOnCompletion(fenceState->targetValue, event);
-    WaitForSingleObject(event, INFINITE);
+    DWORD waitResult = WaitForSingleObject(event, 4000);
     CloseHandle(event);
+    if (waitResult != WAIT_OBJECT_0)
+    {
+        FLUXION_LOG_ERROR("RHID3D12", "WaitForFence timed out: targetValue=%llu, completedValue=%llu",
+            (unsigned long long)fenceState->targetValue, (unsigned long long)fenceState->fence->GetCompletedValue());
+        return false;
+    }
+    return true;
 }
 
 void Fluxion_RHID3D12_ResetFence(FluxionRHIFenceHandle fence)

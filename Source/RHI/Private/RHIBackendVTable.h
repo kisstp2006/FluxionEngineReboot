@@ -79,7 +79,7 @@ typedef struct FluxionRHIBackendVTable
 
     FluxionRHIFenceHandle (*CreateFence)(FluxionRHIDeviceHandle device, bool signaled);
     void (*DestroyFence)(FluxionRHIFenceHandle fence);
-    void (*WaitForFence)(FluxionRHIFenceHandle fence);
+    bool (*WaitForFence)(FluxionRHIFenceHandle fence);
     void (*ResetFence)(FluxionRHIFenceHandle fence);
     FluxionRHISemaphoreHandle (*CreateSemaphore)(FluxionRHIDeviceHandle device);
     void (*DestroySemaphore)(FluxionRHISemaphoreHandle semaphore);
