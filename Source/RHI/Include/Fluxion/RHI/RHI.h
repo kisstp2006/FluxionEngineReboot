@@ -20,6 +20,7 @@ typedef enum FluxionRHIBackendType
     FLUXION_RHI_BACKEND_NULL = 0,
     FLUXION_RHI_BACKEND_VULKAN,
     FLUXION_RHI_BACKEND_OPENGL,
+    FLUXION_RHI_BACKEND_D3D12,
 } FluxionRHIBackendType;
 
 typedef struct FluxionRHIInstanceDesc

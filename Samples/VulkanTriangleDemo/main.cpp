@@ -89,6 +89,19 @@ std::vector<uint8_t> CompileShaderStage(const char* path, Fluxion::ShaderCompile
     }
 
     Fluxion::ShaderCompiler::DiagnosticList dxcDiagnostics;
+    if (backend == FLUXION_RHI_BACKEND_D3D12)
+    {
+        auto dxil = Fluxion::ShaderCompiler::CompileToDxil(compiled.Value().hlslSource, stage, "main", dxcDiagnostics);
+        if (!dxil.IsOk())
+        {
+            for (const auto& d : dxcDiagnostics.entries)
+                std::fprintf(stderr, "  dxc: %s\n", d.message.c_str());
+            FLUXION_LOG_ERROR("VulkanTriangleDemo", "dxc DXIL compilation failed for: %s", path);
+            std::exit(1);
+        }
+        return dxil.Value();
+    }
+
     auto spirv = Fluxion::ShaderCompiler::CompileToSpirv(compiled.Value().hlslSource, stage, "main", dxcDiagnostics);
     if (!spirv.IsOk())
     {
@@ -153,18 +166,19 @@ FluxionMat4 TransposeForUpload(FluxionMat4 m)
 
 int main(int argc, char** argv)
 {
-    // --graphics=vulkan (default) | --graphics=opengl -- selects which RHI
-    // backend this demo drives, from the same portable RHI/ShaderCompiler
-    // calls either way (only CompileShaderStage's bytecode-vs-GLSL-text
-    // branch above and the FLUXION_RHI_BACKEND_* passed to CreateInstance
-    // below differ).
+    // --graphics=vulkan (default) | --graphics=opengl | --graphics=d3d12 --
+    // selects which RHI backend this demo drives, from the same portable
+    // RHI/ShaderCompiler calls either way (only CompileShaderStage's
+    // bytecode-vs-GLSL-text-vs-DXIL branch above and the
+    // FLUXION_RHI_BACKEND_* passed to CreateInstance below differ).
     FluxionRHIBackendType backendType = FLUXION_RHI_BACKEND_VULKAN;
     for (int i = 1; i < argc; ++i)
     {
         if (std::strcmp(argv[i], "--graphics=opengl") == 0) backendType = FLUXION_RHI_BACKEND_OPENGL;
         else if (std::strcmp(argv[i], "--graphics=vulkan") == 0) backendType = FLUXION_RHI_BACKEND_VULKAN;
+        else if (std::strcmp(argv[i], "--graphics=d3d12") == 0) backendType = FLUXION_RHI_BACKEND_D3D12;
     }
-    const char* backendName = backendType == FLUXION_RHI_BACKEND_OPENGL ? "OpenGL" : "Vulkan";
+    const char* backendName = backendType == FLUXION_RHI_BACKEND_OPENGL ? "OpenGL" : backendType == FLUXION_RHI_BACKEND_D3D12 ? "D3D12" : "Vulkan";
     FluxionEventQueue queue;
     Fluxion_EventQueue_Init(&queue, NULL, 256);
     Fluxion_WindowSystem_Init(NULL, &queue, 1);

@@ -165,4 +165,53 @@ Fluxion::Foundation::Result<std::vector<uint8_t>> CompileToSpirv(
     return Fluxion::Foundation::Result<std::vector<uint8_t>>::Ok(std::move(spirv));
 }
 
+Fluxion::Foundation::Result<std::vector<uint8_t>> CompileToDxil(
+    const std::string& hlslSource,
+    ShaderStage stage,
+    const std::string& entryPoint,
+    DiagnosticList& outDiagnostics,
+    const DXILOptions& options)
+{
+    std::filesystem::path inputPath = MakeTempPath(".hlsl");
+    std::filesystem::path outputPath = MakeTempPath(".dxil");
+
+    {
+        std::ofstream inputFile(inputPath, std::ios::binary);
+        inputFile << hlslSource;
+    }
+
+    // No -spirv/-fspv-target-env here -- otherwise identical to
+    // CompileToSpirv's command shape (same -T/-E/-Fo/input arguments),
+    // just targeting dxc's native DXIL output instead.
+    std::string command = ResolveDXCCommand() +
+        " -T " + StagePrefix(stage) + "_" + options.shaderModel +
+        " -E " + entryPoint +
+        " -Fo \"" + outputPath.string() + "\"" +
+        " \"" + inputPath.string() + "\"";
+
+    std::string log;
+    int status = RunCaptured(command, log);
+
+    std::vector<uint8_t> dxil;
+    if (status == 0 && std::filesystem::exists(outputPath))
+    {
+        std::ifstream outputFile(outputPath, std::ios::binary | std::ios::ate);
+        std::streamsize size = outputFile.tellg();
+        outputFile.seekg(0);
+        dxil.resize((size_t)size);
+        outputFile.read(reinterpret_cast<char*>(dxil.data()), size);
+    }
+
+    std::filesystem::remove(inputPath);
+    std::filesystem::remove(outputPath);
+
+    if (status != 0 || dxil.empty())
+    {
+        outDiagnostics.AddError(SourceLocation{ "dxc", 0, 0 }, "dxc invocation failed: " + log);
+        return Fluxion::Foundation::Result<std::vector<uint8_t>>::Error(1, "dxc invocation failed");
+    }
+
+    return Fluxion::Foundation::Result<std::vector<uint8_t>>::Ok(std::move(dxil));
+}
+
 } // namespace Fluxion::ShaderCompiler

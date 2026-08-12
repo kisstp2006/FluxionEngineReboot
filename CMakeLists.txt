@@ -29,6 +29,13 @@ endif()
 add_subdirectory(ThirdParty/pdjson)
 add_subdirectory(ThirdParty/vma)
 add_subdirectory(ThirdParty/glheaders)
+if(WIN32)
+    # D3D12 (and therefore D3D12MA) is a Windows-only API -- this target
+    # links d3d12.lib/dxgi.lib, which don't exist on Linux, so it's only
+    # added to the build on Windows, same reasoning as Private/D3D12 only
+    # being compiled into the RHI module there.
+    add_subdirectory(ThirdParty/d3d12ma)
+endif()
 
 add_subdirectory(Source/Foundation)
 add_subdirectory(Source/Platform)

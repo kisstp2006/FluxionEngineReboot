@@ -7,6 +7,12 @@
 extern const FluxionRHIBackendVTable* Fluxion_RHI_Null_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
 extern const FluxionRHIBackendVTable* Fluxion_RHI_Vulkan_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
 extern const FluxionRHIBackendVTable* Fluxion_RHI_OpenGL_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
+#if defined(_WIN32)
+// D3D12 is a Windows-only API -- Private/D3D12 is only compiled into the
+// RHI module on Windows (see Source/RHI/CMakeLists.txt), so this
+// declaration (and the switch case below) is guarded the same way.
+extern const FluxionRHIBackendVTable* Fluxion_RHI_D3D12_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
+#endif
 
 // One active backend at a time (a shipping run picks one backend via
 // --graphics=X, not several simultaneously) -- this keeps every object
@@ -41,6 +47,11 @@ FluxionRHIInstanceHandle Fluxion_RHI_CreateInstance(FluxionRHIBackendType backen
         case FLUXION_RHI_BACKEND_OPENGL:
             vtable = Fluxion_RHI_OpenGL_CreateInstance(desc, &instance);
             break;
+#if defined(_WIN32)
+        case FLUXION_RHI_BACKEND_D3D12:
+            vtable = Fluxion_RHI_D3D12_CreateInstance(desc, &instance);
+            break;
+#endif
         default:
             FLUXION_ASSERT_MSG(false, "Fluxion_RHI_CreateInstance: unknown or not-yet-implemented backend");
             break;
