@@ -4,18 +4,26 @@
 // on-screen demonstration that RHITests' offscreen checks can't show on
 // their own. Vertex/index data goes CPU->staging buffer->GPU_ONLY buffer
 // via Map/Unmap + CommandList CopyBuffer + a Barrier, the same staging
-// pattern real game code would use.
+// pattern real game code would use. Shader source is written in the
+// engine's own shading language (Shaders/triangle.vert.jsl,
+// Shaders/triangle.frag.jsl) and compiled at startup through
+// Fluxion::ShaderCompiler -- this file never touches Vulkan-specific
+// bytecode directly, only the RHI's own backend-agnostic FluxionRHIShaderDesc.
 #include <Fluxion/Application/Events/EventQueue.h>
 #include <Fluxion/Application/Window/Window.h>
 #include <Fluxion/Foundation/Defines.h>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/Platform/Time.h>
 #include <Fluxion/RHI/RHI.h>
+#include <Fluxion/ShaderCompiler/Backends/DXC/DXCAdapter.hpp>
+#include <Fluxion/ShaderCompiler/ShaderCompiler.hpp>
 
-#include "TriangleShaders.h"
-
-#include <stddef.h>
-#include <string.h>
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <vector>
 
 typedef struct FluxionDemoVertex
 {
@@ -25,7 +33,59 @@ typedef struct FluxionDemoVertex
 
 #define FLUXION_DEMO_FRAMES_IN_FLIGHT 2
 
-int main(void)
+namespace
+{
+
+std::string ReadFile(const char* path)
+{
+    std::ifstream file(path);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
+// Runs the full source-to-SPIR-V pipeline for one shader stage: this
+// engine's own shading language -> HLSL text -> dxc -> SPIR-V. Aborts
+// the process on failure (a startup-time shader compile error has no
+// sensible runtime fallback for a minimal demo like this one).
+std::vector<uint8_t> CompileShaderStage(const char* path, Fluxion::ShaderCompiler::ShaderStage stage)
+{
+    std::string source = ReadFile(path);
+    if (source.empty())
+    {
+        FLUXION_LOG_ERROR("VulkanTriangleDemo", "Failed to read shader source: %s", path);
+        std::exit(1);
+    }
+
+    Fluxion::ShaderCompiler::DiagnosticList diagnostics;
+    Fluxion::ShaderCompiler::CompileOptions options;
+    options.stage = stage;
+    options.fileName = path;
+    auto compiled = Fluxion::ShaderCompiler::Compile(source, options, diagnostics);
+    if (!compiled.IsOk())
+    {
+        for (const auto& d : diagnostics.entries)
+            std::fprintf(stderr, "  %s:%u: %s\n", d.location.file.c_str(), d.location.line, d.message.c_str());
+        FLUXION_LOG_ERROR("VulkanTriangleDemo", "Shader compilation failed: %s", path);
+        std::exit(1);
+    }
+
+    Fluxion::ShaderCompiler::DiagnosticList dxcDiagnostics;
+    auto spirv = Fluxion::ShaderCompiler::CompileToSpirv(compiled.Value().hlslSource, stage, "main", dxcDiagnostics);
+    if (!spirv.IsOk())
+    {
+        for (const auto& d : dxcDiagnostics.entries)
+            std::fprintf(stderr, "  dxc: %s\n", d.message.c_str());
+        FLUXION_LOG_ERROR("VulkanTriangleDemo", "dxc SPIR-V compilation failed for: %s", path);
+        std::exit(1);
+    }
+
+    return spirv.Value();
+}
+
+} // namespace
+
+int main()
 {
     FluxionEventQueue queue;
     Fluxion_EventQueue_Init(&queue, NULL, 256);
@@ -114,9 +174,12 @@ int main(void)
 
     // --- Pipeline (minimal, no descriptor sets) -----------------------------
 
-    FluxionRHIShaderDesc vsDesc = { FLUXION_RHI_SHADER_STAGE_VERTEX, g_TriangleVertexShaderSpirv, g_TriangleVertexShaderSpirv_size, "main", "TriangleVS" };
+    std::vector<uint8_t> vsSpirv = CompileShaderStage(FLUXION_DEMO_SHADER_DIR "/triangle.vert.jsl", Fluxion::ShaderCompiler::ShaderStage::Vertex);
+    std::vector<uint8_t> fsSpirv = CompileShaderStage(FLUXION_DEMO_SHADER_DIR "/triangle.frag.jsl", Fluxion::ShaderCompiler::ShaderStage::Fragment);
+
+    FluxionRHIShaderDesc vsDesc = { FLUXION_RHI_SHADER_STAGE_VERTEX, vsSpirv.data(), vsSpirv.size(), "main", "TriangleVS" };
     FluxionRHIShaderHandle vertexShader = Fluxion_RHI_CreateShader(device, &vsDesc);
-    FluxionRHIShaderDesc fsDesc = { FLUXION_RHI_SHADER_STAGE_FRAGMENT, g_TriangleFragmentShaderSpirv, g_TriangleFragmentShaderSpirv_size, "main", "TriangleFS" };
+    FluxionRHIShaderDesc fsDesc = { FLUXION_RHI_SHADER_STAGE_FRAGMENT, fsSpirv.data(), fsSpirv.size(), "main", "TriangleFS" };
     FluxionRHIShaderHandle fragmentShader = Fluxion_RHI_CreateShader(device, &fsDesc);
 
     FluxionRHIGraphicsPipelineDesc pipelineDesc;
@@ -176,12 +239,11 @@ int main(void)
         u32 imageIndex = Fluxion_RHI_Swapchain_AcquireNextImage(swapchain, noSemaphore);
 
         // The swapchain's actual current image extent (queried from the
-        // backend, decision discovered during implementation) -- NOT a
-        // separately-queried window size, which can transiently disagree
-        // with the swapchain's own tracked size (window resize race,
-        // OS-level border/DPI accounting) and trips a hard Vulkan
-        // validation error if the render area doesn't exactly match the
-        // acquired image.
+        // backend) -- NOT a separately-queried window size, which can
+        // transiently disagree with the swapchain's own tracked size
+        // (window resize race, OS-level border/DPI accounting) and trips
+        // a hard Vulkan validation error if the render area doesn't
+        // exactly match the acquired image.
         u32 surfaceWidth = 0, surfaceHeight = 0;
         Fluxion_RHI_Swapchain_GetExtent(swapchain, &surfaceWidth, &surfaceHeight);
         FluxionRHITextureHandle backbuffer = Fluxion_RHI_Swapchain_GetTexture(swapchain, imageIndex);
@@ -231,14 +293,13 @@ int main(void)
         // Fluxion_RHI_Queue_Submit has no way to signal a binary
         // semaphore (only a signalFence), so there is nothing that could
         // ever signal a present-wait semaphore. Symmetric with the
-        // Acquire-side design
-        // (VulkanSwapchain.cpp CPU-blocks on an internal fence instead of
-        // relying on the acquire semaphore): wait for this frame's own
-        // submission to finish CPU-side before presenting, so Present
-        // needs no GPU-side wait at all -- pass an invalid semaphore
-        // handle, which the backend correctly turns into "0 wait
-        // semaphores" rather than a present that waits on something that
-        // can never be signaled.
+        // Acquire-side design (VulkanSwapchain.cpp CPU-blocks on an
+        // internal fence instead of relying on the acquire semaphore):
+        // wait for this frame's own submission to finish CPU-side before
+        // presenting, so Present needs no GPU-side wait at all -- pass an
+        // invalid semaphore handle, which the backend correctly turns
+        // into "0 wait semaphores" rather than a present that waits on
+        // something that can never be signaled.
         Fluxion_RHI_WaitForFence(frameFences[frameIndex]);
         Fluxion_RHI_ResetFence(frameFences[frameIndex]); // ready for this slot's next use, FLUXION_DEMO_FRAMES_IN_FLIGHT frames from now
         Fluxion_RHI_Swapchain_Present(swapchain, imageIndex, noSemaphore);

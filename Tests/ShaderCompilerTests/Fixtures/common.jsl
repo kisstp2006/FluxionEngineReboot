@@ -1,0 +1,10 @@
+float saturate(float t) { return clamp(t, 0.0, 1.0); }
+Vector2 saturate(Vector2 v) { return clamp(v, Vector2(0.0, 0.0), Vector2(1.0, 1.0)); }
+Vector3 saturate(Vector3 v) { return clamp(v, Vector3(0.0, 0.0, 0.0), Vector3(1.0, 1.0, 1.0)); }
+
+float average(Vector3 v) { return (v.x + v.y + v.z) / 3.0; }
+
+Vector3 tonemap(Vector3 color, float exposure) {
+  Vector3 mapped = saturate(color * exposure);
+  return mapped;
+}

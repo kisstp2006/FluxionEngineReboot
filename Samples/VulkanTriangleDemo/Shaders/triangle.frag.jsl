@@ -1,0 +1,7 @@
+[Input] Vector3 vColor;
+
+[Target(0)] Vector4 fragColor;
+
+void main() {
+  return Vector4(vColor, 1.0);
+}

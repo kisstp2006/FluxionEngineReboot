@@ -1,0 +1,10 @@
+[Input] Vector2 position;
+[Input] Vector3 color;
+
+[Output] Vector3 vColor;
+[Output] Vector4 Position;
+
+void main() {
+  vColor = color;
+  Position = Vector4(position, 0.0, 1.0);
+}

@@ -1,0 +1,15 @@
+#include common.jsl
+
+[Input] Vector3 vColor;
+[Input] Vector2 vUV;
+
+[Uniform] float exposure;
+[Texture] Texture2D albedoMap;
+
+[Target(0)] Vector4 fragColor;
+
+void main() {
+  Vector4 sampled = texture2D(albedoMap, vUV);
+  Vector3 lit = tonemap(vColor * sampled.xyz, exposure);
+  return Vector4(lit, sampled.w);
+}
