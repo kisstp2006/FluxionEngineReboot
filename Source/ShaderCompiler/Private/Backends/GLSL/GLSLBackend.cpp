@@ -61,14 +61,14 @@ std::string RemapCallName(const std::string& name)
 class GLSLEmitter
 {
 public:
-    GLSLEmitter(const Program& program, const ShaderIRModule& module, DiagnosticList& diagnostics)
-        : m_program(program), m_module(module), m_diagnostics(diagnostics)
+    GLSLEmitter(const Program& program, const ShaderIRModule& module, DiagnosticList& diagnostics, const GLSLOptions& options)
+        : m_program(program), m_module(module), m_diagnostics(diagnostics), m_options(options)
     {
     }
 
     std::string Run()
     {
-        m_out << "#version 450 core\n\n";
+        m_out << "#version " << m_options.versionDirective << "\n\n";
         EmitStageIO();
         EmitOutputSlots();
         EmitUniforms();
@@ -82,6 +82,7 @@ private:
     const Program& m_program;
     const ShaderIRModule& m_module;
     DiagnosticList& m_diagnostics;
+    GLSLOptions m_options;
     std::ostringstream m_out;
     bool m_inEntryFunction = false;
 
@@ -284,9 +285,9 @@ private:
 
 } // namespace
 
-std::string EmitGLSL(const Program& program, const ShaderIRModule& module, DiagnosticList& diagnostics)
+std::string EmitGLSL(const Program& program, const ShaderIRModule& module, DiagnosticList& diagnostics, const GLSLOptions& options)
 {
-    GLSLEmitter emitter(program, module, diagnostics);
+    GLSLEmitter emitter(program, module, diagnostics, options);
     return emitter.Run();
 }
 

@@ -11,6 +11,18 @@
 namespace Fluxion::ShaderCompiler
 {
 
+// Nothing about the target shader model or SPIR-V environment is fixed
+// inside the adapter itself -- both are caller-supplied, defaulting to
+// values that work with the Vulkan 1.2-minimum backend this compiler
+// currently targets, but callers building for a newer/older Vulkan
+// version (or a different SPIR-V consumer entirely) can override either
+// without touching this module.
+struct DXCOptions
+{
+    std::string shaderModel = "6_0";       // dxc -T <stage>_<shaderModel>
+    std::string spirvTargetEnv = "vulkan1.2"; // dxc -fspv-target-env=<...>
+};
+
 // The only file in this module that ever shells out to an external
 // tool: hands HLSL text to the `dxc` command-line compiler (from the
 // Vulkan/DirectX Shader Compiler project) and gets SPIR-V bytes back.
@@ -24,6 +36,7 @@ Fluxion::Foundation::Result<std::vector<uint8_t>> CompileToSpirv(
     const std::string& hlslSource,
     ShaderStage stage,
     const std::string& entryPoint,
-    DiagnosticList& outDiagnostics);
+    DiagnosticList& outDiagnostics,
+    const DXCOptions& options = {});
 
 } // namespace Fluxion::ShaderCompiler

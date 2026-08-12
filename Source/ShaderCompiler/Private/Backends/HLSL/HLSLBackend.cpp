@@ -111,7 +111,7 @@ private:
 
     void EmitStageStructs()
     {
-        m_out << "struct VSInput\n{\n";
+        m_out << "struct StageInput\n{\n";
         for (const IRStageIOField& f : m_module.inputs)
             m_out << "    [[vk::location(" << f.location << ")]] " << HLSLTypeName(f.type) << " " << f.name << " : TEXCOORD" << f.location << ";\n";
         m_out << "};\n\n";
@@ -164,7 +164,7 @@ private:
     void EmitWrapperMain()
     {
         bool isVertex = m_module.stage == ShaderStage::Vertex;
-        m_out << "StageOutput main(VSInput input)\n{\n";
+        m_out << "StageOutput main(StageInput input)\n{\n";
         for (const IRStageIOField& f : m_module.inputs)
             m_out << "    " << f.name << " = input." << f.name << ";\n";
         m_out << "    shaderMain();\n";

@@ -28,13 +28,13 @@ Fluxion::Foundation::Result<CompiledShader> Compile(const std::string& source, c
         return Fluxion::Foundation::Result<CompiledShader>::Error(4, "shader semantic analysis failed");
 
     CompiledShader result;
-    result.reflection = BuildIR(program, options.stage, outDiagnostics);
+    result.reflection = BuildIR(program, options.stage, outDiagnostics, options.irOptions);
     result.reflection.entryPoint = options.entryPoint;
     if (outDiagnostics.HasErrors())
         return Fluxion::Foundation::Result<CompiledShader>::Error(5, "shader IR construction failed");
 
     result.hlslSource = EmitHLSL(program, result.reflection, outDiagnostics);
-    result.glslSource = EmitGLSL(program, result.reflection, outDiagnostics);
+    result.glslSource = EmitGLSL(program, result.reflection, outDiagnostics, options.glslOptions);
     if (outDiagnostics.HasErrors())
         return Fluxion::Foundation::Result<CompiledShader>::Error(6, "shader backend emission failed");
 

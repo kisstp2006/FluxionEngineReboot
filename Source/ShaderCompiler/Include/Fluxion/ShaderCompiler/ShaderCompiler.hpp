@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Fluxion/Foundation/Result.hpp>
+#include <Fluxion/ShaderCompiler/Backends/GLSL/GLSLBackend.hpp>
 #include <Fluxion/ShaderCompiler/Diagnostics.hpp>
 #include <Fluxion/ShaderCompiler/Frontend/Preprocessor.hpp>
 #include <Fluxion/ShaderCompiler/IR/ShaderIR.hpp>
@@ -16,6 +17,13 @@ struct CompileOptions
     std::string entryPoint = "main";
     std::string fileName = "<source>";
     IncludeResolver includeResolver; // optional; unset means #include always fails to resolve
+
+    // Nothing target-specific is fixed inside the compiler itself --
+    // both of these carry sane defaults for the current Vulkan backend,
+    // but a caller targeting a different pipeline layout or GLSL profile
+    // overrides them here rather than the compiler guessing.
+    IRBuildOptions irOptions;
+    GLSLOptions glslOptions;
 };
 
 struct CompiledShader

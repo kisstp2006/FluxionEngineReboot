@@ -43,14 +43,14 @@ std::string ResolveDXCCommand()
     return "dxc";
 }
 
-const char* ProfileForStage(ShaderStage stage)
+std::string StagePrefix(ShaderStage stage)
 {
     switch (stage)
     {
-        case ShaderStage::Vertex: return "vs_6_0";
-        case ShaderStage::Fragment: return "ps_6_0";
-        case ShaderStage::Compute: return "cs_6_0";
-        default: return "ps_6_0";
+        case ShaderStage::Vertex: return "vs";
+        case ShaderStage::Fragment: return "ps";
+        case ShaderStage::Compute: return "cs";
+        default: return "ps";
     }
 }
 
@@ -103,7 +103,8 @@ Fluxion::Foundation::Result<std::vector<uint8_t>> CompileToSpirv(
     const std::string& hlslSource,
     ShaderStage stage,
     const std::string& entryPoint,
-    DiagnosticList& outDiagnostics)
+    DiagnosticList& outDiagnostics,
+    const DXCOptions& options)
 {
     std::filesystem::path inputPath = MakeTempPath(".hlsl");
     std::filesystem::path outputPath = MakeTempPath(".spv");
@@ -114,8 +115,8 @@ Fluxion::Foundation::Result<std::vector<uint8_t>> CompileToSpirv(
     }
 
     std::string command = ResolveDXCCommand() +
-        " -spirv -fspv-target-env=vulkan1.2" +
-        " -T " + ProfileForStage(stage) +
+        " -spirv -fspv-target-env=" + options.spirvTargetEnv +
+        " -T " + StagePrefix(stage) + "_" + options.shaderModel +
         " -E " + entryPoint +
         " -Fo \"" + outputPath.string() + "\"" +
         " \"" + inputPath.string() + "\"";

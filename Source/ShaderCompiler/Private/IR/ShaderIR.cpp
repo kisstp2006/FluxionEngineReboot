@@ -1,5 +1,7 @@
 #include <Fluxion/ShaderCompiler/IR/ShaderIR.hpp>
 
+#include <string>
+
 namespace Fluxion::ShaderCompiler
 {
 
@@ -16,7 +18,7 @@ constexpr unsigned int kPushConstantSlotSize = 16;
 
 } // namespace
 
-ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList& diagnostics)
+ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList& diagnostics, const IRBuildOptions& options)
 {
     ShaderIRModule module;
     module.stage = stage;
@@ -63,8 +65,8 @@ ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList
         }
     }
 
-    if (nextPushConstantOffset > 128)
-        diagnostics.AddError(SourceLocation{}, "shader uses more than 128 bytes of push-constant storage (the current pipeline layout's limit)");
+    if (nextPushConstantOffset > options.maxPushConstantBytes)
+        diagnostics.AddError(SourceLocation{}, "shader uses more than " + std::to_string(options.maxPushConstantBytes) + " bytes of push-constant storage (the current pipeline layout's limit)");
 
     return module;
 }

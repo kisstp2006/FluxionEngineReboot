@@ -69,9 +69,19 @@ struct ShaderIRModule
     std::optional<std::string> returnTarget;
 };
 
+struct IRBuildOptions
+{
+    // The pipeline layout's actual push-constant budget, in bytes -- the
+    // RHI backend this shader will ultimately run on owns the real
+    // number (its current Vulkan pipeline layout happens to allocate
+    // 128), so the caller passes it in rather than this module assuming
+    // a fixed limit of its own.
+    unsigned int maxPushConstantBytes = 128;
+};
+
 // Builds the module-level IR metadata from an already-Analyze()'d
 // Program -- does not re-run semantic analysis and does not mutate the
 // AST beyond what Analyze already did.
-ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList& diagnostics);
+ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList& diagnostics, const IRBuildOptions& options = {});
 
 } // namespace Fluxion::ShaderCompiler
