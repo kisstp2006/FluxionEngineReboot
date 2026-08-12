@@ -22,14 +22,33 @@ namespace Fluxion::ShaderCompiler
 namespace
 {
 
+// std::getenv is fine to call here (read-only, once, off any hot path),
+// but MSVC's CRT flags it as deprecated in favor of _dupenv_s regardless
+// -- this wraps the platform difference in one place rather than
+// disabling the warning wholesale for the file.
+std::string GetEnvironmentVariable(const char* name)
+{
+#if defined(_WIN32)
+    char* value = nullptr;
+    size_t length = 0;
+    if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) return {};
+    std::string result(value);
+    free(value);
+    return result;
+#else
+    const char* value = std::getenv(name);
+    return value ? std::string(value) : std::string();
+#endif
+}
+
 // dxc ships inside the Vulkan SDK's Bin directory -- preferred over a
 // bare "dxc" PATH lookup since a machine can have the SDK installed
 // without its Bin directory on PATH. Falls back to a bare "dxc" so a
 // standalone DXC install (no full Vulkan SDK) still works.
 std::string ResolveDXCCommand()
 {
-    const char* sdkPath = std::getenv("VULKAN_SDK");
-    if (sdkPath && *sdkPath)
+    std::string sdkPath = GetEnvironmentVariable("VULKAN_SDK");
+    if (!sdkPath.empty())
     {
         std::filesystem::path candidate = std::filesystem::path(sdkPath) / "Bin" /
 #if defined(_WIN32)

@@ -22,8 +22,10 @@ void Test_HLSLBackend_Run(TestContext& ctx)
     if (!result.IsOk()) return;
 
     const std::string& hlsl = result.Value().hlslSource;
-    TEST_CHECK(ctx, hlsl.find("PushConstants") != std::string::npos);
-    TEST_CHECK(ctx, hlsl.find("[[vk::push_constant]]") != std::string::npos);
+    // [Uniform] with no explicit group defaults to Material (set 2).
+    TEST_CHECK(ctx, hlsl.find("cbuffer GroupMaterialConstants") != std::string::npos);
+    TEST_CHECK(ctx, hlsl.find("[[vk::binding(0, 2)]]") != std::string::npos);
+    TEST_CHECK(ctx, hlsl.find("register(b0, space2)") != std::string::npos);
     TEST_CHECK(ctx, hlsl.find("SV_Target0") != std::string::npos);
     TEST_CHECK(ctx, hlsl.find("shaderMain") != std::string::npos);
     TEST_CHECK(ctx, hlsl.find("float3") != std::string::npos); // Vector3 -> float3

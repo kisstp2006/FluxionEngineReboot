@@ -10,11 +10,26 @@ namespace
 
 bool IsOpaqueResource(TypeKind kind) { return kind == TypeKind::Sampler2D || kind == TypeKind::SamplerCube; }
 
-// Every push-constant member is placed on its own 16-byte slot. This
+// Every uniform-buffer member is placed on its own 16-byte slot. This
 // wastes space compared to tight std140/HLSL packing rules, but is
 // always correct regardless of member order or type mix, which matters
-// more than density for a handful of small per-draw constants.
-constexpr unsigned int kPushConstantSlotSize = 16;
+// more than density for a handful of small per-group constants.
+constexpr unsigned int kUniformBufferSlotSize = 16;
+
+constexpr size_t kBindingGroupCount = 4; // Global, Frame, Material, Object
+
+// Per-BindingGroup working state while walking the declaration list --
+// a texture/sampler pair's binding is only final once it's known whether
+// its group also has a merged uniform buffer (which always claims
+// binding 0), so opaque resources are collected here and numbered in a
+// second pass rather than assigned a binding as they're seen.
+struct GroupState
+{
+    std::vector<IRUniformBufferMember> members;
+    unsigned int nextMemberOffset = 0;
+    std::vector<std::pair<std::string, ShaderType>> opaqueResources; // declaration order
+    std::vector<std::pair<std::string, ShaderType>> storageBufferResources; // declaration order, from [Buffer(Group)]
+};
 
 } // namespace
 
@@ -25,8 +40,7 @@ ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList
 
     int nextInputLocation = 0;
     int nextOutputLocation = 0;
-    int nextTextureSlot = 0;
-    unsigned int nextPushConstantOffset = 0;
+    GroupState groups[kBindingGroupCount];
 
     for (const DeclPtr& decl : program.declarations)
     {
@@ -49,14 +63,19 @@ ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList
             }
             case DeclKind::Uniform: {
                 auto* d = static_cast<UniformDecl*>(decl.get());
-                if (IsOpaqueResource(d->type.kind))
+                GroupState& group = groups[(size_t)d->group];
+                if (d->isStorageBuffer)
                 {
-                    module.resources.push_back(IRResourceBinding{ d->name, d->type, BindingGroup::Material, nextTextureSlot++ });
+                    group.storageBufferResources.emplace_back(d->name, d->type);
+                }
+                else if (IsOpaqueResource(d->type.kind))
+                {
+                    group.opaqueResources.emplace_back(d->name, d->type);
                 }
                 else
                 {
-                    module.pushConstants.push_back(IRPushConstantMember{ d->name, d->type, nextPushConstantOffset });
-                    nextPushConstantOffset += kPushConstantSlotSize;
+                    group.members.push_back(IRUniformBufferMember{ d->name, d->type, group.nextMemberOffset });
+                    group.nextMemberOffset += kUniformBufferSlotSize;
                 }
                 break;
             }
@@ -65,8 +84,34 @@ ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList
         }
     }
 
-    if (nextPushConstantOffset > options.maxPushConstantBytes)
-        diagnostics.AddError(SourceLocation{}, "shader uses more than " + std::to_string(options.maxPushConstantBytes) + " bytes of push-constant storage (the current pipeline layout's limit)");
+    for (size_t g = 0; g < kBindingGroupCount; ++g)
+    {
+        GroupState& group = groups[g];
+        BindingGroup groupEnum = (BindingGroup)g;
+
+        bool hasUniformBuffer = !group.members.empty();
+        if (hasUniformBuffer)
+        {
+            if (group.nextMemberOffset > options.maxUniformBufferBytesPerGroup)
+                diagnostics.AddError(SourceLocation{}, "a BindingGroup's uniform buffer uses more than " + std::to_string(options.maxUniformBufferBytesPerGroup) + " bytes (the configured per-group limit)");
+            module.uniformBuffers.push_back(IRUniformBufferBinding{ groupEnum, std::move(group.members), group.nextMemberOffset });
+        }
+
+        int nextBinding = hasUniformBuffer ? 1 : 0; // binding 0 is reserved for the group's uniform buffer, if it has one
+        for (auto& [name, type] : group.opaqueResources)
+        {
+            int textureBinding = nextBinding++;
+            int samplerBinding = nextBinding++;
+            module.resources.push_back(IRResourceBinding{ name, type, groupEnum, textureBinding, samplerBinding });
+        }
+        // A storage buffer takes exactly one binding number (no paired
+        // sampler binding), unlike an opaque texture resource above.
+        for (auto& [name, type] : group.storageBufferResources)
+        {
+            int binding = nextBinding++;
+            module.storageBuffers.push_back(IRResourceBinding{ name, type, groupEnum, binding, 0 });
+        }
+    }
 
     return module;
 }

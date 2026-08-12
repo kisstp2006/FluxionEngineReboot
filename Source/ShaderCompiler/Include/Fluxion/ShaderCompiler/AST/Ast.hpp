@@ -23,6 +23,13 @@ enum class TypeKind
     Unresolved, // a named (struct) type not yet looked up
 };
 
+// The logical binding-frequency group a [Uniform]/[Texture] resource
+// belongs to (matches the portable RHI's FluxionRHIBindGroupLayoutHandle
+// indices: Global=0, Frame=1, Material=2, Object=3) -- lives here rather
+// than in IR/ShaderIR.hpp because UniformDecl (an AST node) needs it, and
+// ShaderIR.hpp already includes this header, not the other way around.
+enum class BindingGroup { Global, Frame, Material, Object };
+
 struct ShaderType
 {
     TypeKind kind = TypeKind::Void;
@@ -218,6 +225,14 @@ struct UniformDecl : Decl
 {
     ShaderType type;
     std::string name;
+    // From an optional `[Uniform(Group)]`/`[Texture(Group)]`/
+    // `[Buffer(Group)]` argument -- defaults to Material, the most common
+    // case for a per-material constant, texture, or buffer.
+    BindingGroup group = BindingGroup::Material;
+    // True when this declaration came from `[Buffer(Group)]` -- a
+    // read-write storage buffer (always element type `float` in v1)
+    // rather than a `[Uniform]` constant or a `[Texture]` opaque resource.
+    bool isStorageBuffer = false;
     UniformDecl() : Decl(DeclKind::Uniform) {}
 };
 

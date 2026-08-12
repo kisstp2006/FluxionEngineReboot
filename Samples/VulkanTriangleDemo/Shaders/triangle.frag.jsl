@@ -1,7 +1,9 @@
 [Input] Vector3 vColor;
 
+[Uniform(Material)] Vector3 tint;
+
 [Target(0)] Vector4 fragColor;
 
 void main() {
-  return Vector4(vColor, 1.0);
+  return Vector4(vColor * tint, 1.0);
 }

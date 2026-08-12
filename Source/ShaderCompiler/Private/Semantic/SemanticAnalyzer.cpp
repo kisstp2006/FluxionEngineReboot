@@ -54,6 +54,12 @@ public:
 
     bool Run()
     {
+        // A compute-only built-in: the X component of the global
+        // invocation ID. Seeded unconditionally (same permissive style as
+        // every other global here) -- harmless if a vertex/fragment
+        // shader never references it.
+        m_globals["ThreadID"] = ShaderType{ TypeKind::Uint };
+
         // Pass 1: collect every global name (uniforms, stage IO, consts,
         // output slots, function overload sets) before checking any
         // function body, so forward references between declarations work.

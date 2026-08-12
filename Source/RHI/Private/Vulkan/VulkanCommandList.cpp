@@ -111,6 +111,12 @@ struct FluxionRHIVulkanCommandList
     FluxionRHIQueueType queueType = FLUXION_RHI_QUEUE_TYPE_GRAPHICS;
     bool recording = false;
     bool insideRendering = false;
+    // Set by SetPipeline, consumed by SetBindGroup -- vkCmdBindDescriptorSets
+    // needs both the bind point (graphics vs. compute) and the pipeline
+    // layout a bound set is being matched against, neither of which the
+    // portable FluxionRHI_CommandList_SetBindGroup call carries itself.
+    VkPipelineLayout currentPipelineLayout = VK_NULL_HANDLE;
+    VkPipelineBindPoint currentBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 };
 
 static FluxionRHIVulkanSlot s_commandListSlots[FLUXION_RHI_VULKAN_MAX_COMMAND_LISTS];
@@ -224,6 +230,7 @@ void Fluxion_RHIVulkan_CommandListBegin(FluxionRHICommandListHandle commandList)
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cl->commandBuffer, &beginInfo);
     cl->recording = true;
+    cl->currentPipelineLayout = VK_NULL_HANDLE; // a fresh recording has no pipeline bound yet
 }
 
 void Fluxion_RHIVulkan_CommandListEnd(FluxionRHICommandListHandle commandList)
@@ -314,7 +321,17 @@ void Fluxion_RHIVulkan_CommandListSetPipeline(FluxionRHICommandListHandle comman
     FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);
     FluxionRHIVulkanPipeline* pipelineState = Fluxion_RHIVulkan_ResolvePipeline(pipeline);
     if (cl == nullptr || pipelineState == nullptr) return;
-    vkCmdBindPipeline(cl->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineState->pipeline);
+    vkCmdBindPipeline(cl->commandBuffer, pipelineState->bindPoint, pipelineState->pipeline);
+    cl->currentPipelineLayout = pipelineState->layout;
+    cl->currentBindPoint = pipelineState->bindPoint;
+}
+
+void Fluxion_RHIVulkan_CommandListSetBindGroup(FluxionRHICommandListHandle commandList, u32 groupIndex, FluxionRHIBindGroupHandle bindGroup)
+{
+    FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);
+    VkDescriptorSet set = Fluxion_RHIVulkan_ResolveBindGroup(bindGroup);
+    if (cl == nullptr || set == VK_NULL_HANDLE || cl->currentPipelineLayout == VK_NULL_HANDLE) return;
+    vkCmdBindDescriptorSets(cl->commandBuffer, cl->currentBindPoint, cl->currentPipelineLayout, groupIndex, 1, &set, 0, nullptr);
 }
 
 void Fluxion_RHIVulkan_CommandListSetVertexBuffer(FluxionRHICommandListHandle commandList, u32 slot, FluxionRHIBufferHandle buffer, usize offset)
@@ -388,6 +405,23 @@ void Fluxion_RHIVulkan_CommandListCopyTexture(FluxionRHICommandListHandle comman
     region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     region.extent = { srcState->width, srcState->height, srcState->depth };
     vkCmdCopyImage(cl->commandBuffer, srcState->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstState->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+}
+
+void Fluxion_RHIVulkan_CommandListCopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer)
+{
+    FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);
+    FluxionRHIVulkanBuffer* srcState = Fluxion_RHIVulkan_ResolveBuffer(src);
+    FluxionRHIVulkanTexture* dstState = Fluxion_RHIVulkan_ResolveTexture(dst);
+    if (cl == nullptr || srcState == nullptr || dstState == nullptr) return;
+
+    u32 width = dstState->width >> mipLevel; if (width == 0) width = 1;
+    u32 height = dstState->height >> mipLevel; if (height == 0) height = 1;
+
+    VkBufferImageCopy region = {};
+    region.bufferOffset = srcOffset;
+    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, arrayLayer, 1 };
+    region.imageExtent = { width, height, 1 };
+    vkCmdCopyBufferToImage(cl->commandBuffer, srcState->buffer, dstState->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
 void Fluxion_RHIVulkan_CommandListBarrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)

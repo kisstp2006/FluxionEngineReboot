@@ -58,6 +58,37 @@ std::string RemapCallName(const std::string& name)
     return name;
 }
 
+// Same convention as the HLSL backend: a BindingGroup's enum value is
+// its descriptor set index directly (matches FLUXION_RHI_BIND_GROUP_*).
+int GroupSetIndex(BindingGroup group) { return (int)group; }
+
+// Unlike the HLSL backend's `[[vk::binding(B, S)]]` (consumed only by
+// dxc/SPIR-V, which understands descriptor sets), this GLSL text is fed
+// directly to a real OpenGL driver's GLSL compiler by the RHI's OpenGL
+// backend -- and core-profile GLSL has no `set` concept at all
+// (`layout(set = ...)` is a glslang/Vulkan-GLSL extension a stock driver
+// rejects outright). The OpenGL backend instead partitions one flat GL
+// binding-point namespace per BindingGroup with a fixed stride
+// (`Fluxion_RHIOpenGL_CommandListSetBindGroup` in
+// Source/RHI/Private/OpenGL/OpenGLBinding.cpp: `groupIndex *
+// FLUXION_RHIOPENGL_BINDINGS_PER_GROUP + entry.binding`) -- this must
+// stay numerically identical to that RHI-side constant, or a shader's
+// declared binding and the buffer/texture the RHI backend actually binds
+// at that GL binding point silently disagree.
+constexpr int kOpenGLBindingsPerGroup = 16;
+int OpenGLFlatBinding(BindingGroup group, int localBinding) { return GroupSetIndex(group) * kOpenGLBindingsPerGroup + localBinding; }
+
+const char* GroupName(BindingGroup group)
+{
+    switch (group)
+    {
+        case BindingGroup::Global: return "Global";
+        case BindingGroup::Frame: return "Frame";
+        case BindingGroup::Object: return "Object";
+        default: return "Material";
+    }
+}
+
 class GLSLEmitter
 {
 public:
@@ -69,9 +100,13 @@ public:
     std::string Run()
     {
         m_out << "#version " << m_options.versionDirective << "\n\n";
+        if (m_module.stage == ShaderStage::Compute)
+            m_out << "layout(local_size_x = " << m_module.localSizeX << ", local_size_y = 1, local_size_z = 1) in;\n\n";
         EmitStageIO();
         EmitOutputSlots();
-        EmitUniforms();
+        EmitTextures();
+        EmitUniformBuffers();
+        EmitStorageBuffers();
         m_out << "\n";
         EmitGlobalConsts();
         EmitFunctions();
@@ -108,12 +143,38 @@ private:
             m_out << "layout(location = " << o.slot << ") out " << GLSLTypeName(o.type) << " " << o.name << ";\n";
     }
 
-    void EmitUniforms()
+    void EmitTextures()
     {
+        // GLSL's sampler2D/samplerCube is already a single combined
+        // image+sampler descriptor -- unlike the HLSL backend, there is
+        // no separate sampler binding to emit here, so only r.binding
+        // (not r.samplerBinding) is meaningful for this backend.
         for (const IRResourceBinding& r : m_module.resources)
-            m_out << "layout(binding = " << r.slot << ") uniform " << GLSLTypeName(r.type) << " " << r.name << ";\n";
-        for (const IRPushConstantMember& m : m_module.pushConstants)
-            m_out << "uniform " << GLSLTypeName(m.type) << " " << m.name << ";\n";
+            m_out << "layout(binding = " << OpenGLFlatBinding(r.group, r.binding) << ") uniform " << GLSLTypeName(r.type) << " " << r.name << ";\n";
+    }
+
+    void EmitUniformBuffers()
+    {
+        for (const IRUniformBufferBinding& ub : m_module.uniformBuffers)
+        {
+            m_out << "layout(binding = " << OpenGLFlatBinding(ub.group, 0) << ") uniform Group" << GroupName(ub.group) << "Block\n{\n";
+            for (const IRUniformBufferMember& m : ub.members)
+                m_out << "    " << GLSLTypeName(m.type) << " " << m.name << ";\n";
+            m_out << "};\n";
+        }
+    }
+
+    void EmitStorageBuffers()
+    {
+        // Same std430-block style as EmitUniformBuffers, named
+        // ...StorageBlock instead of ...Block to distinguish a
+        // read-write [Buffer(Group)] from a read-only [Uniform(Group)].
+        for (const IRResourceBinding& b : m_module.storageBuffers)
+        {
+            m_out << "layout(std430, binding = " << OpenGLFlatBinding(b.group, b.binding) << ") buffer Group" << GroupName(b.group) << "StorageBlock\n{\n";
+            m_out << "    " << GLSLTypeName(b.type) << " " << b.name << "[];\n";
+            m_out << "};\n";
+        }
     }
 
     void EmitGlobalConsts()
@@ -232,7 +293,10 @@ private:
             case ExprKind::VarRef: {
                 const std::string& name = static_cast<const VarRefExpr&>(expr).name;
                 bool isVertexPosition = m_module.stage == ShaderStage::Vertex && name == "Position";
-                m_out << (isVertexPosition ? "gl_Position" : name);
+                bool isThreadID = m_module.stage == ShaderStage::Compute && name == "ThreadID";
+                if (isVertexPosition) m_out << "gl_Position";
+                else if (isThreadID) m_out << "gl_GlobalInvocationID.x";
+                else m_out << name;
                 break;
             }
             case ExprKind::Unary: {

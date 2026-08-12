@@ -27,6 +27,8 @@
 #define FLUXION_RHI_NULL_MAX_FENCES 64
 #define FLUXION_RHI_NULL_MAX_SEMAPHORES 64
 #define FLUXION_RHI_NULL_MAX_QUERY_POOLS 16
+#define FLUXION_RHI_NULL_MAX_BIND_GROUP_LAYOUTS 128
+#define FLUXION_RHI_NULL_MAX_BIND_GROUPS 512
 
 // --- Generic slot pool -------------------------------------------------------
 //
@@ -117,6 +119,8 @@ FLUXION_RHI_NULL_DEFINE_VALIDATABLE_POOL(FluxionRHIShaderHandle, s_shaderPool, F
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIPipelineHandle, s_pipelinePool, FLUXION_RHI_NULL_MAX_PIPELINES)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHISemaphoreHandle, s_semaphorePool, FLUXION_RHI_NULL_MAX_SEMAPHORES)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIQueryPoolHandle, s_queryPoolPool, FLUXION_RHI_NULL_MAX_QUERY_POOLS)
+FLUXION_RHI_NULL_DEFINE_VALIDATABLE_POOL(FluxionRHIBindGroupLayoutHandle, s_bindGroupLayoutPool, FLUXION_RHI_NULL_MAX_BIND_GROUP_LAYOUTS)
+FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIBindGroupHandle, s_bindGroupPool, FLUXION_RHI_NULL_MAX_BIND_GROUPS)
 
 // --- Devices (no extra payload -- just an alive slot) -----------------------
 
@@ -198,6 +202,8 @@ static void Fluxion_RHI_Null_ResetAllState(void)
     memset(s_pipelinePool, 0, sizeof(s_pipelinePool));
     memset(s_semaphorePool, 0, sizeof(s_semaphorePool));
     memset(s_queryPoolPool, 0, sizeof(s_queryPoolPool));
+    memset(s_bindGroupLayoutPool, 0, sizeof(s_bindGroupLayoutPool));
+    memset(s_bindGroupPool, 0, sizeof(s_bindGroupPool));
     memset(s_deviceSlots, 0, sizeof(s_deviceSlots));
     memset(s_commandListSlots, 0, sizeof(s_commandListSlots));
     memset(s_commandListState, 0, sizeof(s_commandListState));
@@ -446,11 +452,28 @@ static void Fluxion_RHI_Null_CommandListCopyTexture(FluxionRHICommandListHandle 
     Fluxion_RHI_Null_RequireRecording(commandList, "CopyTexture");
 }
 
+static void Fluxion_RHI_Null_CommandListCopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer)
+{
+    FLUXION_UNUSED(src);
+    FLUXION_UNUSED(srcOffset);
+    FLUXION_UNUSED(dst);
+    FLUXION_UNUSED(mipLevel);
+    FLUXION_UNUSED(arrayLayer);
+    Fluxion_RHI_Null_RequireRecording(commandList, "CopyBufferToTexture");
+}
+
 static void Fluxion_RHI_Null_CommandListBarrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)
 {
     FLUXION_UNUSED(barriers);
     FLUXION_UNUSED(barrierCount);
     Fluxion_RHI_Null_RequireRecording(commandList, "Barrier");
+}
+
+static void Fluxion_RHI_Null_CommandListSetBindGroup(FluxionRHICommandListHandle commandList, u32 groupIndex, FluxionRHIBindGroupHandle bindGroup)
+{
+    FLUXION_UNUSED(groupIndex);
+    FLUXION_UNUSED(bindGroup);
+    Fluxion_RHI_Null_RequireRecording(commandList, "SetBindGroup");
 }
 
 // --- Submission ------------------------------------------------------------
@@ -543,6 +566,30 @@ static FluxionRHISamplerHandle Fluxion_RHI_Null_CreateSampler(FluxionRHIDeviceHa
 
 static void Fluxion_RHI_Null_DestroySampler(FluxionRHISamplerHandle sampler) { s_samplerPool_Free(sampler); }
 
+// --- Binding model ---------------------------------------------------------
+
+static FluxionRHIBindGroupLayoutHandle Fluxion_RHI_Null_CreateBindGroupLayout(FluxionRHIDeviceHandle device, const FluxionRHIBindGroupLayoutDesc* desc)
+{
+    FLUXION_UNUSED(desc);
+    FluxionRHIBindGroupLayoutHandle handle = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    if (!Fluxion_RHINull_IsValid(s_deviceSlots, FLUXION_RHI_NULL_MAX_DEVICES, device.index, device.generation)) return handle;
+    s_bindGroupLayoutPool_Allocate(&handle);
+    return handle;
+}
+
+static void Fluxion_RHI_Null_DestroyBindGroupLayout(FluxionRHIBindGroupLayoutHandle layout) { s_bindGroupLayoutPool_Free(layout); }
+
+static FluxionRHIBindGroupHandle Fluxion_RHI_Null_CreateBindGroup(FluxionRHIDeviceHandle device, const FluxionRHIBindGroupDesc* desc)
+{
+    FLUXION_UNUSED(device);
+    FluxionRHIBindGroupHandle handle = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    if (desc == NULL || !s_bindGroupLayoutPool_IsValid(desc->layout)) return handle;
+    s_bindGroupPool_Allocate(&handle);
+    return handle;
+}
+
+static void Fluxion_RHI_Null_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup) { s_bindGroupPool_Free(bindGroup); }
+
 // --- Shaders / pipelines -------------------------------------------------
 
 static FluxionRHIShaderHandle Fluxion_RHI_Null_CreateShader(FluxionRHIDeviceHandle device, const FluxionRHIShaderDesc* desc)
@@ -565,7 +612,33 @@ static FluxionRHIPipelineHandle Fluxion_RHI_Null_CreateGraphicsPipeline(FluxionR
     return handle;
 }
 
+static FluxionRHIPipelineHandle Fluxion_RHI_Null_CreateComputePipeline(FluxionRHIDeviceHandle device, const FluxionRHIComputePipelineDesc* desc)
+{
+    FluxionRHIPipelineHandle handle = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    if (!Fluxion_RHINull_IsValid(s_deviceSlots, FLUXION_RHI_NULL_MAX_DEVICES, device.index, device.generation)) return handle;
+    if (desc == NULL || !s_shaderPool_IsValid(desc->computeShader)) return handle;
+    s_pipelinePool_Allocate(&handle);
+    return handle;
+}
+
 static void Fluxion_RHI_Null_DestroyPipeline(FluxionRHIPipelineHandle pipeline) { s_pipelinePool_Free(pipeline); }
+
+// No real pipeline cache exists here -- the Null backend never builds
+// anything worth caching, so these consistently report "unsupported"
+// rather than pretending to persist a cache that would always be empty.
+static bool Fluxion_RHI_Null_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, const char* path)
+{
+    FLUXION_UNUSED(device);
+    FLUXION_UNUSED(path);
+    return false;
+}
+
+static bool Fluxion_RHI_Null_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, const char* path)
+{
+    FLUXION_UNUSED(device);
+    FLUXION_UNUSED(path);
+    return false;
+}
 
 // --- Swapchain -----------------------------------------------------------
 
@@ -775,7 +848,9 @@ static const FluxionRHIBackendVTable s_nullVTable = {
     Fluxion_RHI_Null_CommandListDispatch,
     Fluxion_RHI_Null_CommandListCopyBuffer,
     Fluxion_RHI_Null_CommandListCopyTexture,
+    Fluxion_RHI_Null_CommandListCopyBufferToTexture,
     Fluxion_RHI_Null_CommandListBarrier,
+    Fluxion_RHI_Null_CommandListSetBindGroup,
 
     Fluxion_RHI_Null_QueueSubmit,
 
@@ -790,10 +865,18 @@ static const FluxionRHIBackendVTable s_nullVTable = {
     Fluxion_RHI_Null_CreateSampler,
     Fluxion_RHI_Null_DestroySampler,
 
+    Fluxion_RHI_Null_CreateBindGroupLayout,
+    Fluxion_RHI_Null_DestroyBindGroupLayout,
+    Fluxion_RHI_Null_CreateBindGroup,
+    Fluxion_RHI_Null_DestroyBindGroup,
+
     Fluxion_RHI_Null_CreateShader,
     Fluxion_RHI_Null_DestroyShader,
     Fluxion_RHI_Null_CreateGraphicsPipeline,
+    Fluxion_RHI_Null_CreateComputePipeline,
     Fluxion_RHI_Null_DestroyPipeline,
+    Fluxion_RHI_Null_SavePipelineCacheToFile,
+    Fluxion_RHI_Null_LoadPipelineCacheFromFile,
 
     Fluxion_RHI_Null_CreateSwapchain,
     Fluxion_RHI_Null_DestroySwapchain,

@@ -64,6 +64,24 @@ std::string RemapCallName(const std::string& name)
 
 bool IsTextureSampleCall(const std::string& name) { return name == "texture2D" || name == "texture" || name == "tex2D" || name == "textureCube"; }
 
+// The set index a BindingGroup maps to always equals the enum's integer
+// value -- this matches FLUXION_RHI_BIND_GROUP_GLOBAL/FRAME/MATERIAL/
+// OBJECT in RHI.h exactly, so a shader compiled with a given group and an
+// RHI pipeline built with that same group's bind group layout agree on
+// which descriptor set is meant without any separate lookup table.
+int GroupSetIndex(BindingGroup group) { return (int)group; }
+
+const char* GroupName(BindingGroup group)
+{
+    switch (group)
+    {
+        case BindingGroup::Global: return "Global";
+        case BindingGroup::Frame: return "Frame";
+        case BindingGroup::Object: return "Object";
+        default: return "Material";
+    }
+}
+
 class HLSLEmitter
 {
 public:
@@ -74,8 +92,26 @@ public:
 
     std::string Run()
     {
-        EmitPushConstants();
+        if (m_module.stage == ShaderStage::Compute)
+        {
+            // Compute has no vertex/fragment-shaped stage-IO struct, so it
+            // skips EmitStageStructs()/EmitWrapperMain() (both assume a
+            // StageInput/StageOutput/SV_Target/SV_Position shape that
+            // doesn't apply here) in favor of a small [numthreads(...)]
+            // wrapper that mirrors the same "wrapper calls shaderMain()"
+            // idiom used by the vertex/fragment path below.
+            EmitUniformBuffers();
+            EmitTextures();
+            EmitStorageBuffers();
+            EmitComputeStaticMirrors();
+            EmitFunctions();
+            EmitComputeWrapperMain();
+            return m_out.str();
+        }
+
+        EmitUniformBuffers();
         EmitTextures();
+        EmitStorageBuffers();
         EmitStageStructs();
         EmitStaticMirrors();
         EmitFunctions();
@@ -90,23 +126,69 @@ private:
     std::ostringstream m_out;
     bool m_inEntryFunction = false;
 
-    void EmitPushConstants()
+    void EmitUniformBuffers()
     {
-        if (m_module.pushConstants.empty()) return;
-        m_out << "struct PushConstants\n{\n";
-        for (const IRPushConstantMember& m : m_module.pushConstants)
-            m_out << "    " << HLSLTypeName(m.type) << " " << m.name << ";\n";
-        m_out << "};\n[[vk::push_constant]] PushConstants pc;\n\n";
+        for (const IRUniformBufferBinding& ub : m_module.uniformBuffers)
+        {
+            int set = GroupSetIndex(ub.group);
+            m_out << "[[vk::binding(0, " << set << ")]] cbuffer Group" << GroupName(ub.group) << "Constants : register(b0, space" << set << ")\n{\n";
+            for (const IRUniformBufferMember& m : ub.members)
+                m_out << "    " << HLSLTypeName(m.type) << " " << m.name << ";\n";
+            m_out << "};\n\n";
+        }
     }
 
     void EmitTextures()
     {
         for (const IRResourceBinding& r : m_module.resources)
         {
-            m_out << HLSLTypeName(r.type) << " " << r.name << " : register(t" << r.slot << ");\n";
-            m_out << "SamplerState " << r.name << "_sampler : register(s" << r.slot << ");\n";
+            int set = GroupSetIndex(r.group);
+            m_out << "[[vk::binding(" << r.binding << ", " << set << ")]] " << HLSLTypeName(r.type) << " " << r.name << " : register(t" << r.binding << ", space" << set << ");\n";
+            m_out << "[[vk::binding(" << r.samplerBinding << ", " << set << ")]] SamplerState " << r.name << "_sampler : register(s" << r.samplerBinding << ", space" << set << ");\n";
         }
         if (!m_module.resources.empty()) m_out << "\n";
+    }
+
+    void EmitStorageBuffers()
+    {
+        // A read-write UAV (RWStructuredBuffer, `u` register space) only
+        // in a compute shader -- Vulkan rejects a storage-buffer variable
+        // in the fragment stage that isn't decorated NonWritable unless
+        // the fragmentStoresAndAtomics feature is explicitly enabled
+        // (which this backend's Fluxion_RHI_CreateDevice call never
+        // requests), so a vertex/fragment shader that only ever reads a
+        // [Buffer(Group)] declares it as the read-only StructuredBuffer
+        // (`t` register/SRV) instead -- same underlying SSBO on the RHI
+        // side either way, just a different SPIR-V access decoration.
+        bool readOnly = m_module.stage != ShaderStage::Compute;
+        for (const IRResourceBinding& b : m_module.storageBuffers)
+        {
+            int set = GroupSetIndex(b.group);
+            const char* bufferType = readOnly ? "StructuredBuffer" : "RWStructuredBuffer";
+            char registerSpace = readOnly ? 't' : 'u';
+            m_out << "[[vk::binding(" << b.binding << ", " << set << ")]] " << bufferType << "<" << HLSLTypeName(b.type) << "> " << b.name
+                << " : register(" << registerSpace << b.binding << ", space" << set << ");\n";
+        }
+        if (!m_module.storageBuffers.empty()) m_out << "\n";
+    }
+
+    void EmitComputeStaticMirrors()
+    {
+        // Same file-scope "static mirror" idiom as EmitStaticMirrors:
+        // shaderMain() references `ThreadID` directly, but the actual
+        // SV_DispatchThreadID value only exists as a wrapper-local
+        // parameter, so it's mirrored into a static global the wrapper
+        // assigns before calling shaderMain().
+        m_out << "static uint ThreadID;\n\n";
+    }
+
+    void EmitComputeWrapperMain()
+    {
+        m_out << "[numthreads(" << m_module.localSizeX << ", 1, 1)]\n";
+        m_out << "void main(uint3 dispatchThreadID : SV_DispatchThreadID)\n{\n";
+        m_out << "    ThreadID = dispatchThreadID.x;\n";
+        m_out << "    shaderMain();\n";
+        m_out << "}\n";
     }
 
     void EmitStageStructs()
@@ -267,6 +349,24 @@ private:
             }
             case ExprKind::Binary: {
                 auto& e = static_cast<const BinaryExpr&>(expr);
+                // HLSL's `*` between a matrix and a vector (or another
+                // matrix) is component-wise, not a real matrix multiply --
+                // unlike this language's own semantics (and GLSL's `*`,
+                // which the GLSL backend can emit unchanged), so a real
+                // `mvp * Vector4(...)` in .jsl source needs HLSL's
+                // dedicated `mul(matrix, vector)` intrinsic here instead of
+                // a literal `*` token, or dxc silently produces a
+                // dimension-mismatch compile error (or worse, wrong,
+                // silently-broadcast results if the shapes happened to
+                // align).
+                bool isLhsMatrix = e.lhs->resolvedType.kind == TypeKind::Mat3 || e.lhs->resolvedType.kind == TypeKind::Mat4;
+                bool isRhsMatrixOrVector = e.rhs->resolvedType.kind == TypeKind::Mat3 || e.rhs->resolvedType.kind == TypeKind::Mat4 ||
+                    e.rhs->resolvedType.kind == TypeKind::Vec3 || e.rhs->resolvedType.kind == TypeKind::Vec4;
+                if (e.op == BinaryOp::Mul && isLhsMatrix && isRhsMatrixOrVector)
+                {
+                    m_out << "mul("; EmitExpr(*e.lhs); m_out << ", "; EmitExpr(*e.rhs); m_out << ")";
+                    break;
+                }
                 m_out << "("; EmitExpr(*e.lhs); m_out << " " << BinaryOpText(e.op) << " "; EmitExpr(*e.rhs); m_out << ")";
                 break;
             }

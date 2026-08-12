@@ -430,5 +430,6 @@ void Fluxion_RHIVulkan_FinalizeRetired(FluxionRHIVulkanDevice* deviceState, Flux
         case FluxionRHIVulkanRetiredEntry::Kind::Sampler: Fluxion_RHIVulkan_FinalizeSampler(index); break;
         case FluxionRHIVulkanRetiredEntry::Kind::Shader: Fluxion_RHIVulkan_FinalizeShaderSlot(index); break;
         case FluxionRHIVulkanRetiredEntry::Kind::Pipeline: Fluxion_RHIVulkan_FinalizePipelineSlot(index); break;
+        case FluxionRHIVulkanRetiredEntry::Kind::BindGroup: Fluxion_RHIVulkan_FinalizeBindGroupSlot(index); break;
     }
 }

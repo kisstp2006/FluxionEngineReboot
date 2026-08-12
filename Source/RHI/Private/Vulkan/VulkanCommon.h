@@ -41,6 +41,8 @@
 #define FLUXION_RHI_VULKAN_MAX_SEMAPHORES 64
 #define FLUXION_RHI_VULKAN_MAX_QUERY_POOLS 16
 #define FLUXION_RHI_VULKAN_MAX_RETIRED 512
+#define FLUXION_RHI_VULKAN_MAX_BIND_GROUP_LAYOUTS 128
+#define FLUXION_RHI_VULKAN_MAX_BIND_GROUPS 512
 
 // --- Generic slot pool (same alive+generation idiom as NullBackend.c) ------
 
@@ -68,7 +70,7 @@ void Fluxion_RHIVulkan_PoolFree(FluxionRHIVulkanSlot* slots, u32 capacity, u32 i
 struct FluxionRHIVulkanRetiredEntry
 {
     u64 retireAfterValue; // safe to actually destroy once s_gcTimeline reaches this
-    enum class Kind { Buffer, Texture, TextureView, Sampler, Shader, Pipeline } kind;
+    enum class Kind { Buffer, Texture, TextureView, Sampler, Shader, Pipeline, BindGroup } kind;
     u32 index; // index into the owning pool
 };
 
@@ -105,6 +107,24 @@ struct FluxionRHIVulkanDevice
 
     FluxionRHIVulkanRetiredEntry retired[FLUXION_RHI_VULKAN_MAX_RETIRED];
     u32 retiredCount = 0;
+
+    // One process-lifetime cache shared by every graphics/compute pipeline
+    // this device creates -- see Fluxion_RHI_Device_Save/LoadPipelineCacheToFile.
+    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
+
+    // Backs every FluxionRHIBindGroup allocated from a BindGroupLayout
+    // created on this device -- FREE_DESCRIPTOR_SET_BIT so an individual
+    // BindGroup can be freed (via the same retirement queue as every
+    // other resource here) without resetting the whole pool.
+    VkDescriptorPool bindGroupPool = VK_NULL_HANDLE;
+
+    // A zero-binding VkDescriptorSetLayout, lazily created and reused to
+    // fill any FLUXION_RHI_BIND_GROUP_* index a pipeline desc leaves as
+    // an invalid handle -- VkPipelineLayoutCreateInfo's pSetLayouts array
+    // has no concept of "this set index is unused", so every gap between
+    // the frequencies a shader actually uses still needs a real (just
+    // empty) layout object at that index.
+    VkDescriptorSetLayout emptyBindGroupLayout = VK_NULL_HANDLE;
 };
 
 FluxionRHIVulkanDevice* Fluxion_RHIVulkan_ResolveDevice(FluxionRHIDeviceHandle device);
@@ -189,11 +209,34 @@ struct FluxionRHIVulkanPipeline
 {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipelineBindPoint bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 };
 
 FluxionRHIPipelineHandle Fluxion_RHIVulkan_CreateGraphicsPipeline(FluxionRHIDeviceHandle device, const FluxionRHIGraphicsPipelineDesc* desc);
+FluxionRHIPipelineHandle Fluxion_RHIVulkan_CreateComputePipeline(FluxionRHIDeviceHandle device, const FluxionRHIComputePipelineDesc* desc);
 void Fluxion_RHIVulkan_DestroyPipeline(FluxionRHIPipelineHandle pipeline);
 FluxionRHIVulkanPipeline* Fluxion_RHIVulkan_ResolvePipeline(FluxionRHIPipelineHandle pipeline);
+
+bool Fluxion_RHIVulkan_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, const char* path);
+bool Fluxion_RHIVulkan_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, const char* path);
+
+// --- Binding model (VulkanBindGroup.cpp) ------------------------------------
+
+// Deduplicated by binding-list shape (a device-scoped cache keyed by a
+// hash of the entry list) -- two FluxionRHIBindGroupLayoutDesc calls
+// describing the same shape return the same underlying
+// VkDescriptorSetLayout and the same FluxionRHIBindGroupLayoutHandle.
+FluxionRHIBindGroupLayoutHandle Fluxion_RHIVulkan_CreateBindGroupLayout(FluxionRHIDeviceHandle device, const FluxionRHIBindGroupLayoutDesc* desc);
+void Fluxion_RHIVulkan_DestroyBindGroupLayout(FluxionRHIBindGroupLayoutHandle layout);
+VkDescriptorSetLayout Fluxion_RHIVulkan_ResolveBindGroupLayout(FluxionRHIBindGroupLayoutHandle layout);
+
+FluxionRHIBindGroupHandle Fluxion_RHIVulkan_CreateBindGroup(FluxionRHIDeviceHandle device, const FluxionRHIBindGroupDesc* desc);
+void Fluxion_RHIVulkan_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup);
+VkDescriptorSet Fluxion_RHIVulkan_ResolveBindGroup(FluxionRHIBindGroupHandle bindGroup);
+void Fluxion_RHIVulkan_FinalizeBindGroupSlot(u32 index);
+
+// Lazily creates (once per device) and returns deviceState->emptyBindGroupLayout.
+VkDescriptorSetLayout Fluxion_RHIVulkan_GetOrCreateEmptyBindGroupLayout(FluxionRHIVulkanDevice* deviceState);
 
 // --- Command lists (VulkanCommandList.cpp) ----------------------------------
 
@@ -201,6 +244,8 @@ FluxionRHICommandListHandle Fluxion_RHIVulkan_CreateCommandList(FluxionRHIDevice
 void Fluxion_RHIVulkan_DestroyCommandList(FluxionRHICommandListHandle commandList);
 VkCommandBuffer Fluxion_RHIVulkan_ResolveCommandBuffer(FluxionRHICommandListHandle commandList);
 FluxionRHIQueueType Fluxion_RHIVulkan_ResolveCommandListQueueType(FluxionRHICommandListHandle commandList);
+
+void Fluxion_RHIVulkan_CommandListCopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer);
 
 // Portable resource state -> Vulkan (layout, access2, stage2) triple --
 // shared by CommandList barriers and by resource creation (initial

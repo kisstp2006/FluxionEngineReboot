@@ -453,6 +453,9 @@ static void Fluxion_RHIVulkan_DestroyDevice(FluxionRHIDeviceHandle device)
     vkDeviceWaitIdle(deviceState->device);
     Fluxion_RHIVulkan_CollectGarbage(device); // flush everything now that the device is idle
 
+    if (deviceState->bindGroupPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(deviceState->device, deviceState->bindGroupPool, nullptr);
+    if (deviceState->emptyBindGroupLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(deviceState->device, deviceState->emptyBindGroupLayout, nullptr);
+    if (deviceState->pipelineCache != VK_NULL_HANDLE) vkDestroyPipelineCache(deviceState->device, deviceState->pipelineCache, nullptr);
     if (deviceState->gcTimeline != VK_NULL_HANDLE) vkDestroySemaphore(deviceState->device, deviceState->gcTimeline, nullptr);
     if (deviceState->allocator != VK_NULL_HANDLE) vmaDestroyAllocator(deviceState->allocator);
     if (deviceState->device != VK_NULL_HANDLE) vkDestroyDevice(deviceState->device, nullptr);
@@ -545,7 +548,9 @@ extern void Fluxion_RHIVulkan_CommandListDrawIndirect(FluxionRHICommandListHandl
 extern void Fluxion_RHIVulkan_CommandListDispatch(FluxionRHICommandListHandle, u32, u32, u32);
 extern void Fluxion_RHIVulkan_CommandListCopyBuffer(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, FluxionRHIBufferHandle, usize, usize);
 extern void Fluxion_RHIVulkan_CommandListCopyTexture(FluxionRHICommandListHandle, FluxionRHITextureHandle, FluxionRHITextureHandle);
+extern void Fluxion_RHIVulkan_CommandListCopyBufferToTexture(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, FluxionRHITextureHandle, u32, u32);
 extern void Fluxion_RHIVulkan_CommandListBarrier(FluxionRHICommandListHandle, const FluxionRHIBarrier*, u32);
+extern void Fluxion_RHIVulkan_CommandListSetBindGroup(FluxionRHICommandListHandle, u32, FluxionRHIBindGroupHandle);
 extern void Fluxion_RHIVulkan_QueueSubmit(FluxionRHIQueueHandle, const FluxionRHICommandListHandle*, u32, FluxionRHIFenceHandle);
 // --- Native handle escape hatch (only the objects a caller has actually needed a native handle for so far) --
 
@@ -620,7 +625,9 @@ static const FluxionRHIBackendVTable s_vulkanVTable = {
     Fluxion_RHIVulkan_CommandListDispatch,
     Fluxion_RHIVulkan_CommandListCopyBuffer,
     Fluxion_RHIVulkan_CommandListCopyTexture,
+    Fluxion_RHIVulkan_CommandListCopyBufferToTexture,
     Fluxion_RHIVulkan_CommandListBarrier,
+    Fluxion_RHIVulkan_CommandListSetBindGroup,
 
     Fluxion_RHIVulkan_QueueSubmit,
 
@@ -635,10 +642,18 @@ static const FluxionRHIBackendVTable s_vulkanVTable = {
     Fluxion_RHIVulkan_CreateSampler,
     Fluxion_RHIVulkan_DestroySampler,
 
+    Fluxion_RHIVulkan_CreateBindGroupLayout,
+    Fluxion_RHIVulkan_DestroyBindGroupLayout,
+    Fluxion_RHIVulkan_CreateBindGroup,
+    Fluxion_RHIVulkan_DestroyBindGroup,
+
     Fluxion_RHIVulkan_CreateShader,
     Fluxion_RHIVulkan_DestroyShader,
     Fluxion_RHIVulkan_CreateGraphicsPipeline,
+    Fluxion_RHIVulkan_CreateComputePipeline,
     Fluxion_RHIVulkan_DestroyPipeline,
+    Fluxion_RHIVulkan_SavePipelineCacheToFile,
+    Fluxion_RHIVulkan_LoadPipelineCacheFromFile,
 
     Fluxion_RHIVulkan_CreateSwapchain,
     Fluxion_RHIVulkan_DestroySwapchain,

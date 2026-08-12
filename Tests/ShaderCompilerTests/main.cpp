@@ -10,6 +10,9 @@ void Test_HLSLBackend_CSharpStyleReturn_Run(TestContext& ctx);
 void Test_GLSLBackend_Run(TestContext& ctx);
 void Test_DXCAdapter_Run(TestContext& ctx);
 void Test_Compatibility_Run(TestContext& ctx);
+void Test_BindingGroups_Run(TestContext& ctx);
+void Test_BindingGroups_DefaultIsMaterial_Run(TestContext& ctx);
+void Test_ComputeStorageBuffer_Run(TestContext& ctx);
 
 int main()
 {
@@ -25,6 +28,9 @@ int main()
     Test_GLSLBackend_Run(ctx);
     Test_DXCAdapter_Run(ctx);
     Test_Compatibility_Run(ctx);
+    Test_BindingGroups_Run(ctx);
+    Test_BindingGroups_DefaultIsMaterial_Run(ctx);
+    Test_ComputeStorageBuffer_Run(ctx);
 
     if (ctx.failures == 0)
     {

@@ -1,19 +1,28 @@
-// Graphics pipelines. No binding model yet -- every pipeline gets a
-// minimal VkPipelineLayout with zero descriptor sets and one
-// push-constant range, enough for a caller to push e.g. a transform
-// matrix. A full binding model (descriptor sets, reflection-driven
-// layouts, a pipeline cache) is deliberately out of scope here and will
-// build on top of this same entry point later without needing a second,
-// temporary pipeline API. Built entirely against Dynamic Rendering
-// (VkPipelineRenderingCreateInfo) -- there is no VkRenderPass anywhere in
-// this backend.
+// Graphics + compute pipelines. Every pipeline's VkPipelineLayout is
+// built from the caller's up-to-FLUXION_RHI_MAX_BIND_GROUPS
+// FluxionRHIBindGroupLayoutHandles (resolved to VkDescriptorSetLayout via
+// VulkanBindGroup.cpp) plus one push-constant range, so a caller that
+// passes zero bind group layouts gets exactly the old push-constant-only
+// layout shape. Every pipeline creation also goes through the device's
+// shared VkPipelineCache (see Fluxion_RHIVulkan_SavePipelineCacheToFile/
+// LoadPipelineCacheFromFile below). Built entirely against Dynamic
+// Rendering (VkPipelineRenderingCreateInfo) -- there is no VkRenderPass
+// anywhere in this backend.
 
 #include "VulkanCommon.h"
+
+#include <cstdio>
+#include <vector>
 
 #define FLUXION_RHI_VULKAN_PUSH_CONSTANT_SIZE 128
 
 static FluxionRHIVulkanSlot s_pipelineSlots[FLUXION_RHI_VULKAN_MAX_PIPELINES];
 static FluxionRHIVulkanPipeline s_pipelines[FLUXION_RHI_VULKAN_MAX_PIPELINES];
+
+// Forward-declared: defined near the Save/LoadPipelineCacheFromFile
+// functions below, but also needed here to lazily create an empty cache
+// the first time either pipeline kind is created.
+static bool Fluxion_RHIVulkan_EnsurePipelineCache(FluxionRHIVulkanDevice* deviceState, const void* initialData, usize initialDataSize);
 
 static VkPrimitiveTopology Fluxion_RHIVulkan_MapTopology(FluxionRHIPrimitiveTopology topology)
 {
@@ -49,6 +58,44 @@ static VkCompareOp Fluxion_RHIVulkan_MapCompareOp(FluxionRHICompareOp op)
         case FLUXION_RHI_COMPARE_OP_ALWAYS: return VK_COMPARE_OP_ALWAYS;
         default: return VK_COMPARE_OP_NEVER;
     }
+}
+
+// Shared by the graphics and compute paths -- resolves the caller's
+// FluxionRHIBindGroupLayoutHandles to native VkDescriptorSetLayouts and
+// builds the VkPipelineLayoutCreateInfo both pipeline kinds need.
+// VkPipelineLayoutCreateInfo's pSetLayouts array has no way to mark a set
+// index as "unused", so an invalid handle at index i (a shader that
+// doesn't use that FLUXION_RHI_BIND_GROUP_* frequency) is filled with the
+// device's shared zero-binding empty layout instead of leaving a gap.
+// Returns false (and leaves *outLayoutInfo untouched) only if a handle is
+// both present (FLUXION_HANDLE_IS_VALID) and fails to resolve, e.g. the
+// caller passed a stale/destroyed layout.
+static bool Fluxion_RHIVulkan_BuildPipelineLayoutInfo(FluxionRHIVulkanDevice* deviceState, const FluxionRHIBindGroupLayoutHandle* bindGroupLayouts, u32 layoutCount,
+    VkDescriptorSetLayout* outSetLayouts, VkPipelineLayoutCreateInfo* outLayoutInfo, VkPushConstantRange* outPushConstant)
+{
+    u32 setLayoutCount = layoutCount > FLUXION_RHI_MAX_BIND_GROUPS ? FLUXION_RHI_MAX_BIND_GROUPS : layoutCount;
+    for (u32 i = 0; i < setLayoutCount; ++i)
+    {
+        if (!FLUXION_HANDLE_IS_VALID(bindGroupLayouts[i]))
+        {
+            outSetLayouts[i] = Fluxion_RHIVulkan_GetOrCreateEmptyBindGroupLayout(deviceState);
+            continue;
+        }
+        outSetLayouts[i] = Fluxion_RHIVulkan_ResolveBindGroupLayout(bindGroupLayouts[i]);
+        if (outSetLayouts[i] == VK_NULL_HANDLE) return false;
+    }
+
+    outPushConstant->stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+    outPushConstant->offset = 0;
+    outPushConstant->size = FLUXION_RHI_VULKAN_PUSH_CONSTANT_SIZE;
+
+    *outLayoutInfo = {};
+    outLayoutInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    outLayoutInfo->setLayoutCount = setLayoutCount;
+    outLayoutInfo->pSetLayouts = setLayoutCount > 0 ? outSetLayouts : nullptr;
+    outLayoutInfo->pushConstantRangeCount = 1;
+    outLayoutInfo->pPushConstantRanges = outPushConstant;
+    return true;
 }
 
 FluxionRHIPipelineHandle Fluxion_RHIVulkan_CreateGraphicsPipeline(FluxionRHIDeviceHandle device, const FluxionRHIGraphicsPipelineDesc* desc)
@@ -152,18 +199,18 @@ FluxionRHIPipelineHandle Fluxion_RHIVulkan_CreateGraphicsPipeline(FluxionRHIDevi
     renderingInfo.pColorAttachmentFormats = colorFormats;
     renderingInfo.depthAttachmentFormat = desc->depthFormat != FLUXION_RHI_FORMAT_UNKNOWN ? Fluxion_RHIVulkan_MapFormat(desc->depthFormat) : VK_FORMAT_UNDEFINED;
 
-    VkPushConstantRange pushConstant = {};
-    pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    pushConstant.offset = 0;
-    pushConstant.size = FLUXION_RHI_VULKAN_PUSH_CONSTANT_SIZE;
-
-    VkPipelineLayoutCreateInfo layoutInfo = {};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.pushConstantRangeCount = 1;
-    layoutInfo.pPushConstantRanges = &pushConstant;
+    VkDescriptorSetLayout setLayouts[FLUXION_RHI_MAX_BIND_GROUPS];
+    VkPipelineLayoutCreateInfo layoutInfo;
+    VkPushConstantRange pushConstant;
+    if (!Fluxion_RHIVulkan_BuildPipelineLayoutInfo(deviceState, desc->bindGroupLayouts, desc->bindGroupLayoutCount, setLayouts, &layoutInfo, &pushConstant))
+    {
+        Fluxion_RHIVulkan_PoolFree(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, index, generation);
+        return invalid;
+    }
 
     FluxionRHIVulkanPipeline* pipeline = &s_pipelines[index];
     *pipeline = FluxionRHIVulkanPipeline{};
+    pipeline->bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     if (vkCreatePipelineLayout(deviceState->device, &layoutInfo, nullptr, &pipeline->layout) != VK_SUCCESS)
     {
         Fluxion_RHIVulkan_PoolFree(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, index, generation);
@@ -185,7 +232,61 @@ FluxionRHIPipelineHandle Fluxion_RHIVulkan_CreateGraphicsPipeline(FluxionRHIDevi
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipeline->layout;
 
-    if (vkCreateGraphicsPipelines(deviceState->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline->pipeline) != VK_SUCCESS)
+    Fluxion_RHIVulkan_EnsurePipelineCache(deviceState, nullptr, 0);
+    if (vkCreateGraphicsPipelines(deviceState->device, deviceState->pipelineCache, 1, &pipelineInfo, nullptr, &pipeline->pipeline) != VK_SUCCESS)
+    {
+        vkDestroyPipelineLayout(deviceState->device, pipeline->layout, nullptr);
+        Fluxion_RHIVulkan_PoolFree(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, index, generation);
+        return invalid;
+    }
+
+    FluxionRHIPipelineHandle handle;
+    handle.index = index;
+    handle.generation = generation;
+    return handle;
+}
+
+FluxionRHIPipelineHandle Fluxion_RHIVulkan_CreateComputePipeline(FluxionRHIDeviceHandle device, const FluxionRHIComputePipelineDesc* desc)
+{
+    FluxionRHIPipelineHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_ResolveDevice(device);
+    VkShaderModule computeModule = desc != nullptr ? Fluxion_RHIVulkan_ResolveShaderModule(desc->computeShader) : VK_NULL_HANDLE;
+    if (deviceState == nullptr || desc == nullptr || computeModule == VK_NULL_HANDLE) return invalid;
+
+    u32 index, generation;
+    if (!Fluxion_RHIVulkan_PoolAllocate(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, &index, &generation)) return invalid;
+
+    VkDescriptorSetLayout setLayouts[FLUXION_RHI_MAX_BIND_GROUPS];
+    VkPipelineLayoutCreateInfo layoutInfo;
+    VkPushConstantRange pushConstant;
+    if (!Fluxion_RHIVulkan_BuildPipelineLayoutInfo(deviceState, desc->bindGroupLayouts, desc->bindGroupLayoutCount, setLayouts, &layoutInfo, &pushConstant))
+    {
+        Fluxion_RHIVulkan_PoolFree(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, index, generation);
+        return invalid;
+    }
+
+    FluxionRHIVulkanPipeline* pipeline = &s_pipelines[index];
+    *pipeline = FluxionRHIVulkanPipeline{};
+    pipeline->bindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
+    if (vkCreatePipelineLayout(deviceState->device, &layoutInfo, nullptr, &pipeline->layout) != VK_SUCCESS)
+    {
+        Fluxion_RHIVulkan_PoolFree(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, index, generation);
+        return invalid;
+    }
+
+    VkPipelineShaderStageCreateInfo stage = {};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = computeModule;
+    stage.pName = Fluxion_RHIVulkan_ResolveShaderEntryPoint(desc->computeShader);
+
+    VkComputePipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = stage;
+    pipelineInfo.layout = pipeline->layout;
+
+    Fluxion_RHIVulkan_EnsurePipelineCache(deviceState, nullptr, 0);
+    if (vkCreateComputePipelines(deviceState->device, deviceState->pipelineCache, 1, &pipelineInfo, nullptr, &pipeline->pipeline) != VK_SUCCESS)
     {
         vkDestroyPipelineLayout(deviceState->device, pipeline->layout, nullptr);
         Fluxion_RHIVulkan_PoolFree(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, index, generation);
@@ -226,4 +327,90 @@ FluxionRHIVulkanPipeline* Fluxion_RHIVulkan_ResolvePipeline(FluxionRHIPipelineHa
 {
     if (!Fluxion_RHIVulkan_PoolIsValid(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, pipeline.index, pipeline.generation)) return nullptr;
     return &s_pipelines[pipeline.index];
+}
+
+// --- Pipeline cache ----------------------------------------------------------
+//
+// Created empty (or seeded from a prior LoadPipelineCacheFromFile) the
+// first time a device needs it, then handed to every subsequent
+// vkCreate{Graphics,Compute}Pipelines call above -- never read from or
+// written to disk on its own; that's entirely the caller's call via
+// these two functions.
+
+static bool Fluxion_RHIVulkan_EnsurePipelineCache(FluxionRHIVulkanDevice* deviceState, const void* initialData, usize initialDataSize)
+{
+    if (deviceState->pipelineCache != VK_NULL_HANDLE)
+    {
+        // A cache already exists (created empty by an earlier pipeline
+        // creation) -- there is no way to "load into" an existing
+        // VkPipelineCache, so seeding it now would require recreating it.
+        // Since this is only ever called before any pipeline has been
+        // created (see Fluxion_RHIVulkan_LoadPipelineCacheFromFile's
+        // caller contract), this path only triggers if a caller loads
+        // after already creating a pipeline -- not supported, fails
+        // cleanly instead of silently ignoring the requested data.
+        return initialData == nullptr;
+    }
+
+    VkPipelineCacheCreateInfo cacheInfo = {};
+    cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    cacheInfo.initialDataSize = initialDataSize;
+    cacheInfo.pInitialData = initialData;
+    return vkCreatePipelineCache(deviceState->device, &cacheInfo, nullptr, &deviceState->pipelineCache) == VK_SUCCESS;
+}
+
+bool Fluxion_RHIVulkan_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, const char* path)
+{
+    FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_ResolveDevice(device);
+    if (deviceState == nullptr || path == nullptr || deviceState->pipelineCache == VK_NULL_HANDLE) return false;
+
+    usize dataSize = 0;
+    if (vkGetPipelineCacheData(deviceState->device, deviceState->pipelineCache, &dataSize, nullptr) != VK_SUCCESS || dataSize == 0) return false;
+
+    std::vector<u8> data(dataSize);
+    if (vkGetPipelineCacheData(deviceState->device, deviceState->pipelineCache, &dataSize, data.data()) != VK_SUCCESS) return false;
+
+    FILE* file = nullptr;
+#if defined(_MSC_VER)
+    if (fopen_s(&file, path, "wb") != 0 || file == nullptr) return false;
+#else
+    file = fopen(path, "wb");
+    if (file == nullptr) return false;
+#endif
+    usize written = fwrite(data.data(), 1, dataSize, file);
+    fclose(file);
+    return written == dataSize;
+}
+
+bool Fluxion_RHIVulkan_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, const char* path)
+{
+    FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_ResolveDevice(device);
+    if (deviceState == nullptr || path == nullptr) return false;
+
+    FILE* file = nullptr;
+#if defined(_MSC_VER)
+    if (fopen_s(&file, path, "rb") != 0 || file == nullptr) return false;
+#else
+    file = fopen(path, "rb");
+    if (file == nullptr) return false;
+#endif
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    if (fileSize <= 0)
+    {
+        fclose(file);
+        return false;
+    }
+
+    std::vector<u8> data((usize)fileSize);
+    usize readBytes = fread(data.data(), 1, data.size(), file);
+    fclose(file);
+    if (readBytes != data.size()) return false;
+
+    // A driver/version-mismatched blob is silently rejected by Vulkan
+    // itself (VkPipelineCacheCreateInfo's header-validation rules) --
+    // vkCreatePipelineCache still succeeds in that case, just with an
+    // effectively empty cache, so there is nothing extra to validate here.
+    return Fluxion_RHIVulkan_EnsurePipelineCache(deviceState, data.data(), data.size());
 }

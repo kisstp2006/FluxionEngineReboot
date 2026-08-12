@@ -28,6 +28,7 @@ endif()
 
 add_subdirectory(ThirdParty/pdjson)
 add_subdirectory(ThirdParty/vma)
+add_subdirectory(ThirdParty/glheaders)
 
 add_subdirectory(Source/Foundation)
 add_subdirectory(Source/Platform)

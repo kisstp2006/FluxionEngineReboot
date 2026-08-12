@@ -7,6 +7,8 @@ void Test_Capabilities_Run(TestContext* ctx);
 void Test_NullBackend_Run(TestContext* ctx);
 void Test_NativeHandle_Run(TestContext* ctx);
 void Test_VulkanBackend_Run(TestContext* ctx);
+void Test_OpenGLBackend_Run(TestContext* ctx);
+void Test_BindGroup_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -19,6 +21,8 @@ int main(void)
     Test_NullBackend_Run(&ctx);
     Test_NativeHandle_Run(&ctx);
     Test_VulkanBackend_Run(&ctx);
+    Test_OpenGLBackend_Run(&ctx);
+    Test_BindGroup_Run(&ctx);
 
     if (ctx.failures == 0)
     {

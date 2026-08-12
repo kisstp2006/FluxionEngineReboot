@@ -6,6 +6,7 @@
 
 extern const FluxionRHIBackendVTable* Fluxion_RHI_Null_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
 extern const FluxionRHIBackendVTable* Fluxion_RHI_Vulkan_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
+extern const FluxionRHIBackendVTable* Fluxion_RHI_OpenGL_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
 
 // One active backend at a time (a shipping run picks one backend via
 // --graphics=X, not several simultaneously) -- this keeps every object
@@ -36,6 +37,9 @@ FluxionRHIInstanceHandle Fluxion_RHI_CreateInstance(FluxionRHIBackendType backen
             break;
         case FLUXION_RHI_BACKEND_VULKAN:
             vtable = Fluxion_RHI_Vulkan_CreateInstance(desc, &instance);
+            break;
+        case FLUXION_RHI_BACKEND_OPENGL:
+            vtable = Fluxion_RHI_OpenGL_CreateInstance(desc, &instance);
             break;
         default:
             FLUXION_ASSERT_MSG(false, "Fluxion_RHI_CreateInstance: unknown or not-yet-implemented backend");
@@ -187,10 +191,22 @@ void Fluxion_RHI_CommandList_CopyTexture(FluxionRHICommandListHandle commandList
     s_backend->CommandListCopyTexture(commandList, src, dst);
 }
 
+void Fluxion_RHI_CommandList_CopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer)
+{
+    if (s_backend == NULL) return;
+    s_backend->CommandListCopyBufferToTexture(commandList, src, srcOffset, dst, mipLevel, arrayLayer);
+}
+
 void Fluxion_RHI_CommandList_Barrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)
 {
     if (s_backend == NULL) return;
     s_backend->CommandListBarrier(commandList, barriers, barrierCount);
+}
+
+void Fluxion_RHI_CommandList_SetBindGroup(FluxionRHICommandListHandle commandList, u32 groupIndex, FluxionRHIBindGroupHandle bindGroup)
+{
+    if (s_backend == NULL) return;
+    s_backend->CommandListSetBindGroup(commandList, groupIndex, bindGroup);
 }
 
 void Fluxion_RHI_Queue_Submit(FluxionRHIQueueHandle queue, const FluxionRHICommandListHandle* commandLists, u32 commandListCount, FluxionRHIFenceHandle signalFence)
@@ -259,6 +275,30 @@ void Fluxion_RHI_DestroySampler(FluxionRHISamplerHandle sampler)
     s_backend->DestroySampler(sampler);
 }
 
+FluxionRHIBindGroupLayoutHandle Fluxion_RHI_CreateBindGroupLayout(FluxionRHIDeviceHandle device, const FluxionRHIBindGroupLayoutDesc* desc)
+{
+    if (s_backend == NULL) { FluxionRHIBindGroupLayoutHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 }; return invalid; }
+    return s_backend->CreateBindGroupLayout(device, desc);
+}
+
+void Fluxion_RHI_DestroyBindGroupLayout(FluxionRHIBindGroupLayoutHandle layout)
+{
+    if (s_backend == NULL) return;
+    s_backend->DestroyBindGroupLayout(layout);
+}
+
+FluxionRHIBindGroupHandle Fluxion_RHI_CreateBindGroup(FluxionRHIDeviceHandle device, const FluxionRHIBindGroupDesc* desc)
+{
+    if (s_backend == NULL) { FluxionRHIBindGroupHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 }; return invalid; }
+    return s_backend->CreateBindGroup(device, desc);
+}
+
+void Fluxion_RHI_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup)
+{
+    if (s_backend == NULL) return;
+    s_backend->DestroyBindGroup(bindGroup);
+}
+
 FluxionRHIShaderHandle Fluxion_RHI_CreateShader(FluxionRHIDeviceHandle device, const FluxionRHIShaderDesc* desc)
 {
     if (s_backend == NULL) { FluxionRHIShaderHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 }; return invalid; }
@@ -277,10 +317,28 @@ FluxionRHIPipelineHandle Fluxion_RHI_CreateGraphicsPipeline(FluxionRHIDeviceHand
     return s_backend->CreateGraphicsPipeline(device, desc);
 }
 
+FluxionRHIPipelineHandle Fluxion_RHI_CreateComputePipeline(FluxionRHIDeviceHandle device, const FluxionRHIComputePipelineDesc* desc)
+{
+    if (s_backend == NULL) { FluxionRHIPipelineHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 }; return invalid; }
+    return s_backend->CreateComputePipeline(device, desc);
+}
+
 void Fluxion_RHI_DestroyPipeline(FluxionRHIPipelineHandle pipeline)
 {
     if (s_backend == NULL) return;
     s_backend->DestroyPipeline(pipeline);
+}
+
+bool Fluxion_RHI_Device_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, const char* path)
+{
+    if (s_backend == NULL) return false;
+    return s_backend->SavePipelineCacheToFile(device, path);
+}
+
+bool Fluxion_RHI_Device_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, const char* path)
+{
+    if (s_backend == NULL) return false;
+    return s_backend->LoadPipelineCacheFromFile(device, path);
 }
 
 FluxionRHISwapchainHandle Fluxion_RHI_CreateSwapchain(FluxionRHIDeviceHandle device, FluxionWindowHandle window, const FluxionRHISwapchainDesc* desc)

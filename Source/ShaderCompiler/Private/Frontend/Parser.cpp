@@ -19,6 +19,15 @@ bool IsTypeToken(TokenKind kind)
     }
 }
 
+bool BindingGroupFromName(const std::string& name, BindingGroup* outGroup)
+{
+    if (name == "Global") { *outGroup = BindingGroup::Global; return true; }
+    if (name == "Frame") { *outGroup = BindingGroup::Frame; return true; }
+    if (name == "Material") { *outGroup = BindingGroup::Material; return true; }
+    if (name == "Object") { *outGroup = BindingGroup::Object; return true; }
+    return false;
+}
+
 ShaderType TypeFromToken(TokenKind kind)
 {
     switch (kind)
@@ -134,22 +143,36 @@ private:
     }
 
     // C#-flavored declaration attributes: `[Input] T name;`,
-    // keyword forms: `[Input] T name;`, `[Output] T name;`,
-    // `[Target(N)] T name;`, `[Uniform] T name;`, `[Texture] T name;`.
-    // `[Output] T name;`, `[Target(N)] T name;`, `[Uniform] T name;`,
-    // `[Texture] T name;` -- the only way to declare stage IO, render
-    // targets, and uniforms in this language.
+    // `[Output] T name;`, `[Target(N)] T name;`,
+    // `[Uniform] T name;`/`[Uniform(Group)] T name;`,
+    // `[Texture] T name;`/`[Texture(Group)] T name;`,
+    // `[Buffer] T name;`/`[Buffer(Group)] T name;` -- the only way to
+    // declare stage IO, render targets, uniforms, and storage buffers in
+    // this language. The parenthesized argument means different things by
+    // attribute: an integer slot for Target, an optional BindingGroup name
+    // (Global/Frame/Material/Object, default Material) for
+    // Uniform/Texture/Buffer.
     DeclPtr ParseAttributeDecl(SourceLocation loc)
     {
-        const Token* attrName = Expect(TokenKind::Identifier, "an attribute name (Input/Output/Target/Uniform/Texture)");
+        const Token* attrName = Expect(TokenKind::Identifier, "an attribute name (Input/Output/Target/Uniform/Texture/Buffer)");
         if (!attrName) return nullptr;
         std::string attribute = attrName->text;
 
         int explicitSlot = -1;
+        BindingGroup group = BindingGroup::Material;
         if (Match(TokenKind::LParen))
         {
-            const Token* slotToken = Expect(TokenKind::IntLiteral, "a slot index");
-            if (slotToken) explicitSlot = (int)slotToken->numberValue;
+            if (attribute == "Uniform" || attribute == "Texture" || attribute == "Buffer")
+            {
+                const Token* groupToken = Expect(TokenKind::Identifier, "a binding group name (Global/Frame/Material/Object)");
+                if (groupToken && !BindingGroupFromName(groupToken->text, &group))
+                    Error(groupToken->location, "unknown binding group '" + groupToken->text + "' (expected Global/Frame/Material/Object)");
+            }
+            else
+            {
+                const Token* slotToken = Expect(TokenKind::IntLiteral, "a slot index");
+                if (slotToken) explicitSlot = (int)slotToken->numberValue;
+            }
             Expect(TokenKind::RParen, "')'");
         }
         Expect(TokenKind::RBracket, "']'");
@@ -170,12 +193,14 @@ private:
             decl->name = nameToken->text;
             return decl;
         }
-        if (attribute == "Uniform" || attribute == "Texture")
+        if (attribute == "Uniform" || attribute == "Texture" || attribute == "Buffer")
         {
             auto decl = std::make_unique<UniformDecl>();
             decl->location = loc;
             decl->type = type;
             decl->name = nameToken->text;
+            decl->group = group;
+            decl->isStorageBuffer = (attribute == "Buffer");
             return decl;
         }
         if (attribute == "Input" || attribute == "Output")
@@ -188,7 +213,7 @@ private:
             return decl;
         }
 
-        Error(loc, "unknown attribute '" + attribute + "' (expected Input/Output/Target/Uniform/Texture)");
+        Error(loc, "unknown attribute '" + attribute + "' (expected Input/Output/Target/Uniform/Texture/Buffer)");
         return nullptr;
     }
 

@@ -40,7 +40,9 @@ typedef struct FluxionRHIBackendVTable
     void (*CommandListDispatch)(FluxionRHICommandListHandle commandList, u32 groupCountX, u32 groupCountY, u32 groupCountZ);
     void (*CommandListCopyBuffer)(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHIBufferHandle dst, usize dstOffset, usize size);
     void (*CommandListCopyTexture)(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, FluxionRHITextureHandle dst);
+    void (*CommandListCopyBufferToTexture)(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer);
     void (*CommandListBarrier)(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount);
+    void (*CommandListSetBindGroup)(FluxionRHICommandListHandle commandList, u32 groupIndex, FluxionRHIBindGroupHandle bindGroup);
 
     void (*QueueSubmit)(FluxionRHIQueueHandle queue, const FluxionRHICommandListHandle* commandLists, u32 commandListCount, FluxionRHIFenceHandle signalFence);
 
@@ -55,10 +57,18 @@ typedef struct FluxionRHIBackendVTable
     FluxionRHISamplerHandle (*CreateSampler)(FluxionRHIDeviceHandle device, const FluxionRHISamplerDesc* desc);
     void (*DestroySampler)(FluxionRHISamplerHandle sampler);
 
+    FluxionRHIBindGroupLayoutHandle (*CreateBindGroupLayout)(FluxionRHIDeviceHandle device, const FluxionRHIBindGroupLayoutDesc* desc);
+    void (*DestroyBindGroupLayout)(FluxionRHIBindGroupLayoutHandle layout);
+    FluxionRHIBindGroupHandle (*CreateBindGroup)(FluxionRHIDeviceHandle device, const FluxionRHIBindGroupDesc* desc);
+    void (*DestroyBindGroup)(FluxionRHIBindGroupHandle bindGroup);
+
     FluxionRHIShaderHandle (*CreateShader)(FluxionRHIDeviceHandle device, const FluxionRHIShaderDesc* desc);
     void (*DestroyShader)(FluxionRHIShaderHandle shader);
     FluxionRHIPipelineHandle (*CreateGraphicsPipeline)(FluxionRHIDeviceHandle device, const FluxionRHIGraphicsPipelineDesc* desc);
+    FluxionRHIPipelineHandle (*CreateComputePipeline)(FluxionRHIDeviceHandle device, const FluxionRHIComputePipelineDesc* desc);
     void (*DestroyPipeline)(FluxionRHIPipelineHandle pipeline);
+    bool (*SavePipelineCacheToFile)(FluxionRHIDeviceHandle device, const char* path);
+    bool (*LoadPipelineCacheFromFile)(FluxionRHIDeviceHandle device, const char* path);
 
     FluxionRHISwapchainHandle (*CreateSwapchain)(FluxionRHIDeviceHandle device, FluxionWindowHandle window, const FluxionRHISwapchainDesc* desc);
     void (*DestroySwapchain)(FluxionRHISwapchainHandle swapchain);

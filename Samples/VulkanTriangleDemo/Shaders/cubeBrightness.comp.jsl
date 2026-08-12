@@ -1,0 +1,11 @@
+// A minimal compute shader proving the [Buffer(Group)]/ThreadID path end
+// to end: each of the buffer's first few elements gets a brightness value
+// derived from its own index (an index-varying expression -- simpler than
+// threading a time uniform into a third, otherwise-unrelated shader
+// module just for this v1 proof, and still visibly non-uniform data
+// flowing from a compute dispatch into the fragment shader that reads it).
+[Buffer(Object)] float brightness;
+
+void main() {
+  brightness[ThreadID] = 0.5 + 0.5 * sin(float(ThreadID));
+}

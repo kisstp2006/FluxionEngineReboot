@@ -1,0 +1,12 @@
+[Input] Vector3 position;
+[Input] Vector2 uv;
+
+[Output] Vector2 vUV;
+[Output] Vector4 Position;
+
+[Uniform(Frame)] Matrix4x4 mvp;
+
+void main() {
+  vUV = uv;
+  Position = mvp * Vector4(position, 1.0);
+}

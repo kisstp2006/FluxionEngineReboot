@@ -19,6 +19,7 @@ typedef enum FluxionRHIBackendType
 {
     FLUXION_RHI_BACKEND_NULL = 0,
     FLUXION_RHI_BACKEND_VULKAN,
+    FLUXION_RHI_BACKEND_OPENGL,
 } FluxionRHIBackendType;
 
 typedef struct FluxionRHIInstanceDesc
@@ -112,6 +113,15 @@ void Fluxion_RHI_CommandList_Dispatch(FluxionRHICommandListHandle commandList, u
 
 void Fluxion_RHI_CommandList_CopyBuffer(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHIBufferHandle dst, usize dstOffset, usize size);
 void Fluxion_RHI_CommandList_CopyTexture(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, FluxionRHITextureHandle dst);
+// The only CPU->GPU texture upload path this contract offers: a caller
+// stages pixel data into a CPU_TO_GPU/GPU_ONLY-transfer-source buffer
+// (Map/write/Unmap, same as any other staging upload) and copies it into
+// mip level `mipLevel`/array layer `arrayLayer` of `dst` here, at full
+// texture extent (no sub-region offset/size -- add one only once
+// something actually needs partial uploads). `dst` must already be in
+// FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION via a prior Barrier call,
+// same as CopyTexture's own destination requirement.
+void Fluxion_RHI_CommandList_CopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer);
 
 typedef struct FluxionRHIBarrier
 {
@@ -164,13 +174,104 @@ void Fluxion_RHI_DestroyTextureView(FluxionRHITextureViewHandle view);
 FluxionRHISamplerHandle Fluxion_RHI_CreateSampler(FluxionRHIDeviceHandle device, const FluxionRHISamplerDesc* desc);
 void Fluxion_RHI_DestroySampler(FluxionRHISamplerHandle sampler);
 
-// --- Shaders / pipelines ------------------------------------------------------
+// A bitmask over FluxionRHIShaderStage values (declared below), so a
+// single binding can be marked visible to more than one stage (e.g. a
+// Frame-group constant buffer read by both the vertex and fragment
+// shaders) without a separate entry per stage.
+typedef u32 FluxionRHIShaderStageFlags;
+#define FLUXION_RHI_SHADER_STAGE_FLAG_VERTEX   ((FluxionRHIShaderStageFlags)(1u << 0))
+#define FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT ((FluxionRHIShaderStageFlags)(1u << 1))
+#define FLUXION_RHI_SHADER_STAGE_FLAG_COMPUTE  ((FluxionRHIShaderStageFlags)(1u << 2))
+
+// --- Binding model -----------------------------------------------------------
 //
-// This is a deliberately minimal, hand-fed path (no reflection, no
-// logical binding groups yet) -- enough to create shaders and draw with
-// them, with a full binding model (descriptor sets, reflection-driven
-// layouts, a pipeline cache, bindless resources) built on top of this
-// same shape once something actually needs it.
+// A BindGroupLayout describes the shape of one binding-frequency group
+// (its list of bindings and their types/stages); a BindGroup is a
+// concrete set of resources bound to match that shape. Every pipeline
+// takes up to FLUXION_RHI_MAX_BIND_GROUPS layouts, one per logical
+// binding frequency -- Global (per-instance-wide constants), Frame
+// (per-frame constants, e.g. view/projection), Material (per-material
+// textures/constants), and Object (per-draw constants). A backend is
+// free to alias/cache the underlying native object across
+// layouts/groups that describe the same shape.
+
+#define FLUXION_RHI_MAX_BIND_GROUPS 4
+#define FLUXION_RHI_BIND_GROUP_GLOBAL 0
+#define FLUXION_RHI_BIND_GROUP_FRAME 1
+#define FLUXION_RHI_BIND_GROUP_MATERIAL 2
+#define FLUXION_RHI_BIND_GROUP_OBJECT 3
+
+#define FLUXION_RHI_MAX_BIND_GROUP_ENTRIES 16
+
+typedef enum FluxionRHIBindingType
+{
+    FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER = 0,
+    FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER,
+    FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE,
+    FLUXION_RHI_BINDING_TYPE_SAMPLER,
+} FluxionRHIBindingType;
+
+typedef struct FluxionRHIBindGroupLayoutEntryDesc
+{
+    u32 binding;
+    FluxionRHIBindingType type;
+    FluxionRHIShaderStageFlags visibility;
+    // Only meaningful for FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE: 0
+    // means a single, fixed-size binding; >0 requests an array of that
+    // many descriptors at this binding, sized dynamically per FluxionRHIBindGroup
+    // (only valid together with FluxionRHIBindGroupLayoutDesc::bindless).
+    u32 arrayCount;
+} FluxionRHIBindGroupLayoutEntryDesc;
+
+typedef struct FluxionRHIBindGroupLayoutDesc
+{
+    FluxionRHIBindGroupLayoutEntryDesc entries[FLUXION_RHI_MAX_BIND_GROUP_ENTRIES];
+    u32 entryCount;
+    // Requests a variable-count, update-after-bind layout for its array
+    // entries (FLUXION_RHI_CAPABILITY_DESCRIPTOR_INDEXING required) --
+    // a backend without that capability creates an ordinary, fixed-size
+    // layout instead (the "bindful fallback"), so callers must not
+    // assume this flag was honored; check FluxionRHIBindGroupHandle's
+    // validity as usual and size arrayCount conservatively either way.
+    bool bindless;
+    const char* debugName; // optional, may be NULL
+} FluxionRHIBindGroupLayoutDesc;
+
+// Identical binding-layout descriptions may return the same underlying
+// native layout object (a backend is free to cache/dedupe by shape) --
+// callers must not rely on two calls with equal descs returning distinct
+// handles.
+FluxionRHIBindGroupLayoutHandle Fluxion_RHI_CreateBindGroupLayout(FluxionRHIDeviceHandle device, const FluxionRHIBindGroupLayoutDesc* desc);
+void Fluxion_RHI_DestroyBindGroupLayout(FluxionRHIBindGroupLayoutHandle layout);
+
+typedef struct FluxionRHIBindGroupEntry
+{
+    u32 binding;
+    FluxionRHIBindingType type;
+    // Exactly one of these is valid, matching `type`.
+    FluxionRHIBufferHandle buffer;
+    usize bufferOffset;
+    usize bufferSize;
+    FluxionRHITextureViewHandle textureView;
+    FluxionRHISamplerHandle sampler;
+} FluxionRHIBindGroupEntry;
+
+typedef struct FluxionRHIBindGroupDesc
+{
+    FluxionRHIBindGroupLayoutHandle layout;
+    const FluxionRHIBindGroupEntry* entries;
+    u32 entryCount;
+} FluxionRHIBindGroupDesc;
+
+FluxionRHIBindGroupHandle Fluxion_RHI_CreateBindGroup(FluxionRHIDeviceHandle device, const FluxionRHIBindGroupDesc* desc);
+// Deferred destruction, same contract as every other Destroy* here --
+// safe to call while the GPU may still be reading the group; actually
+// reclaimed on a later Fluxion_RHI_Device_CollectGarbage.
+void Fluxion_RHI_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup);
+
+void Fluxion_RHI_CommandList_SetBindGroup(FluxionRHICommandListHandle commandList, u32 groupIndex, FluxionRHIBindGroupHandle bindGroup);
+
+// --- Shaders / pipelines ------------------------------------------------------
 
 typedef enum FluxionRHIShaderStage
 {
@@ -270,11 +371,49 @@ typedef struct FluxionRHIGraphicsPipelineDesc
     FluxionRHIFormat colorFormats[FLUXION_RHI_MAX_RENDER_TARGETS];
     u32 colorFormatCount;
     FluxionRHIFormat depthFormat; // FLUXION_RHI_FORMAT_UNKNOWN if no depth attachment
+    // Index i corresponds to FLUXION_RHI_BIND_GROUP_* i; an invalid
+    // (default-initialized) handle at an index means that group is
+    // unused by this pipeline. bindGroupLayoutCount is the number of
+    // leading entries in bindGroupLayouts that are meaningful (trailing
+    // ones are ignored), not a count of valid handles within it.
+    FluxionRHIBindGroupLayoutHandle bindGroupLayouts[FLUXION_RHI_MAX_BIND_GROUPS];
+    u32 bindGroupLayoutCount;
     const char* debugName; // optional, may be NULL
 } FluxionRHIGraphicsPipelineDesc;
 
 FluxionRHIPipelineHandle Fluxion_RHI_CreateGraphicsPipeline(FluxionRHIDeviceHandle device, const FluxionRHIGraphicsPipelineDesc* desc);
 void Fluxion_RHI_DestroyPipeline(FluxionRHIPipelineHandle pipeline);
+
+typedef struct FluxionRHIComputePipelineDesc
+{
+    FluxionRHIShaderHandle computeShader;
+    FluxionRHIBindGroupLayoutHandle bindGroupLayouts[FLUXION_RHI_MAX_BIND_GROUPS];
+    u32 bindGroupLayoutCount;
+    const char* debugName; // optional, may be NULL
+} FluxionRHIComputePipelineDesc;
+
+// Returns a FluxionRHIPipelineHandle, the same handle type as a graphics
+// pipeline -- Fluxion_RHI_CommandList_SetPipeline/DestroyPipeline work
+// on either kind unchanged; only creation is stage-specific.
+FluxionRHIPipelineHandle Fluxion_RHI_CreateComputePipeline(FluxionRHIDeviceHandle device, const FluxionRHIComputePipelineDesc* desc);
+
+// --- Pipeline cache ------------------------------------------------------------
+//
+// One cache per device, populated implicitly by every
+// Fluxion_RHI_Create{Graphics,Compute}Pipeline call. Persistence is
+// entirely caller-driven -- the backend never reads or writes a file on
+// its own; a caller loads a previously-saved cache right after device
+// creation (before creating any pipelines) to benefit from it, and saves
+// it whenever convenient (e.g. on shutdown).
+
+// Returns false if the device has no pipeline cache support or the file
+// could not be written; never treated as a hard failure by the backend.
+bool Fluxion_RHI_Device_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, const char* path);
+// Returns false if the file is missing, unreadable, or was produced by
+// an incompatible driver/backend version -- the device's cache is left
+// empty (not partially populated) in that case, exactly as if this had
+// never been called.
+bool Fluxion_RHI_Device_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, const char* path);
 
 // --- Swapchain -----------------------------------------------------------
 
