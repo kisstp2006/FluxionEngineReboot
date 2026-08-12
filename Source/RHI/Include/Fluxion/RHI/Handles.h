@@ -25,3 +25,5 @@ FLUXION_DEFINE_HANDLE(FluxionRHIPipelineHandle);
 FLUXION_DEFINE_HANDLE(FluxionRHIFenceHandle);
 FLUXION_DEFINE_HANDLE(FluxionRHISemaphoreHandle);
 FLUXION_DEFINE_HANDLE(FluxionRHIQueryPoolHandle);
+FLUXION_DEFINE_HANDLE(FluxionRHIBindGroupLayoutHandle);
+FLUXION_DEFINE_HANDLE(FluxionRHIBindGroupHandle);
