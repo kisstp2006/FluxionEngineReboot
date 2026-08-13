@@ -48,6 +48,8 @@ OpCode ComparisonOpcode(BinaryOp op, ValueType operandType)
         case ValueType::Object:
         case ValueType::Null:
             return op == BinaryOp::Equal ? OpCode::EqualRef : OpCode::NotEqualRef;
+        case ValueType::Handle:
+            return op == BinaryOp::Equal ? OpCode::EqualHandle : OpCode::NotEqualHandle;
         default:
             switch (op)
             {
@@ -77,8 +79,10 @@ BinaryOp BinaryOpForCompound(AssignOp op)
 class EmitterState
 {
 public:
-    EmitterState(const Program& program, std::string sourceName, u32 moduleVersion, DiagnosticList& diagnostics)
-        : m_program(program), m_sourceName(std::move(sourceName)), m_moduleVersion(moduleVersion), m_diagnostics(diagnostics)
+    EmitterState(const Program& program, std::string sourceName, u32 moduleVersion, DiagnosticList& diagnostics,
+        const BindingTable* bindings)
+        : m_program(program), m_sourceName(std::move(sourceName)), m_moduleVersion(moduleVersion), m_diagnostics(diagnostics),
+          m_bindings(bindings)
     {
     }
 
@@ -125,13 +129,40 @@ private:
     std::string m_sourceName;
     u32 m_moduleVersion = 0;
     DiagnosticList& m_diagnostics;
+    const BindingTable* m_bindings = nullptr;
 
     BytecodeModule m_module;
 
     // Instructions of the function currently being emitted; appended to
     // the module's flat stream once complete, which is what makes jump
-    // targets function-relative.
+    // targets function-relative. `m_lines` runs alongside it, one entry
+    // per instruction.
     std::vector<Instruction> m_code;
+    std::vector<u32> m_lines;
+
+    // Which line the instructions being emitted right now came from. A
+    // node sets it while it is being walked and hands it back afterwards,
+    // so an instruction a construct emits after its operands still
+    // belongs to the construct and not to the last operand.
+    u32 m_line = 0;
+
+    class LineScope
+    {
+    public:
+        LineScope(EmitterState& state, u32 line) : m_state(state), m_previous(state.m_line)
+        {
+            if (line != 0) m_state.m_line = line;
+        }
+
+        ~LineScope() { m_state.m_line = m_previous; }
+
+        LineScope(const LineScope&) = delete;
+        LineScope& operator=(const LineScope&) = delete;
+
+    private:
+        EmitterState& m_state;
+        u32 m_previous;
+    };
 
     struct LoopContext
     {
@@ -180,9 +211,12 @@ private:
     void EmitMethod(const MethodDecl& method, FunctionInfo& outInfo)
     {
         m_code.clear();
+        m_lines.clear();
         m_loops.clear();
+        m_line = method.location.line;
 
         outInfo.qualifiedName = method.qualifiedName;
+        outInfo.sourceFile = method.location.file;
         outInfo.returnType = method.returnType.type;
         outInfo.parameterTypes.clear();
         for (const ParamDecl& param : method.params) outInfo.parameterTypes.push_back(param.type.type);
@@ -228,6 +262,7 @@ private:
         outInfo.codeOffset = (u32)m_module.code.size();
         outInfo.codeLength = (u32)m_code.size();
         m_module.code.insert(m_module.code.end(), m_code.begin(), m_code.end());
+        m_module.sourceLines.insert(m_module.sourceLines.end(), m_lines.begin(), m_lines.end());
     }
 
     static bool IsInstanceMethod(const MethodDecl& method)
@@ -255,7 +290,11 @@ private:
             case ValueType::Float: Emit(OpCode::PushFloat, FloatConstant(0.0f)); Emit(OpCode::Return); break;
             case ValueType::Bool: Emit(OpCode::PushBool, 0); Emit(OpCode::Return); break;
             case ValueType::String: Emit(OpCode::PushString, StringConstant(std::string())); Emit(OpCode::Return); break;
-            case ValueType::Object: Emit(OpCode::PushNull); Emit(OpCode::Return); break;
+            // An all-zero slot is the null reference, and is equally the
+            // handle that names nothing: neither needs an opcode of its
+            // own to produce.
+            case ValueType::Object:
+            case ValueType::Handle: Emit(OpCode::PushNull); Emit(OpCode::Return); break;
             default: Emit(OpCode::ReturnVoid); break;
         }
     }
@@ -264,11 +303,15 @@ private:
 
     u32 Here() const { return (u32)m_code.size(); }
 
-    void Emit(OpCode op, u32 operand = 0) { m_code.push_back(Instruction{ op, operand }); }
+    void Emit(OpCode op, u32 operand = 0)
+    {
+        m_code.push_back(Instruction{ op, operand });
+        m_lines.push_back(m_line);
+    }
 
     u32 EmitJump(OpCode op)
     {
-        m_code.push_back(Instruction{ op, 0 });
+        Emit(op, 0);
         return (u32)m_code.size() - 1;
     }
 
@@ -320,6 +363,8 @@ private:
 
     void EmitStmt(const Stmt& stmt)
     {
+        LineScope line(*this, stmt.location.line);
+
         switch (stmt.kind)
         {
             case StmtKind::LocalDecl: {
@@ -547,6 +592,8 @@ private:
 
     void EmitExpr(const Expr& expr)
     {
+        LineScope line(*this, expr.location.line);
+
         switch (expr.kind)
         {
             case ExprKind::IntLiteral:
@@ -845,12 +892,47 @@ private:
         Emit(OpCode::LoadElement);
     }
 
+    // Writes down what a call into the engine names, so the module says
+    // which type and which method it wants in text and the machine that
+    // runs it decides whether its own table has them.
+    u32 RegisterBoundCall(const CallExpr& expr)
+    {
+        const BoundType& type = m_bindings->types[expr.boundType];
+        const BoundMethod& method = type.methods[expr.boundMethod];
+
+        BoundCallSite site;
+        site.typeName = type.name;
+        site.methodName = method.name;
+        site.isInstance = method.isInstance;
+        site.parameterTypes = method.parameterTypes;
+        site.returnType = method.returnType;
+
+        const u32 index = (u32)m_module.boundCalls.size();
+        m_module.boundCalls.push_back(std::move(site));
+        return index;
+    }
+
     void EmitCall(const CallExpr& expr)
     {
         if (expr.target == CallTarget::Native)
         {
             for (const ExprPtr& arg : expr.args) EmitExpr(*arg);
             Emit(OpCode::CallNative, expr.targetIndex);
+            return;
+        }
+
+        if (expr.target == CallTarget::BoundMethod)
+        {
+            if (!m_bindings || expr.boundType >= m_bindings->types.size() ||
+                expr.boundMethod >= m_bindings->types[expr.boundType].methods.size())
+            {
+                m_diagnostics.AddError(expr.location, "this call was never bound to an engine method");
+                return;
+            }
+
+            if (expr.receiver) EmitExpr(*expr.receiver);
+            for (const ExprPtr& arg : expr.args) EmitExpr(*arg);
+            Emit(OpCode::CallBound, RegisterBoundCall(expr));
             return;
         }
 
@@ -880,9 +962,10 @@ private:
 
 } // namespace
 
-BytecodeModule Emit(const Program& program, const std::string& sourceName, u32 moduleVersion, DiagnosticList& diagnostics)
+BytecodeModule Emit(const Program& program, const std::string& sourceName, u32 moduleVersion, DiagnosticList& diagnostics,
+    const BindingTable* bindings)
 {
-    EmitterState emitter(program, sourceName, moduleVersion, diagnostics);
+    EmitterState emitter(program, sourceName, moduleVersion, diagnostics, bindings);
     return emitter.Run();
 }
 

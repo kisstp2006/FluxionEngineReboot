@@ -55,6 +55,8 @@ const char* OpCodeName(OpCode op)
         case OpCode::NotEqualBool: return "NotEqualBool";
         case OpCode::EqualString: return "EqualString";
         case OpCode::NotEqualString: return "NotEqualString";
+        case OpCode::EqualHandle: return "EqualHandle";
+        case OpCode::NotEqualHandle: return "NotEqualHandle";
         case OpCode::EqualRef: return "EqualRef";
         case OpCode::NotEqualRef: return "NotEqualRef";
 
@@ -82,6 +84,7 @@ const char* OpCodeName(OpCode op)
         case OpCode::CallVirtual: return "CallVirtual";
         case OpCode::CallInterface: return "CallInterface";
         case OpCode::CallNative: return "CallNative";
+        case OpCode::CallBound: return "CallBound";
         case OpCode::Return: return "Return";
         case OpCode::ReturnVoid: return "ReturnVoid";
 
@@ -92,29 +95,41 @@ const char* OpCodeName(OpCode op)
     }
 }
 
+namespace
+{
+
+// One shared list per accepted argument list, so a signature points at
+// storage that outlives every module and no entry has to own anything.
+constexpr ValueType kOneString[] = { ValueType::String };
+constexpr ValueType kOneInt[] = { ValueType::Int };
+constexpr ValueType kOneFloat[] = { ValueType::Float };
+constexpr ValueType kOneBool[] = { ValueType::Bool };
+
+} // namespace
+
 const NativeFunctionSignature* NativeFunctionTable()
 {
     // Ordered to match NativeFunctionId exactly -- the index is the
     // identity, both for the compiler binding a call and for the
-    // interpreter dispatching one. A parameter type of Void means the
+    // interpreter dispatching one. A null parameter list means the
     // built-in takes nothing at all.
     static const NativeFunctionSignature table[kNativeFunctionCount] = {
-        { "Console.WriteLine", ValueType::String, ValueType::Void },
-        { "Console.WriteLine", ValueType::Int, ValueType::Void },
-        { "Console.WriteLine", ValueType::Float, ValueType::Void },
-        { "Console.WriteLine", ValueType::Bool, ValueType::Void },
+        { "Console.WriteLine", kOneString, 1, ValueType::Void },
+        { "Console.WriteLine", kOneInt, 1, ValueType::Void },
+        { "Console.WriteLine", kOneFloat, 1, ValueType::Void },
+        { "Console.WriteLine", kOneBool, 1, ValueType::Void },
 
-        { "Console.Write", ValueType::String, ValueType::Void },
-        { "Console.Write", ValueType::Int, ValueType::Void },
-        { "Console.Write", ValueType::Float, ValueType::Void },
-        { "Console.Write", ValueType::Bool, ValueType::Void },
+        { "Console.Write", kOneString, 1, ValueType::Void },
+        { "Console.Write", kOneInt, 1, ValueType::Void },
+        { "Console.Write", kOneFloat, 1, ValueType::Void },
+        { "Console.Write", kOneBool, 1, ValueType::Void },
 
-        { "Debug.Log", ValueType::String, ValueType::Void },
-        { "Debug.LogWarning", ValueType::String, ValueType::Void },
-        { "Debug.LogError", ValueType::String, ValueType::Void },
+        { "Debug.Log", kOneString, 1, ValueType::Void },
+        { "Debug.LogWarning", kOneString, 1, ValueType::Void },
+        { "Debug.LogError", kOneString, 1, ValueType::Void },
 
-        { "Gc.Collect", ValueType::Void, ValueType::Void },
-        { "Gc.LiveObjects", ValueType::Void, ValueType::Int },
+        { "Gc.Collect", nullptr, 0, ValueType::Void },
+        { "Gc.LiveObjects", nullptr, 0, ValueType::Int },
     };
     return table;
 }

@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include <Fluxion/Core/Reflection/EnumInfo.h>
+#include <Fluxion/Core/Reflection/MethodInfo.h>
 #include <Fluxion/Core/Reflection/PropertyInfo.h>
 #include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/Core/Reflection/TypeInfo.h>
@@ -22,6 +23,26 @@ typedef enum TestColorChannel
     TEST_COLOR_BLUE,
 } TestColorChannel;
 
+// A hand-written invoker, which is what the C side has: `args` addresses
+// storage of each declared parameter's own type, in order, and the result
+// is written through `returnValue`.
+static void TestVec2_Scale_Invoke(void* instance, void** args, void* returnValue)
+{
+    TestVec2* self = (TestVec2*)instance;
+    const f32 factor = *(const f32*)args[0];
+    self->x *= factor;
+    self->y *= factor;
+    *(f32*)returnValue = self->x + self->y;
+}
+
+static void TestVec2_Offset_Invoke(void* instance, void** args, void* returnValue)
+{
+    TestVec2* self = (TestVec2*)instance;
+    self->x += *(const f32*)args[0];
+    self->y += *(const f32*)args[1];
+    (void)returnValue;
+}
+
 void Test_Reflection_Run(TestContext* ctx)
 {
     Fluxion_Reflection_Init();
@@ -36,6 +57,24 @@ void Test_Reflection_Run(TestContext* ctx)
         FLUXION_REFLECT_PROPERTY(TestVec2, y, FLUXION_TYPE_ID_OF(f32), FLUXION_PROPERTY_FLAG_EDITOR_VISIBLE),
     };
 
+    const FluxionTypeId scaleParameters[] = { FLUXION_TYPE_ID_OF(f32) };
+    const FluxionTypeId offsetParameters[] = { FLUXION_TYPE_ID_OF(f32), FLUXION_TYPE_ID_OF(f32) };
+
+    FluxionMethodInfo vec2Methods[2];
+    vec2Methods[0].name = Fluxion_StringView_FromCStr("Scale");
+    vec2Methods[0].returnType = FLUXION_TYPE_ID_OF(f32);
+    vec2Methods[0].parameterTypes = scaleParameters;
+    vec2Methods[0].parameterCount = 1;
+    vec2Methods[0].flags = FLUXION_METHOD_FLAG_NONE;
+    vec2Methods[0].invoke = TestVec2_Scale_Invoke;
+
+    vec2Methods[1].name = Fluxion_StringView_FromCStr("Offset");
+    vec2Methods[1].returnType = FLUXION_TYPE_ID_INVALID;
+    vec2Methods[1].parameterTypes = offsetParameters;
+    vec2Methods[1].parameterCount = 2;
+    vec2Methods[1].flags = FLUXION_METHOD_FLAG_NONE;
+    vec2Methods[1].invoke = TestVec2_Offset_Invoke;
+
     FluxionTypeInfo vec2Type;
     vec2Type.name = Fluxion_StringView_FromCStr("TestVec2");
     vec2Type.id = FLUXION_TYPE_ID_OF(TestVec2);
@@ -43,6 +82,7 @@ void Test_Reflection_Run(TestContext* ctx)
     vec2Type.size = sizeof(TestVec2);
     vec2Type.version = 1;
     vec2Type.members = Fluxion_Span_Make(vec2Properties, FLUXION_ARRAY_COUNT(vec2Properties), sizeof(FluxionPropertyInfo));
+    vec2Type.methods = Fluxion_Span_Make(vec2Methods, FLUXION_ARRAY_COUNT(vec2Methods), sizeof(FluxionMethodInfo));
 
     TEST_CHECK(ctx, Fluxion_Reflection_RegisterType(&vec2Type));
 
@@ -66,6 +106,46 @@ void Test_Reflection_Run(TestContext* ctx)
     f32 yValue = *(f32*)((u8*)&instance + yProperty->offset);
     TEST_CHECK(ctx, yValue == 4.0f);
 
+    // Methods are enumerated off the registered descriptor and actually
+    // called through it: metadata that cannot be used is metadata that
+    // cannot be trusted.
+    TEST_CHECK(ctx, foundById != NULL && foundById->methods.count == 2);
+    {
+        const FluxionMethodInfo* scale = (const FluxionMethodInfo*)Fluxion_Span_At(foundById->methods, 0);
+        TEST_CHECK(ctx, Fluxion_StringView_Equals(scale->name, Fluxion_StringView_FromCStr("Scale")));
+        TEST_CHECK(ctx, scale->parameterCount == 1);
+        TEST_CHECK(ctx, scale->parameterTypes[0] == FLUXION_TYPE_ID_OF(f32));
+        TEST_CHECK(ctx, scale->returnType == FLUXION_TYPE_ID_OF(f32));
+        TEST_CHECK(ctx, (scale->flags & FLUXION_METHOD_FLAG_STATIC) == 0);
+
+        f32 factor = 2.0f;
+        void* scaleArgs[1];
+        scaleArgs[0] = &factor;
+        f32 scaleResult = 0.0f;
+        scale->invoke(&instance, scaleArgs, &scaleResult);
+
+        TEST_CHECK(ctx, instance.x == 6.0f);
+        TEST_CHECK(ctx, instance.y == 8.0f);
+        TEST_CHECK(ctx, scaleResult == 14.0f);
+
+        const FluxionMethodInfo* offset = (const FluxionMethodInfo*)Fluxion_Span_At(foundById->methods, 1);
+        TEST_CHECK(ctx, Fluxion_StringView_Equals(offset->name, Fluxion_StringView_FromCStr("Offset")));
+        TEST_CHECK(ctx, offset->parameterCount == 2);
+        TEST_CHECK(ctx, offset->returnType == FLUXION_TYPE_ID_INVALID);
+
+        f32 dx = 1.0f;
+        f32 dy = 2.0f;
+        void* offsetArgs[2];
+        offsetArgs[0] = &dx;
+        offsetArgs[1] = &dy;
+        offset->invoke(&instance, offsetArgs, NULL);
+
+        // Each argument reached the parameter it was meant for, so the
+        // two did not swap places on the way across.
+        TEST_CHECK(ctx, instance.x == 7.0f);
+        TEST_CHECK(ctx, instance.y == 10.0f);
+    }
+
     // Enum reflection.
     FluxionEnumValueInfo colorValues[] =
     {
@@ -81,6 +161,7 @@ void Test_Reflection_Run(TestContext* ctx)
     colorType.size = sizeof(TestColorChannel);
     colorType.version = 1;
     colorType.members = Fluxion_Span_Make(colorValues, FLUXION_ARRAY_COUNT(colorValues), sizeof(FluxionEnumValueInfo));
+    colorType.methods = Fluxion_Span_Make(NULL, 0, sizeof(FluxionMethodInfo));
 
     TEST_CHECK(ctx, Fluxion_Reflection_RegisterType(&colorType));
 

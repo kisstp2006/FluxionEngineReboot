@@ -18,6 +18,12 @@ namespace Fluxion::Script
 // compiler statically knows about travels beside the type rather than
 // inside it. `Null` is the type of the `null` literal alone -- it is
 // assignable to any reference but no variable is ever declared with it.
+//
+// `Handle` names something the engine owns rather than something the
+// script heap does. It is a value, not a reference: it is never followed
+// by a collection, never compared with `null`, and the object it names
+// goes away when the engine says so and not when the script stops
+// mentioning it.
 enum class ValueType
 {
     Void,
@@ -27,6 +33,7 @@ enum class ValueType
     String,
     Object,
     Null,
+    Handle,
     Unknown,
 };
 
@@ -41,6 +48,7 @@ inline const char* ValueTypeName(ValueType type)
         case ValueType::String: return "string";
         case ValueType::Object: return "a reference";
         case ValueType::Null: return "null";
+        case ValueType::Handle: return "an engine handle";
         default: return "<unknown>";
     }
 }
@@ -111,6 +119,38 @@ inline ObjectHandle SlotAsObject(Slot slot)
 inline Slot MakeNullSlot() { return Slot{}; }
 inline bool SlotIsNull(Slot slot) { return slot.bits == 0; }
 
+// How the engine names one of its own objects, in the shape every engine
+// handle has. It occupies one slot exactly as a reference does, but it is
+// deliberately not one: no reference bitmap ever marks a slot holding one
+// of these, so a collection neither follows it nor keeps anything alive
+// on account of it. The engine decides when the thing behind it stops
+// existing, and a handle whose generation no longer matches is refused
+// when it is used rather than quietly resolving to whatever took its
+// place.
+struct EngineHandle
+{
+    u32 index = 0;
+    u32 generation = 0;
+};
+
+inline bool operator==(EngineHandle a, EngineHandle b) { return a.index == b.index && a.generation == b.generation; }
+inline bool operator!=(EngineHandle a, EngineHandle b) { return !(a == b); }
+
+inline Slot MakeHandleSlot(EngineHandle handle)
+{
+    Slot slot;
+    slot.bits = ((u64)handle.generation << 32) | (u64)handle.index;
+    return slot;
+}
+
+inline EngineHandle SlotAsHandle(Slot slot)
+{
+    EngineHandle handle;
+    handle.index = (u32)(slot.bits & 0xFFFFFFFFull);
+    handle.generation = (u32)(slot.bits >> 32);
+    return handle;
+}
+
 // The host-facing form of a value: self-contained (a string carries its
 // own text rather than an index into some virtual machine's table), so it
 // stays valid after the machine that produced it is destroyed. A
@@ -125,6 +165,7 @@ struct ScriptValue
     bool boolValue = false;
     std::string stringValue;
     ObjectHandle objectValue;
+    EngineHandle handleValue;
 };
 
 } // namespace Fluxion::Script

@@ -3,6 +3,7 @@
 #include <Fluxion/Foundation/Result.hpp>
 #include <Fluxion/Foundation/Types.h>
 #include <Fluxion/Script/Diagnostics.hpp>
+#include <Fluxion/Script/Runtime/Binding.hpp>
 #include <Fluxion/Script/Runtime/Bytecode.hpp>
 #include <Fluxion/Script/Runtime/Value.hpp>
 #include <Fluxion/Script/Runtime/Vm.hpp>
@@ -19,6 +20,14 @@ struct CompileOptions
     // The caller's own revision number for this module; stamped into the
     // header so a host can tell two builds of the same source apart.
     u32 moduleVersion = 1;
+
+    // The engine types this source may reach. Passed in rather than
+    // looked up anywhere: nothing in this module holds a table of its
+    // own, so what a compilation can see is exactly what its caller
+    // decided to show it. Null means the source can reach nothing outside
+    // itself. The table must outlive the call, not the module it
+    // produces -- a compiled module names what it calls in text.
+    const BindingTable* bindings = nullptr;
 };
 
 // What Compile produces and what CreateVm consumes. The compiler has

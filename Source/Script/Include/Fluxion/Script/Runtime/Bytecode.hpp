@@ -88,6 +88,13 @@ enum class OpCode : u16
     EqualString,
     NotEqualString,
 
+    // Engine handle comparison. Two handles are the same when they name
+    // the same engine object, which is index and generation together --
+    // an index reused after its previous occupant went away compares
+    // unequal to a handle taken before that happened.
+    EqualHandle,
+    NotEqualHandle,
+
     // Reference comparison, which is identity: two references are equal
     // when they name the same object, never when they merely hold equal
     // field values.
@@ -152,6 +159,14 @@ enum class OpCode : u16
     CallVirtual,
     CallInterface,
     CallNative,
+
+    // A method of an engine type the host made visible to the script. The
+    // operand is an index into the module's own list of such call sites,
+    // which names the type and the method in text -- the module never
+    // holds a pointer into the host, so the machine that runs it resolves
+    // each site against the table it was given.
+    CallBound,
+
     Return,
     ReturnVoid,
 
@@ -202,14 +217,15 @@ inline constexpr u32 kNativeFunctionCount = (u32)NativeFunctionId::Count;
 
 // Only what the compiler needs to resolve a call: which name it answers
 // to, what it takes and what it gives back. Several entries can share a
-// name, one per accepted argument type; a built-in takes at most one
-// argument, so the argument's type alone picks the entry. A
-// `parameterType` of Void means the built-in takes nothing. Where the
-// output ends up is the interpreter's business, not the compiler's.
+// name, one per accepted argument list, and the whole list is what picks
+// between them. `parameterTypes` points at `parameterCount` entries and
+// is null when the built-in takes nothing. Where the output ends up is
+// the interpreter's business, not the compiler's.
 struct NativeFunctionSignature
 {
     const char* qualifiedName;
-    ValueType parameterType;
+    const ValueType* parameterTypes;
+    u32 parameterCount;
     ValueType returnType;
 };
 
@@ -222,6 +238,26 @@ const NativeFunctionSignature* NativeFunctionTable();
 inline constexpr u32 kNoClass = 0xFFFFFFFFu;
 inline constexpr u32 kNoFunction = 0xFFFFFFFFu;
 inline constexpr u32 kNoVtableSlot = 0xFFFFFFFFu;
+inline constexpr u32 kNoBoundType = 0xFFFFFFFFu;
+inline constexpr u32 kNoBoundMethod = 0xFFFFFFFFu;
+
+// One place in the instruction stream where the script calls into the
+// engine. What is stored is the pair of names, not the invoker: a module
+// stays a self-contained image, so the machine that loads it looks each
+// site up in whichever table it was created with, and refuses to load one
+// naming something that table does not have.
+struct BoundCallSite
+{
+    std::string typeName;
+    std::string methodName;
+
+    // The receiver is on the stack ahead of the arguments for an instance
+    // method, exactly as for a script method, and absent for a static one.
+    bool isInstance = false;
+
+    std::vector<ValueType> parameterTypes;
+    ValueType returnType = ValueType::Void;
+};
 
 // Reference bitmaps are packed into 32-bit words, one bit per slot, and
 // are what makes collection precise: they say exactly which frame slots
@@ -250,7 +286,7 @@ inline constexpr u32 kLanguageVersion = 3;
 // Bumped whenever the instruction set or the module layout changes. A
 // module carrying any other value is refused by the loader -- running it
 // would silently misinterpret opcodes.
-inline constexpr u32 kBytecodeVersion = 3;
+inline constexpr u32 kBytecodeVersion = 4;
 
 // Bumped when the engine-side interface reachable from a module changes
 // shape.
@@ -311,6 +347,13 @@ struct ClassInfo
 struct FunctionInfo
 {
     std::string qualifiedName;
+
+    // Which source this method's body was written in. A method's body is
+    // written in one file whole, so this belongs to the function rather
+    // than to each instruction; the line does not, and lives beside the
+    // code instead.
+    std::string sourceFile;
+
     ValueType returnType = ValueType::Void;
     std::vector<ValueType> parameterTypes;
 
@@ -344,11 +387,19 @@ struct BytecodeModule
     std::string sourceName;
 
     std::vector<Instruction> code;
+
+    // The line each instruction came from, one entry per instruction. Kept
+    // beside the code rather than inside it so an Instruction stays two
+    // words: nothing running ever reads this, only something reporting
+    // where execution had got to.
+    std::vector<u32> sourceLines;
+
     std::vector<i32> intConstants;
     std::vector<f32> floatConstants;
     std::vector<std::string> stringConstants;
     std::vector<ClassInfo> classes;
     std::vector<FunctionInfo> functions;
+    std::vector<BoundCallSite> boundCalls;
 };
 
 } // namespace Fluxion::Script

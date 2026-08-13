@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 
+#include <Fluxion/Core/Reflection/MethodInfo.h>
 #include <Fluxion/Core/Reflection/PropertyFlags.h>
 #include <Fluxion/Core/Reflection/PropertyInfo.h>
 #include <Fluxion/Core/Reflection/TypeId.h>
@@ -44,6 +45,7 @@ void Test_BinarySerializer_Run(TestContext* ctx)
         typeInfo.size = sizeof(TestSerializedVec2);
         typeInfo.version = 1;
         typeInfo.members = Fluxion_Span_Make(properties, FLUXION_ARRAY_COUNT(properties), sizeof(FluxionPropertyInfo));
+        typeInfo.methods = Fluxion_Span_Make(NULL, 0, sizeof(FluxionMethodInfo));
 
         TestSerializedVec2 source = { 1.5f, -2.5f };
 
@@ -80,6 +82,7 @@ void Test_BinarySerializer_Run(TestContext* ctx)
         typeInfoV1.size = sizeof(TestStructV1);
         typeInfoV1.version = 1;
         typeInfoV1.members = Fluxion_Span_Make(propertiesV1, FLUXION_ARRAY_COUNT(propertiesV1), sizeof(FluxionPropertyInfo));
+        typeInfoV1.methods = Fluxion_Span_Make(NULL, 0, sizeof(FluxionMethodInfo));
 
         FluxionPropertyInfo propertiesV2[] =
         {
@@ -94,6 +97,7 @@ void Test_BinarySerializer_Run(TestContext* ctx)
         typeInfoV2.size = sizeof(TestStructV2);
         typeInfoV2.version = 2;
         typeInfoV2.members = Fluxion_Span_Make(propertiesV2, FLUXION_ARRAY_COUNT(propertiesV2), sizeof(FluxionPropertyInfo));
+        typeInfoV2.methods = Fluxion_Span_Make(NULL, 0, sizeof(FluxionMethodInfo));
 
         // Old (v1) stream -> newer (v2) struct.
         {
@@ -143,6 +147,7 @@ void Test_BinarySerializer_Run(TestContext* ctx)
         typeInfoA.size = sizeof(TestSerializedVec2);
         typeInfoA.version = 1;
         typeInfoA.members = Fluxion_Span_Make(properties, FLUXION_ARRAY_COUNT(properties), sizeof(FluxionPropertyInfo));
+        typeInfoA.methods = Fluxion_Span_Make(NULL, 0, sizeof(FluxionMethodInfo));
 
         FluxionTypeInfo typeInfoUnrelated = typeInfoA;
         typeInfoUnrelated.id = FLUXION_TYPE_ID_OF(SomeUnrelatedType);

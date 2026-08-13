@@ -34,6 +34,25 @@ constexpr u32 kAllocationsBetweenCollections = 128;
 // allocation that exhausts the host.
 constexpr u32 kMaxArrayElements = 1u << 24;
 
+// How many arguments one call out of the script may carry. Both limits
+// are what lets the arguments be gathered into fixed storage on the way
+// out, with nothing allocated per call.
+constexpr u32 kMaxNativeArguments = 4;
+constexpr u32 kMaxBoundArguments = 8;
+
+// Where one argument of a call into the engine is kept while the call is
+// made. One member per value type rather than a union: the C side is
+// handed a pointer to storage of the parameter's own type, so the member
+// that is pointed at is chosen by that type and the others are simply
+// left alone.
+struct ArgumentStorage
+{
+    i32 asInt = 0;
+    f32 asFloat = 0.0f;
+    bool asBool = false;
+    EngineHandle asHandle;
+};
+
 std::string FormatInt(i32 value) { return std::to_string(value); }
 
 std::string FormatFloat(f32 value)
@@ -102,6 +121,24 @@ struct Vm
     // Objects native code is holding onto. Listed one entry per pin, so
     // two holders releasing independently do not surprise each other.
     std::vector<ObjectHandle> pinnedRoots;
+
+    // What each of the module's calls into the engine turned out to name,
+    // worked out once when the module was loaded. The module itself holds
+    // only names; this is where they became something callable.
+    struct ResolvedBoundCall
+    {
+        FluxionMethodInvokeFn invoke = nullptr;
+        HandleResolverFn resolve = nullptr;
+        void* resolveUser = nullptr;
+        bool isInstance = false;
+        std::vector<ValueType> parameterTypes;
+        ValueType returnType = ValueType::Void;
+    };
+    std::vector<ResolvedBoundCall> boundCalls;
+
+    // The last fault in full, which the Result a caller gets back cannot
+    // carry: its message must be a static string.
+    FaultDetail faultDetail;
 };
 
 namespace
@@ -185,6 +222,7 @@ constexpr i32 kFaultCodeNullReference = 15;
 constexpr i32 kFaultCodeStaleReference = 16;
 constexpr i32 kFaultCodeArrayLength = 17;
 constexpr i32 kFaultCodeElementRange = 18;
+constexpr i32 kFaultCodeEngineHandle = 19;
 
 class Interpreter
 {
@@ -194,6 +232,7 @@ public:
     bool Faulted() const { return m_faulted; }
     i32 FaultCode() const { return m_faultCode; }
     const char* FaultMessage() const { return m_faultMessage; }
+    const std::vector<FaultFrame>& FaultFrames() const { return m_faultFrames; }
     Slot ReturnSlot() const { return m_returnSlot; }
 
     void Run()
@@ -207,6 +246,7 @@ private:
     bool m_faulted = false;
     i32 m_faultCode = 0;
     const char* m_faultMessage = "script runtime fault";
+    std::vector<FaultFrame> m_faultFrames;
     Slot m_returnSlot;
 
     void Fault(i32 code, const char* message)
@@ -215,6 +255,39 @@ private:
         m_faulted = true;
         m_faultCode = code;
         m_faultMessage = message;
+        CaptureFrames();
+    }
+
+    // Which calls were active at the instant execution stopped, innermost
+    // first. Taken here rather than afterwards because nothing unwinds:
+    // once a fault is recorded the frames stay exactly as they were, and
+    // that is only true for as long as this call lasts.
+    //
+    // A frame's instruction pointer has already moved past what it is
+    // running, so the instruction being blamed is the one before it --
+    // which for a caller is the call itself, and so the line the call was
+    // written on.
+    void CaptureFrames()
+    {
+        m_faultFrames.clear();
+        for (size_t i = m_vm.frames.size(); i > 0; --i)
+        {
+            const Frame& frame = m_vm.frames[i - 1];
+            if (frame.functionIndex >= m_vm.module.functions.size()) continue;
+
+            const FunctionInfo& function = m_vm.module.functions[frame.functionIndex];
+
+            FaultFrame entry;
+            entry.method = function.qualifiedName;
+            entry.file = function.sourceFile;
+
+            const u32 executing = frame.ip > 0 ? frame.ip - 1 : 0;
+            const size_t codeIndex = (size_t)function.codeOffset + executing;
+            if (executing < function.codeLength && codeIndex < m_vm.module.sourceLines.size())
+                entry.line = m_vm.module.sourceLines[codeIndex];
+
+            m_faultFrames.push_back(std::move(entry));
+        }
     }
 
     Slot Pop()
@@ -410,6 +483,12 @@ private:
                 break;
             }
 
+            // An engine handle is index and generation together, and the
+            // slot holds exactly those two, so comparing the bits is
+            // comparing both at once.
+            case OpCode::EqualHandle: { const Slot b = Pop(); const Slot a = Pop(); PushBool(a.bits == b.bits); break; }
+            case OpCode::NotEqualHandle: { const Slot b = Pop(); const Slot a = Pop(); PushBool(a.bits != b.bits); break; }
+
             // Identity, and nothing more: the whole handle is the
             // object's name, so comparing the bits is comparing which
             // object each side holds.
@@ -515,6 +594,7 @@ private:
             case OpCode::CallVirtual: ExecuteVirtualCall(instruction.operand); break;
             case OpCode::CallInterface: ExecuteInterfaceCall(instruction.operand); break;
             case OpCode::CallNative: ExecuteNativeCall(instruction.operand); break;
+            case OpCode::CallBound: ExecuteBoundCall(instruction.operand); break;
 
             case OpCode::Return: ExecuteReturn(true); break;
             case OpCode::ReturnVoid: ExecuteReturn(false); break;
@@ -766,22 +846,38 @@ private:
             return;
         }
 
+        const NativeFunctionSignature& signature = NativeFunctionTable()[nativeIndex];
+        if (signature.parameterCount > kMaxNativeArguments)
+        {
+            Fault(kFaultCodeMalformed, "script call names a built-in that takes more arguments than one may take");
+            return;
+        }
+
+        // The leftmost argument was pushed first, so the stack gives them
+        // back rightmost first and they are put away from the end.
+        Slot arguments[kMaxNativeArguments];
+        for (u32 i = signature.parameterCount; i > 0; --i)
+        {
+            arguments[i - 1] = Pop();
+            if (m_faulted) return;
+        }
+
         const auto id = (NativeFunctionId)nativeIndex;
         switch (id)
         {
-            case NativeFunctionId::ConsoleWriteLineString: Write(m_vm, OutputChannel::Console, StringAt(m_vm, SlotAsStringId(Pop())) + "\n"); break;
-            case NativeFunctionId::ConsoleWriteLineInt: Write(m_vm, OutputChannel::Console, FormatInt(SlotAsInt(Pop())) + "\n"); break;
-            case NativeFunctionId::ConsoleWriteLineFloat: Write(m_vm, OutputChannel::Console, FormatFloat(SlotAsFloat(Pop())) + "\n"); break;
-            case NativeFunctionId::ConsoleWriteLineBool: Write(m_vm, OutputChannel::Console, FormatBool(SlotAsBool(Pop())) + "\n"); break;
+            case NativeFunctionId::ConsoleWriteLineString: Write(m_vm, OutputChannel::Console, StringAt(m_vm, SlotAsStringId(arguments[0])) + "\n"); break;
+            case NativeFunctionId::ConsoleWriteLineInt: Write(m_vm, OutputChannel::Console, FormatInt(SlotAsInt(arguments[0])) + "\n"); break;
+            case NativeFunctionId::ConsoleWriteLineFloat: Write(m_vm, OutputChannel::Console, FormatFloat(SlotAsFloat(arguments[0])) + "\n"); break;
+            case NativeFunctionId::ConsoleWriteLineBool: Write(m_vm, OutputChannel::Console, FormatBool(SlotAsBool(arguments[0])) + "\n"); break;
 
-            case NativeFunctionId::ConsoleWriteString: Write(m_vm, OutputChannel::Console, StringAt(m_vm, SlotAsStringId(Pop()))); break;
-            case NativeFunctionId::ConsoleWriteInt: Write(m_vm, OutputChannel::Console, FormatInt(SlotAsInt(Pop()))); break;
-            case NativeFunctionId::ConsoleWriteFloat: Write(m_vm, OutputChannel::Console, FormatFloat(SlotAsFloat(Pop()))); break;
-            case NativeFunctionId::ConsoleWriteBool: Write(m_vm, OutputChannel::Console, FormatBool(SlotAsBool(Pop()))); break;
+            case NativeFunctionId::ConsoleWriteString: Write(m_vm, OutputChannel::Console, StringAt(m_vm, SlotAsStringId(arguments[0]))); break;
+            case NativeFunctionId::ConsoleWriteInt: Write(m_vm, OutputChannel::Console, FormatInt(SlotAsInt(arguments[0]))); break;
+            case NativeFunctionId::ConsoleWriteFloat: Write(m_vm, OutputChannel::Console, FormatFloat(SlotAsFloat(arguments[0]))); break;
+            case NativeFunctionId::ConsoleWriteBool: Write(m_vm, OutputChannel::Console, FormatBool(SlotAsBool(arguments[0]))); break;
 
-            case NativeFunctionId::DebugLog: Write(m_vm, OutputChannel::LogInfo, StringAt(m_vm, SlotAsStringId(Pop())) + "\n"); break;
-            case NativeFunctionId::DebugLogWarning: Write(m_vm, OutputChannel::LogWarning, StringAt(m_vm, SlotAsStringId(Pop())) + "\n"); break;
-            case NativeFunctionId::DebugLogError: Write(m_vm, OutputChannel::LogError, StringAt(m_vm, SlotAsStringId(Pop())) + "\n"); break;
+            case NativeFunctionId::DebugLog: Write(m_vm, OutputChannel::LogInfo, StringAt(m_vm, SlotAsStringId(arguments[0])) + "\n"); break;
+            case NativeFunctionId::DebugLogWarning: Write(m_vm, OutputChannel::LogWarning, StringAt(m_vm, SlotAsStringId(arguments[0])) + "\n"); break;
+            case NativeFunctionId::DebugLogError: Write(m_vm, OutputChannel::LogError, StringAt(m_vm, SlotAsStringId(arguments[0])) + "\n"); break;
 
             // Asking is all a script can do: the collection itself waits
             // for the next point between two statements.
@@ -791,6 +887,98 @@ private:
             default:
                 Fault(kFaultCodeMalformed, "script call names a built-in that does not exist");
                 break;
+        }
+    }
+
+    // Takes one value off the stack and puts it where the C side expects
+    // to find it, answering with the address that argument is passed by.
+    void* StoreArgument(ValueType type, Slot slot, ArgumentStorage& storage)
+    {
+        switch (type)
+        {
+            case ValueType::Int: storage.asInt = SlotAsInt(slot); return &storage.asInt;
+            case ValueType::Float: storage.asFloat = SlotAsFloat(slot); return &storage.asFloat;
+            case ValueType::Bool: storage.asBool = SlotAsBool(slot); return &storage.asBool;
+            case ValueType::Handle: storage.asHandle = SlotAsHandle(slot); return &storage.asHandle;
+            default: return nullptr;
+        }
+    }
+
+    void ExecuteBoundCall(u32 siteIndex)
+    {
+        if (siteIndex >= m_vm.boundCalls.size())
+        {
+            Fault(kFaultCodeMalformed, "script call names an engine method the module does not describe");
+            return;
+        }
+
+        const Vm::ResolvedBoundCall& site = m_vm.boundCalls[siteIndex];
+        const u32 count = (u32)site.parameterTypes.size();
+        if (count > kMaxBoundArguments || !site.invoke)
+        {
+            Fault(kFaultCodeMalformed, "script call names an engine method it cannot reach");
+            return;
+        }
+
+        ArgumentStorage storage[kMaxBoundArguments];
+        void* addresses[kMaxBoundArguments];
+
+        for (u32 i = count; i > 0; --i)
+        {
+            const Slot slot = Pop();
+            if (m_faulted) return;
+
+            const u32 index = i - 1;
+            addresses[index] = StoreArgument(site.parameterTypes[index], slot, storage[index]);
+            if (!addresses[index])
+            {
+                Fault(kFaultCodeMalformed, "script passed an engine method an argument of a type it cannot take");
+                return;
+            }
+        }
+
+        // The receiver sits below the arguments, exactly as it does for a
+        // script method. What it names belongs to the engine, so the
+        // engine is what turns it into something to run on -- and saying
+        // it names nothing is how a handle that has gone stale is
+        // reported.
+        void* instance = nullptr;
+        if (site.isInstance)
+        {
+            const Slot receiver = Pop();
+            if (m_faulted) return;
+
+            instance = site.resolve ? site.resolve(site.resolveUser, SlotAsHandle(receiver)) : nullptr;
+            if (!instance)
+            {
+                Fault(kFaultCodeEngineHandle, "script reached through a handle the engine no longer recognizes");
+                return;
+            }
+        }
+
+        ArgumentStorage returned;
+        void* returnAddress = nullptr;
+        switch (site.returnType)
+        {
+            case ValueType::Void: break;
+            case ValueType::Int: returnAddress = &returned.asInt; break;
+            case ValueType::Float: returnAddress = &returned.asFloat; break;
+            case ValueType::Bool: returnAddress = &returned.asBool; break;
+            case ValueType::Handle: returnAddress = &returned.asHandle; break;
+            default:
+                Fault(kFaultCodeMalformed, "script called an engine method answering with a type it cannot hold");
+                return;
+        }
+
+        site.invoke(instance, count != 0 ? addresses : nullptr, returnAddress);
+
+        switch (site.returnType)
+        {
+            case ValueType::Int: PushInt(returned.asInt); break;
+            case ValueType::Float: PushFloat(returned.asFloat); break;
+            case ValueType::Bool: PushBool(returned.asBool); break;
+            case ValueType::Handle: Push(MakeHandleSlot(returned.asHandle)); break;
+            default: break;
         }
     }
 };
@@ -837,14 +1025,186 @@ ScriptValue ValueFromSlot(const Vm& vm, ValueType type, Slot slot)
         case ValueType::Bool: value.boolValue = SlotAsBool(slot); break;
         case ValueType::String: value.stringValue = StringAt(vm, SlotAsStringId(slot)); break;
         case ValueType::Object: value.objectValue = SlotAsObject(slot); break;
+        case ValueType::Handle: value.handleValue = SlotAsHandle(slot); break;
         default: break;
     }
     return value;
 }
 
+// Turns one value a host handed in into the slot the callee's frame
+// expects. The only conversion allowed is the language's own widening of
+// an int to a float; everything else has to already be what was declared.
+bool SlotFromValue(Vm& vm, ValueType declared, const ScriptValue& value, Slot& outSlot)
+{
+    switch (declared)
+    {
+        case ValueType::Int:
+            if (value.type != ValueType::Int) return false;
+            outSlot = MakeIntSlot(value.intValue);
+            return true;
+
+        case ValueType::Float:
+            if (value.type == ValueType::Int) { outSlot = MakeFloatSlot((f32)value.intValue); return true; }
+            if (value.type != ValueType::Float) return false;
+            outSlot = MakeFloatSlot(value.floatValue);
+            return true;
+
+        case ValueType::Bool:
+            if (value.type != ValueType::Bool) return false;
+            outSlot = MakeBoolSlot(value.boolValue);
+            return true;
+
+        case ValueType::String:
+            if (value.type != ValueType::String) return false;
+            outSlot = MakeStringSlot(Intern(vm, value.stringValue));
+            return true;
+
+        case ValueType::Object:
+            if (value.type == ValueType::Null) { outSlot = MakeNullSlot(); return true; }
+            if (value.type != ValueType::Object) return false;
+            outSlot = MakeObjectSlot(value.objectValue);
+            return true;
+
+        case ValueType::Handle:
+            if (value.type != ValueType::Handle) return false;
+            outSlot = MakeHandleSlot(value.handleValue);
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+// Works out what each of the module's calls into the engine names, in the
+// table this machine was given. A module that names something the table
+// does not have is refused here: it would otherwise load and then fault
+// the first time that call was reached, which says far less about what
+// went wrong.
+bool ResolveBoundCalls(Vm& vm, const BindingTable* bindings, DiagnosticList& outDiagnostics)
+{
+    const SourceLocation location{ vm.module.sourceName, 0, 0 };
+
+    vm.boundCalls.reserve(vm.module.boundCalls.size());
+    for (const BoundCallSite& site : vm.module.boundCalls)
+    {
+        if (!bindings)
+        {
+            outDiagnostics.AddError(location, "this script module calls '" + site.typeName + "." + site.methodName +
+                                                  "', but no engine types were made available to it");
+            return false;
+        }
+
+        const u32 typeIndex = FindBoundType(*bindings, site.typeName);
+        const u32 methodIndex = (typeIndex != kNoBoundType) ? FindBoundMethod(*bindings, typeIndex, site.methodName) : kNoBoundMethod;
+        if (typeIndex == kNoBoundType || methodIndex == kNoBoundMethod)
+        {
+            outDiagnostics.AddError(location, "this script module calls '" + site.typeName + "." + site.methodName +
+                                                  "', which the engine types made available to it do not have");
+            return false;
+        }
+
+        const BoundType& type = bindings->types[typeIndex];
+        const BoundMethod& method = type.methods[methodIndex];
+
+        // The module was compiled against some table; this one has to
+        // agree with it about what the method takes and gives back, or
+        // the arguments would be read as the wrong types.
+        const bool sameShape = method.isInstance == site.isInstance && method.returnType == site.returnType &&
+                               method.parameterTypes == site.parameterTypes;
+        if (!sameShape)
+        {
+            outDiagnostics.AddError(location, "this script module was built against a different form of '" + site.typeName + "." +
+                                                  site.methodName + "'");
+            return false;
+        }
+
+        Vm::ResolvedBoundCall resolved;
+        resolved.invoke = method.invoke;
+        resolved.resolve = type.resolve;
+        resolved.resolveUser = type.resolveUser;
+        resolved.isInstance = method.isInstance;
+        resolved.parameterTypes = method.parameterTypes;
+        resolved.returnType = method.returnType;
+        vm.boundCalls.push_back(std::move(resolved));
+    }
+    return true;
+}
+
+// Sets a machine running at `functionIndex` with `incoming` already in
+// its lowest slots, and reports what came back. Every way in from outside
+// goes through here, so a fault is recorded the same way whichever one
+// was used.
+Fluxion::Foundation::Result<ScriptValue> RunEntry(Vm& vm, u32 functionIndex, const std::vector<Slot>& incoming)
+{
+    using ResultType = Fluxion::Foundation::Result<ScriptValue>;
+
+    const FunctionInfo& entry = vm.module.functions[functionIndex];
+
+    vm.stack.clear();
+    vm.frames.clear();
+    vm.faultDetail = FaultDetail{};
+
+    const size_t frameSize = (size_t)entry.localSlotCount > incoming.size() ? (size_t)entry.localSlotCount : incoming.size();
+    vm.stack.resize(frameSize);
+    for (size_t i = 0; i < incoming.size(); ++i) vm.stack[i] = incoming[i];
+
+    Frame frame;
+    frame.functionIndex = functionIndex;
+    frame.ip = 0;
+    frame.localBase = 0;
+    vm.frames.push_back(frame);
+
+    Interpreter interpreter(vm);
+    interpreter.Run();
+
+    if (interpreter.Faulted())
+    {
+        vm.faultDetail.faulted = true;
+        vm.faultDetail.code = interpreter.FaultCode();
+        vm.faultDetail.message = interpreter.FaultMessage();
+        vm.faultDetail.frames = interpreter.FaultFrames();
+
+        vm.stack.clear();
+        vm.frames.clear();
+        return ResultType::Error(interpreter.FaultCode(), interpreter.FaultMessage());
+    }
+
+    ScriptValue value = ValueFromSlot(vm, entry.returnType, interpreter.ReturnSlot());
+    vm.stack.clear();
+    return ResultType::Ok(std::move(value));
+}
+
+// Which body a call on `instance` actually enters: the one the receiver's
+// own class puts in the named method's table slot when the method is
+// dispatched on, and the named method itself when it is not.
+u32 DispatchTarget(const Vm& vm, u32 methodIndex, ObjectHandle instance)
+{
+    const FunctionInfo& declared = vm.module.functions[methodIndex];
+    if (declared.vtableSlot == kNoVtableSlot) return methodIndex;
+
+    const u32 classIndex = vm.heap.ClassOf(instance);
+    if (classIndex >= vm.module.classes.size()) return methodIndex;
+
+    const ClassInfo& classInfo = vm.module.classes[classIndex];
+
+    if (declared.owningClass < vm.module.classes.size() && vm.module.classes[declared.owningClass].isInterface)
+    {
+        for (const InterfaceImplementation& implementation : classInfo.interfaces)
+        {
+            if (implementation.interfaceClass != declared.owningClass) continue;
+            if (declared.vtableSlot >= implementation.methods.size()) break;
+            return implementation.methods[declared.vtableSlot];
+        }
+        return methodIndex;
+    }
+
+    if (declared.vtableSlot < classInfo.vtable.size()) return classInfo.vtable[declared.vtableSlot];
+    return methodIndex;
+}
+
 } // namespace
 
-Vm* CreateVm(const BytecodeModule& module, DiagnosticList& outDiagnostics)
+Vm* CreateVm(const BytecodeModule& module, DiagnosticList& outDiagnostics, const BindingTable* bindings)
 {
     if (!ValidateHeader(module.header, module.sourceName, outDiagnostics)) return nullptr;
 
@@ -866,6 +1226,12 @@ Vm* CreateVm(const BytecodeModule& module, DiagnosticList& outDiagnostics)
     vm->constantStringIds.reserve(vm->module.stringConstants.size());
     for (const std::string& constant : vm->module.stringConstants)
         vm->constantStringIds.push_back(Intern(*vm, constant));
+
+    if (!ResolveBoundCalls(*vm, bindings, outDiagnostics))
+    {
+        delete vm;
+        return nullptr;
+    }
 
     return vm;
 }
@@ -905,29 +1271,159 @@ Fluxion::Foundation::Result<ScriptValue> Invoke(Vm* vm, const char* qualifiedNam
     if (!entry.hasBody)
         return ResultType::Error(5, "the requested script method has no body");
 
-    vm->stack.clear();
-    vm->frames.clear();
-    vm->stack.resize(entry.localSlotCount);
+    return RunEntry(*vm, (u32)functionIndex, std::vector<Slot>());
+}
 
-    Frame frame;
-    frame.functionIndex = (u32)functionIndex;
-    frame.ip = 0;
-    frame.localBase = 0;
-    vm->frames.push_back(frame);
-
-    Interpreter interpreter(*vm);
-    interpreter.Run();
-
-    if (interpreter.Faulted())
+u32 FindClass(const Vm* vm, const char* name)
+{
+    if (!vm || !name) return kNoClass;
+    for (u32 i = 0; i < (u32)vm->module.classes.size(); ++i)
     {
-        vm->stack.clear();
-        vm->frames.clear();
-        return ResultType::Error(interpreter.FaultCode(), interpreter.FaultMessage());
+        if (vm->module.classes[i].name == name) return i;
     }
+    return kNoClass;
+}
 
-    ScriptValue value = ValueFromSlot(*vm, entry.returnType, interpreter.ReturnSlot());
-    vm->stack.clear();
-    return ResultType::Ok(std::move(value));
+u32 FindMethod(const Vm* vm, u32 classIndex, const char* name)
+{
+    if (!vm || !name) return kNoFunction;
+
+    // Walked from the class outwards through its base classes, so a
+    // method a base declares is found through a derived class exactly as
+    // a call written in the source would find it.
+    u32 current = classIndex;
+    while (current < vm->module.classes.size())
+    {
+        const std::string qualified = vm->module.classes[current].name + "." + name;
+        for (u32 i = 0; i < (u32)vm->module.functions.size(); ++i)
+        {
+            if (vm->module.functions[i].qualifiedName == qualified) return i;
+        }
+        current = vm->module.classes[current].baseClass;
+    }
+    return kNoFunction;
+}
+
+const char* ClassName(const Vm* vm, u32 classIndex)
+{
+    if (!vm || classIndex >= vm->module.classes.size()) return nullptr;
+    return vm->module.classes[classIndex].name.c_str();
+}
+
+const char* MethodName(const Vm* vm, u32 methodIndex)
+{
+    if (!vm || methodIndex >= vm->module.functions.size()) return nullptr;
+    return vm->module.functions[methodIndex].qualifiedName.c_str();
+}
+
+namespace
+{
+
+// Turns the values a host handed in into the slots a frame starts with,
+// checking each against what the method declared it takes.
+bool GatherArguments(Vm& vm, const FunctionInfo& callee, const ScriptValue* args, u32 argCount, std::vector<Slot>& outIncoming)
+{
+    for (u32 i = 0; i < argCount; ++i)
+    {
+        Slot slot;
+        if (!SlotFromValue(vm, callee.parameterTypes[i], args[i], slot)) return false;
+        outIncoming.push_back(slot);
+    }
+    return true;
+}
+
+} // namespace
+
+Fluxion::Foundation::Result<ObjectHandle> NewInstance(Vm* vm, u32 classIndex, const ScriptValue* args, u32 argCount)
+{
+    using ResultType = Fluxion::Foundation::Result<ObjectHandle>;
+
+    if (!vm) return ResultType::Error(1, "script virtual machine handle is null");
+    if (classIndex >= vm->module.classes.size()) return ResultType::Error(2, "the script module has no class with that index");
+
+    const ClassInfo& classInfo = vm->module.classes[classIndex];
+    if (classInfo.isInterface || classInfo.isStatic || classInfo.isArray)
+        return ResultType::Error(3, "this script class is not one instances can be made of");
+
+    const u32 constructor = classInfo.constructorFunction;
+    if (constructor >= vm->module.functions.size())
+        return ResultType::Error(4, "this script class has no constructor");
+
+    const FunctionInfo& callee = vm->module.functions[constructor];
+    if (callee.parameterTypes.size() != (size_t)argCount)
+        return ResultType::Error(5, "the constructor was given the wrong number of arguments");
+
+    const ObjectHandle handle = vm->heap.Allocate(classIndex, classInfo.fieldSlotCount);
+    if (handle.IsNull()) return ResultType::Error(6, "could not create a script object");
+
+    std::vector<Slot> incoming;
+    incoming.push_back(MakeObjectSlot(handle));
+    if (!GatherArguments(*vm, callee, args, argCount, incoming))
+        return ResultType::Error(7, "an argument does not have the type the constructor declared");
+
+    auto result = RunEntry(*vm, constructor, incoming);
+    if (!result.IsOk()) return ResultType::Error(result.Status().code, result.Status().message);
+
+    return ResultType::Ok(handle);
+}
+
+Fluxion::Foundation::Result<ScriptValue> InvokeMethod(Vm* vm, ObjectHandle instance, u32 methodIndex,
+    const ScriptValue* args, u32 argCount)
+{
+    using ResultType = Fluxion::Foundation::Result<ScriptValue>;
+
+    if (!vm) return ResultType::Error(1, "script virtual machine handle is null");
+    if (methodIndex >= vm->module.functions.size())
+        return ResultType::Error(2, "the script module has no method with that index");
+    if (!vm->heap.IsAlive(instance))
+        return ResultType::Error(3, "the object this script method was to run on no longer exists");
+
+    if (!vm->module.functions[methodIndex].isInstance)
+        return ResultType::Error(4, "the requested script method does not run on an instance");
+
+    const u32 target = DispatchTarget(*vm, methodIndex, instance);
+    if (target >= vm->module.functions.size())
+        return ResultType::Error(5, "no implementation of this script method was found on the object");
+
+    const FunctionInfo& callee = vm->module.functions[target];
+    if (!callee.hasBody) return ResultType::Error(6, "the requested script method has no body");
+    if (callee.parameterTypes.size() != (size_t)argCount)
+        return ResultType::Error(7, "the script method was given the wrong number of arguments");
+
+    std::vector<Slot> incoming;
+    incoming.push_back(MakeObjectSlot(instance));
+    if (!GatherArguments(*vm, callee, args, argCount, incoming))
+        return ResultType::Error(8, "an argument does not have the type the script method declared");
+
+    return RunEntry(*vm, target, incoming);
+}
+
+Fluxion::Foundation::Result<ScriptValue> InvokeStatic(Vm* vm, u32 methodIndex, const ScriptValue* args, u32 argCount)
+{
+    using ResultType = Fluxion::Foundation::Result<ScriptValue>;
+
+    if (!vm) return ResultType::Error(1, "script virtual machine handle is null");
+    if (methodIndex >= vm->module.functions.size())
+        return ResultType::Error(2, "the script module has no method with that index");
+
+    const FunctionInfo& callee = vm->module.functions[methodIndex];
+    if (callee.isInstance) return ResultType::Error(3, "the requested script method runs on an instance");
+    if (!callee.hasBody) return ResultType::Error(4, "the requested script method has no body");
+    if (callee.parameterTypes.size() != (size_t)argCount)
+        return ResultType::Error(5, "the script method was given the wrong number of arguments");
+
+    std::vector<Slot> incoming;
+    if (!GatherArguments(*vm, callee, args, argCount, incoming))
+        return ResultType::Error(6, "an argument does not have the type the script method declared");
+
+    return RunEntry(*vm, methodIndex, incoming);
+}
+
+const FaultDetail& GetFaultDetail(const Vm* vm)
+{
+    static const FaultDetail none;
+    if (!vm) return none;
+    return vm->faultDetail;
 }
 
 HeapStats GetHeapStats(const Vm* vm)

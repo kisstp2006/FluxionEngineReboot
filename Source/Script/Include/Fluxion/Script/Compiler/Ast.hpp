@@ -224,6 +224,11 @@ enum class CallTarget
     InterfaceMethod,
 
     Native,
+
+    // A method of an engine type the host made visible. Named by the
+    // engine type and the method within it rather than by a module
+    // function index, since no such function exists in the module.
+    BoundMethod,
 };
 
 struct CallExpr : Expr
@@ -241,6 +246,12 @@ struct CallExpr : Expr
     // body that will run -- and a NativeFunctionId for Native.
     CallTarget target = CallTarget::Unresolved;
     u32 targetIndex = 0;
+
+    // Which engine type and which of its methods, for a call the host
+    // made visible. Both kNoBoundType/kNoBoundMethod for every other kind
+    // of call.
+    u32 boundType = kNoBoundType;
+    u32 boundMethod = kNoBoundMethod;
 
     CallExpr() : Expr(ExprKind::Call) {}
 };

@@ -12,7 +12,11 @@
 extern "C" {
 #endif
 
-#define FLUXION_PLUGIN_HOST_API_VERSION 5u
+// Raised to 6 when FluxionTypeInfo grew its `methods` span: a reflected
+// type now carries callable metadata as well as data members, and a host
+// and a plugin that disagree about that disagree about the shape of every
+// type they exchange.
+#define FLUXION_PLUGIN_HOST_API_VERSION 6u
 
 typedef struct FluxionPluginHostAPI
 {

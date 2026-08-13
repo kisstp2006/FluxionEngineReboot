@@ -74,14 +74,14 @@ Fluxion::Foundation::Result<CompiledModule> Compile(const std::string& source, c
         return ResultType::Error(2, "script parsing failed");
     }
 
-    if (!Analyze(program, outDiagnostics))
+    if (!Analyze(program, outDiagnostics, options.bindings))
     {
         assert(!BlamesThePrelude(outDiagnostics) && "Fluxion: the script prelude must always analyze");
         if (BlamesThePrelude(outDiagnostics)) return ResultType::Error(9, "the built-in script prelude failed to compile");
         return ResultType::Error(3, "script semantic analysis failed");
     }
 
-    CompiledModule module = Emit(program, options.fileName, options.moduleVersion, outDiagnostics);
+    CompiledModule module = Emit(program, options.fileName, options.moduleVersion, outDiagnostics, options.bindings);
     if (outDiagnostics.HasErrors())
     {
         assert(!BlamesThePrelude(outDiagnostics) && "Fluxion: the script prelude must always be emittable");

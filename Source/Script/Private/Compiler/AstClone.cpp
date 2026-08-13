@@ -122,6 +122,8 @@ ExprPtr CloneExpr(const Expr* source)
             clone->receiver = CloneExpr(node.receiver.get());
             clone->target = node.target;
             clone->targetIndex = node.targetIndex;
+            clone->boundType = node.boundType;
+            clone->boundMethod = node.boundMethod;
             return clone;
         }
 

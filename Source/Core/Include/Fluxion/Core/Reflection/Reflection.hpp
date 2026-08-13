@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Fluxion/Core/Reflection/MethodInfo.h>
 #include <Fluxion/Core/Reflection/PropertyInfo.h>
 #include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/Core/Reflection/TypeId.h>
@@ -10,6 +11,7 @@
 #include <concepts>
 #include <cstring>
 #include <type_traits>
+#include <utility>
 
 namespace Fluxion::Core
 {
@@ -110,6 +112,172 @@ namespace Detail
             (self->*Setter)(*static_cast<const ValueType*>(value));
         }
     };
+
+    // Bridges a real C++ function or member function to the single C
+    // function-pointer shape FluxionMethodInfo::invoke expects, so a
+    // binding author never writes the `void**` unpacking by hand. Same
+    // trampoline idiom as AccessorTrampoline above; the second template
+    // parameter exists only to let the signature be pattern-matched out
+    // of the pointer's own type.
+    //
+    // Both packs below are expanded together: `A` names the declared
+    // parameter types and `I` their positions, so `args[I]` is read back
+    // as exactly the type the parameter was declared with.
+    template<auto Method, typename Signature = decltype(Method)>
+    struct MethodTrampoline;
+
+    template<auto Method, typename R, typename... A>
+    struct MethodTrampoline<Method, R (*)(A...)>
+    {
+        using ReturnType = std::remove_cvref_t<R>;
+        static constexpr bool IsStatic = true;
+        static constexpr u32 ParameterCount = (u32)sizeof...(A);
+
+        static void Invoke(void* instance, void** args, void* returnValue)
+        {
+            (void)instance;
+            (void)args;
+            (void)returnValue;
+            Call(args, returnValue, std::index_sequence_for<A...>{});
+        }
+
+    private:
+        template<usize... I>
+        static void Call(void** args, void* returnValue, std::index_sequence<I...>)
+        {
+            (void)args;
+            if constexpr (std::is_void_v<R>)
+            {
+                (void)returnValue;
+                Method(*static_cast<std::remove_cvref_t<A>*>(args[I])...);
+            }
+            else
+            {
+                *static_cast<ReturnType*>(returnValue) = Method(*static_cast<std::remove_cvref_t<A>*>(args[I])...);
+            }
+        }
+    };
+
+    template<auto Method, typename R, typename C, typename... A>
+    struct MethodTrampoline<Method, R (C::*)(A...)>
+    {
+        using ClassType = C;
+        using ReturnType = std::remove_cvref_t<R>;
+        static constexpr bool IsStatic = false;
+        static constexpr u32 ParameterCount = (u32)sizeof...(A);
+
+        static void Invoke(void* instance, void** args, void* returnValue)
+        {
+            (void)args;
+            (void)returnValue;
+            Call(static_cast<C*>(instance), args, returnValue, std::index_sequence_for<A...>{});
+        }
+
+    private:
+        template<usize... I>
+        static void Call(C* self, void** args, void* returnValue, std::index_sequence<I...>)
+        {
+            (void)args;
+            if constexpr (std::is_void_v<R>)
+            {
+                (void)returnValue;
+                (self->*Method)(*static_cast<std::remove_cvref_t<A>*>(args[I])...);
+            }
+            else
+            {
+                *static_cast<ReturnType*>(returnValue) = (self->*Method)(*static_cast<std::remove_cvref_t<A>*>(args[I])...);
+            }
+        }
+    };
+
+    template<auto Method, typename R, typename C, typename... A>
+    struct MethodTrampoline<Method, R (C::*)(A...) const>
+    {
+        using ClassType = C;
+        using ReturnType = std::remove_cvref_t<R>;
+        static constexpr bool IsStatic = false;
+        static constexpr u32 ParameterCount = (u32)sizeof...(A);
+
+        static void Invoke(void* instance, void** args, void* returnValue)
+        {
+            (void)args;
+            (void)returnValue;
+            Call(static_cast<const C*>(instance), args, returnValue, std::index_sequence_for<A...>{});
+        }
+
+    private:
+        template<usize... I>
+        static void Call(const C* self, void** args, void* returnValue, std::index_sequence<I...>)
+        {
+            (void)args;
+            if constexpr (std::is_void_v<R>)
+            {
+                (void)returnValue;
+                (self->*Method)(*static_cast<std::remove_cvref_t<A>*>(args[I])...);
+            }
+            else
+            {
+                *static_cast<ReturnType*>(returnValue) = (self->*Method)(*static_cast<std::remove_cvref_t<A>*>(args[I])...);
+            }
+        }
+    };
+}
+
+// How many parameters a reflected method takes, and whether it needs an
+// instance -- both read straight off the pointer, so a descriptor can
+// never disagree with the function it names.
+template<auto Method>
+inline constexpr u32 MethodParameterCount = Detail::MethodTrampoline<Method>::ParameterCount;
+
+template<auto Method>
+inline constexpr bool MethodIsStatic = Detail::MethodTrampoline<Method>::IsStatic;
+
+// Builds a FluxionMethodInfo from a plain function or member function
+// pointer, e.g.
+// ReflectMethod<&Counter::Add>("Add", FLUXION_TYPE_ID_OF(i32), parameterTypes).
+// `parameterTypes` must have one entry per declared parameter -- the
+// count is checked here rather than trusted -- and the caller keeps it
+// alive for as long as the descriptor is used, exactly as it does for the
+// property array behind FluxionTypeInfo::members.
+template<auto Method, usize N>
+FluxionMethodInfo ReflectMethod(const char* name, FluxionTypeId returnType, const FluxionTypeId (&parameterTypes)[N])
+{
+    using Trampoline = Detail::MethodTrampoline<Method>;
+    static_assert(N == Trampoline::ParameterCount, "the parameter type list must have one entry per declared parameter");
+
+    FluxionMethodInfo info{};
+    info.name = Fluxion_StringView_FromCStr(name);
+    info.returnType = returnType;
+    info.parameterTypes = parameterTypes;
+    info.parameterCount = (u32)N;
+    info.flags = Trampoline::IsStatic ? FLUXION_METHOD_FLAG_STATIC : FLUXION_METHOD_FLAG_NONE;
+    info.invoke = &Trampoline::Invoke;
+    return info;
+}
+
+// The same, for a method that takes nothing at all.
+template<auto Method>
+FluxionMethodInfo ReflectMethod(const char* name, FluxionTypeId returnType)
+{
+    using Trampoline = Detail::MethodTrampoline<Method>;
+    static_assert(Trampoline::ParameterCount == 0, "this method takes parameters, so it needs a parameter type list");
+
+    FluxionMethodInfo info{};
+    info.name = Fluxion_StringView_FromCStr(name);
+    info.returnType = returnType;
+    info.parameterTypes = nullptr;
+    info.parameterCount = 0;
+    info.flags = Trampoline::IsStatic ? FLUXION_METHOD_FLAG_STATIC : FLUXION_METHOD_FLAG_NONE;
+    info.invoke = &Trampoline::Invoke;
+    return info;
+}
+
+// Calls a reflected method the way FluxionMethodInfo::invoke expects,
+// without the caller having to assemble the pointer array by hand.
+inline void InvokeMethod(const FluxionMethodInfo& method, void* instance, void** args, void* returnValue)
+{
+    if (!method.invoke) return;
+    method.invoke(instance, args, returnValue);
 }
 
 // Builds an accessor-mode FluxionPropertyInfo from a real getter/setter

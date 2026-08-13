@@ -35,8 +35,8 @@ bool IsReference(ValueType type) { return type == ValueType::Object || type == V
 class Analyzer
 {
 public:
-    Analyzer(Program& program, DiagnosticList& diagnostics)
-        : m_program(program), m_diagnostics(diagnostics)
+    Analyzer(Program& program, DiagnosticList& diagnostics, const BindingTable* bindings)
+        : m_program(program), m_diagnostics(diagnostics), m_bindings(bindings)
     {
     }
 
@@ -143,6 +143,10 @@ private:
     Program& m_program;
     DiagnosticList& m_diagnostics;
 
+    // The engine types this source may reach, handed in by whoever asked
+    // for the compilation. Null when it may reach none.
+    const BindingTable* m_bindings = nullptr;
+
     // A deque rather than a vector: naming a type appends a declaration
     // in the middle of walking an existing one, and every reference and
     // pointer taken into this container has to keep meaning what it did.
@@ -183,6 +187,11 @@ private:
         {
             if (classIndex < m_classes.size()) return "'" + m_classes[classIndex].decl->name + "'";
             return "a reference";
+        }
+        if (type == ValueType::Handle)
+        {
+            if (m_bindings && classIndex < m_bindings->types.size()) return "'" + m_bindings->types[classIndex].name + "'";
+            return "an engine handle";
         }
         return std::string("'") + ValueTypeName(type) + "'";
     }
@@ -485,7 +494,19 @@ private:
             if (resolved.classIndex < m_classes.size()) return m_classes[resolved.classIndex].decl->name;
             return "<unknown>";
         }
+        if (resolved.type == ValueType::Handle)
+        {
+            if (m_bindings && resolved.classIndex < m_bindings->types.size()) return m_bindings->types[resolved.classIndex].name;
+            return "<unknown>";
+        }
         return ValueTypeName(resolved.type);
+    }
+
+    // An engine type the host made visible, if the written name is one.
+    u32 BoundTypeNamed(const std::string& name) const
+    {
+        if (!m_bindings) return kNoBoundType;
+        return FindBoundType(*m_bindings, name);
     }
 
     // What the source wrote, for a message about a type that could not be
@@ -671,6 +692,47 @@ private:
     bool ResolveTypeRef(TypeRef& type, const SourceLocation& location, const std::string& what)
     {
         if (IsPoisoned(type.type)) return false;
+
+        // An already-resolved handle type resolves to itself, exactly as
+        // an already-resolved class does.
+        if (type.type == ValueType::Handle) return true;
+
+        // A name the host made visible is a handle to something the
+        // engine owns. A declaration written in the source wins the name,
+        // so nothing a program declares can be taken away by what the
+        // host happens to expose.
+        if (type.type == ValueType::Object && type.typeArgs.empty())
+        {
+            u32 declared = kNoClass;
+            const bool nameIsDeclared = FindClass(type.name, declared) || m_templates.find(type.name) != m_templates.end();
+            const u32 bound = nameIsDeclared ? kNoBoundType : BoundTypeNamed(type.name);
+            if (bound != kNoBoundType)
+            {
+                TypeRef resolved;
+                resolved.type = ValueType::Handle;
+                resolved.classIndex = bound;
+                resolved.name = m_bindings->types[bound].name;
+
+                for (u32 i = 0; i < type.arrayDepth; ++i)
+                {
+                    const u32 arrayClass = GetOrCreateArrayClass(resolved, location);
+                    if (arrayClass == kNoClass)
+                    {
+                        type.type = ValueType::Unknown;
+                        type.arrayDepth = 0;
+                        return false;
+                    }
+
+                    resolved = TypeRef{};
+                    resolved.type = ValueType::Object;
+                    resolved.classIndex = arrayClass;
+                    resolved.name = ClassName(arrayClass);
+                }
+
+                type = std::move(resolved);
+                return true;
+            }
+        }
 
         u32 baseClass = kNoClass;
         if (type.type == ValueType::Object && !ResolveNamedType(type, location, what, baseClass))
@@ -955,9 +1017,14 @@ private:
         return nullptr;
     }
 
+    // A handle carries which engine type it names in the same place a
+    // reference carries its class, so both kinds have to agree on that
+    // index and not only on the value type.
     static bool SameType(const TypeRef& a, const TypeRef& b)
     {
-        return a.type == b.type && (a.type != ValueType::Object || a.classIndex == b.classIndex);
+        if (a.type != b.type) return false;
+        if (a.type == ValueType::Object || a.type == ValueType::Handle) return a.classIndex == b.classIndex;
+        return true;
     }
 
     static bool SameSignature(const MethodDecl& a, const MethodDecl& b)
@@ -1409,6 +1476,21 @@ private:
     {
         if (IsPoisoned(target.type) || IsPoisoned(value.resolvedType)) return true;
 
+        // A handle goes only where a handle of the same engine type was
+        // asked for. It is not a reference, so `null` is not one of the
+        // things it can be, and it does not travel towards a less
+        // specific type the way a reference does.
+        if (target.type == ValueType::Handle || value.resolvedType == ValueType::Handle)
+        {
+            if (target.type == ValueType::Handle && value.resolvedType == ValueType::Handle &&
+                target.classIndex == value.resolvedClass)
+            {
+                return true;
+            }
+            Error(value.location, "cannot convert " + Quoted(value) + " to " + Quoted(target) + " " + context);
+            return false;
+        }
+
         if (IsReference(target.type) || IsReference(value.resolvedType))
         {
             if (target.type == ValueType::Object && IsReferenceAssignable(value, target)) return true;
@@ -1475,6 +1557,15 @@ private:
             return;
         }
         if (!ResolveTypeRef(expr.type, expr.location, "so there is nothing to create")) return;
+
+        // An engine type is not something a script creates: the engine
+        // owns its objects, and a script only ever holds a handle to one
+        // it was given.
+        if (expr.type.type != ValueType::Object)
+        {
+            Error(expr.location, "'" + written + "' belongs to the engine, so 'new' cannot create one");
+            return;
+        }
 
         const u32 index = expr.type.classIndex;
         const std::string& name = ClassName(index);
@@ -1744,7 +1835,16 @@ private:
 
             case BinaryOp::Equal:
             case BinaryOp::NotEqual: {
-                if (IsReference(lhsType) || IsReference(rhsType))
+                // Two handles are compared when they name the same engine
+                // type, and a handle is comparable with nothing else --
+                // `null` included, since a handle never holds one.
+                if (lhsType == ValueType::Handle || rhsType == ValueType::Handle)
+                {
+                    const bool sameEngineType = lhsType == ValueType::Handle && rhsType == ValueType::Handle &&
+                                                expr.lhs->resolvedClass == expr.rhs->resolvedClass;
+                    expr.operandType = sameEngineType ? ValueType::Handle : ValueType::Unknown;
+                }
+                else if (IsReference(lhsType) || IsReference(rhsType))
                 {
                     if (CanCompareReferences(*expr.lhs, *expr.rhs)) expr.operandType = ValueType::Object;
                     else expr.operandType = ValueType::Unknown;
@@ -2055,7 +2155,8 @@ private:
 
         // A built-in is named the same way but belongs to no declared
         // class, so it is what remains once the base is known not to be
-        // a value either.
+        // a value either. An engine type named through its own name is
+        // reached the same way, and its static methods answer to it.
         if (callee.base->kind == ExprKind::Identifier && !IsKnownValueName(*callee.base))
         {
             auto native = m_natives.find(qualified);
@@ -2063,6 +2164,14 @@ private:
             {
                 callee.binding = MemberBinding::Scope;
                 BindNative(call, native->second, qualified);
+                return;
+            }
+
+            const u32 boundType = BoundTypeNamed(static_cast<const IdentifierExpr&>(*callee.base).name);
+            if (boundType != kNoBoundType)
+            {
+                callee.binding = MemberBinding::Scope;
+                BindBoundCall(call, boundType, callee.member, false, qualified);
                 return;
             }
         }
@@ -2073,6 +2182,18 @@ private:
             call.resolvedType = ValueType::Unknown;
             return;
         }
+
+        // A method reached through a handle runs on whatever the engine
+        // says that handle names; the handle itself goes on the stack
+        // ahead of the arguments, exactly as a receiver does.
+        if (callee.base->resolvedType == ValueType::Handle)
+        {
+            const u32 boundType = callee.base->resolvedClass;
+            call.receiver = std::move(callee.base);
+            BindBoundCall(call, boundType, callee.member, true, qualified);
+            return;
+        }
+
         if (callee.base->resolvedType != ValueType::Object)
         {
             Error(call.location, Quoted(*callee.base) + " has no method named '" + callee.member + "'");
@@ -2146,68 +2267,155 @@ private:
             CheckAssignable(*call.args[i], method.params[i].type, "in argument " + std::to_string(i + 1) + " of '" + displayName + "'");
     }
 
+    // A method of an engine type. There is no overloading here: a type
+    // declares each of its methods once, so the name settles which one is
+    // meant and the argument list is checked against it rather than used
+    // to choose between candidates.
+    void BindBoundCall(CallExpr& call, u32 boundType, const std::string& methodName, bool throughAHandle,
+        const std::string& displayName)
+    {
+        call.target = CallTarget::BoundMethod;
+        call.resolvedType = ValueType::Unknown;
+
+        const u32 methodIndex = m_bindings ? FindBoundMethod(*m_bindings, boundType, methodName) : kNoBoundMethod;
+        if (methodIndex == kNoBoundMethod)
+        {
+            Error(call.location, "'" + m_bindings->types[boundType].name + "' has no method named '" + methodName + "'");
+            return;
+        }
+
+        const BoundMethod& method = m_bindings->types[boundType].methods[methodIndex];
+
+        if (method.isInstance != throughAHandle)
+        {
+            if (method.isInstance)
+                Error(call.location, "'" + displayName + "' runs on an instance, so it cannot be called through the type name");
+            else
+                Error(call.location, "'" + displayName + "' does not run on an instance, so it cannot be called through one");
+            return;
+        }
+
+        call.boundType = boundType;
+        call.boundMethod = methodIndex;
+        call.resolvedType = method.returnType;
+        call.resolvedClass = (method.returnType == ValueType::Handle) ? method.returnBoundType : kNoClass;
+
+        if (call.args.size() != method.parameterTypes.size())
+        {
+            Error(call.location, "method '" + displayName + "' takes " + std::to_string(method.parameterTypes.size()) +
+                                     " argument(s) but " + std::to_string(call.args.size()) + " were given");
+            return;
+        }
+
+        for (size_t i = 0; i < call.args.size(); ++i)
+        {
+            TypeRef wanted;
+            wanted.type = method.parameterTypes[i];
+            wanted.classIndex = method.parameterBoundTypes[i];
+            CheckAssignable(*call.args[i], wanted, "in argument " + std::to_string(i + 1) + " of '" + displayName + "'");
+        }
+    }
+
+    // Whether one built-in accepts this argument list exactly as written.
+    bool NativeMatchesExactly(const NativeFunctionSignature& signature, const std::vector<ExprPtr>& args) const
+    {
+        if (signature.parameterCount != (u32)args.size()) return false;
+        for (u32 i = 0; i < signature.parameterCount; ++i)
+        {
+            if (signature.parameterTypes[i] != args[i]->resolvedType) return false;
+        }
+        return true;
+    }
+
+    // The same question allowing the language's one implicit widening,
+    // which is the only way an argument may differ from what was
+    // declared.
+    bool NativeMatchesWidened(const NativeFunctionSignature& signature, const std::vector<ExprPtr>& args) const
+    {
+        if (signature.parameterCount != (u32)args.size()) return false;
+        for (u32 i = 0; i < signature.parameterCount; ++i)
+        {
+            const ValueType declared = signature.parameterTypes[i];
+            const ValueType given = args[i]->resolvedType;
+            if (declared == given) continue;
+            if (declared == ValueType::Float && given == ValueType::Int) continue;
+            return false;
+        }
+        return true;
+    }
+
     void BindNative(CallExpr& call, const std::vector<NativeFunctionId>& candidates, const std::string& displayName)
     {
-        // A built-in takes at most one argument, so choosing between the
-        // entries sharing a name is purely a question of that argument's
-        // type.
+        // Every entry sharing a name is a separate accepted argument
+        // list, so the whole list is what chooses between them: an exact
+        // match first, and only then one reached by widening, so a form
+        // written for the argument's own type is never passed over in
+        // favour of one that has to convert it.
         call.target = CallTarget::Native;
         call.resolvedType = ValueType::Unknown;
 
         const NativeFunctionSignature* natives = NativeFunctionTable();
 
-        if (call.args.empty())
-        {
-            for (NativeFunctionId candidate : candidates)
-            {
-                if (natives[(u32)candidate].parameterType != ValueType::Void) continue;
-                call.targetIndex = (u32)candidate;
-                call.resolvedType = natives[(u32)candidate].returnType;
-                return;
-            }
-            Error(call.location, "'" + displayName + "' takes 1 argument but none were given");
-            return;
-        }
-
-        if (call.args.size() != 1)
-        {
-            Error(call.location, "'" + displayName + "' takes 1 argument but " + std::to_string(call.args.size()) + " were given");
-            return;
-        }
-
-        const ValueType argType = call.args[0]->resolvedType;
-
         for (NativeFunctionId candidate : candidates)
         {
-            if (natives[(u32)candidate].parameterType != argType) continue;
+            if (!NativeMatchesExactly(natives[(u32)candidate], call.args)) continue;
             call.targetIndex = (u32)candidate;
             call.resolvedType = natives[(u32)candidate].returnType;
             return;
         }
 
-        // No exact form; fall back to the single implicit widening.
-        if (argType == ValueType::Int)
+        for (NativeFunctionId candidate : candidates)
         {
-            for (NativeFunctionId candidate : candidates)
+            const NativeFunctionSignature& signature = natives[(u32)candidate];
+            if (!NativeMatchesWidened(signature, call.args)) continue;
+
+            for (u32 i = 0; i < signature.parameterCount; ++i)
             {
-                if (natives[(u32)candidate].parameterType != ValueType::Float) continue;
-                call.targetIndex = (u32)candidate;
-                call.resolvedType = natives[(u32)candidate].returnType;
-                call.args[0]->conversion = ValueType::Float;
-                return;
+                if (signature.parameterTypes[i] == ValueType::Float && call.args[i]->resolvedType == ValueType::Int)
+                    call.args[i]->conversion = ValueType::Float;
             }
+            call.targetIndex = (u32)candidate;
+            call.resolvedType = signature.returnType;
+            return;
         }
 
-        if (!IsPoisoned(argType))
-            Error(call.args[0]->location, "'" + displayName + "' does not accept an argument of type " + Quoted(*call.args[0]));
+        // Nothing accepts this list. An argument that was already
+        // reported on says nothing further, so the message is only about
+        // a list that is genuinely unmatched.
+        for (const ExprPtr& arg : call.args)
+        {
+            if (IsPoisoned(arg->resolvedType)) return;
+        }
+
+        bool countIsRight = false;
+        for (NativeFunctionId candidate : candidates)
+            countIsRight = countIsRight || natives[(u32)candidate].parameterCount == (u32)call.args.size();
+
+        if (!countIsRight)
+        {
+            u32 accepted = 0;
+            for (NativeFunctionId candidate : candidates) accepted = natives[(u32)candidate].parameterCount;
+            Error(call.location, "'" + displayName + "' takes " + std::to_string(accepted) + " argument(s) but " +
+                                     std::to_string(call.args.size()) + " were given");
+            return;
+        }
+
+        std::string written;
+        for (size_t i = 0; i < call.args.size(); ++i)
+        {
+            if (i != 0) written += ", ";
+            written += Quoted(*call.args[i]);
+        }
+        const SourceLocation& blame = call.args.empty() ? call.location : call.args[0]->location;
+        Error(blame, "'" + displayName + "' does not accept an argument list of (" + written + ")");
     }
 };
 
 } // namespace
 
-bool Analyze(Program& program, DiagnosticList& diagnostics)
+bool Analyze(Program& program, DiagnosticList& diagnostics, const BindingTable* bindings)
 {
-    Analyzer analyzer(program, diagnostics);
+    Analyzer analyzer(program, diagnostics, bindings);
     return analyzer.Run();
 }
 

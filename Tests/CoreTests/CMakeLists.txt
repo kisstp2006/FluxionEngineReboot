@@ -82,6 +82,7 @@ engine_add_header_selfcontained_test(
         Fluxion/Core/Service/ServiceHeader.h
         Fluxion/Core/Service/ServiceRegistry.h
         Fluxion/Core/Service/Service.hpp
+        Fluxion/Core/Reflection/MethodInfo.h
         Fluxion/Core/Reflection/Reflection.hpp
         Fluxion/Core/Jobs/JobHandle.h
         Fluxion/Core/Jobs/JobDesc.h

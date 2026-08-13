@@ -27,6 +27,11 @@ typedef struct FluxionTypeInfo
     // For STRUCT: a span of FluxionPropertyInfo. For ENUM: a span of
     // FluxionEnumValueInfo. Unused (data=NULL, count=0) for PRIMITIVE.
     FluxionSpan members;
+
+    // A span of FluxionMethodInfo, appended at the very end so every
+    // existing field-by-field construction site keeps its meaning. Empty
+    // (data=NULL, count=0) for a type that exposes no callable method.
+    FluxionSpan methods;
 } FluxionTypeInfo;
 
 #ifdef __cplusplus

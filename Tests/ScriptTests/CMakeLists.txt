@@ -11,6 +11,8 @@ engine_add_test(
         Test_Generics.cpp
         Test_Arrays.cpp
         Test_Gc.cpp
+        Test_Binding.cpp
+        Test_StackTrace.cpp
     DEPENDENCIES
         Fluxion::Script
     NO_EXCEPTIONS
@@ -33,6 +35,8 @@ engine_add_header_selfcontained_test(
         Fluxion/Script/Compiler/BytecodeEmitter.hpp
         Fluxion/Script/Runtime/Value.hpp
         Fluxion/Script/Runtime/Bytecode.hpp
+        Fluxion/Script/Runtime/Binding.hpp
         Fluxion/Script/Runtime/Vm.hpp
         Fluxion/Script/Script.hpp
+        Fluxion/Script/ScriptRuntimeService.hpp
 )

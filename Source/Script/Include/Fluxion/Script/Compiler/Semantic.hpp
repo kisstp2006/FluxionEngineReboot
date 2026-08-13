@@ -2,6 +2,7 @@
 
 #include <Fluxion/Script/Compiler/Ast.hpp>
 #include <Fluxion/Script/Diagnostics.hpp>
+#include <Fluxion/Script/Runtime/Binding.hpp>
 
 namespace Fluxion::Script
 {
@@ -16,7 +17,11 @@ namespace Fluxion::Script
 // a mixed arithmetic or comparison operand pair, and in argument passing.
 // A condition must already be a bool; a number is never treated as one.
 //
+// `bindings` names the engine types the source may declare variables of
+// and call methods on. A null table means the source can reach nothing
+// outside itself, which is what a caller with nothing to expose passes.
+//
 // Returns true when no errors were added to `diagnostics`.
-bool Analyze(Program& program, DiagnosticList& diagnostics);
+bool Analyze(Program& program, DiagnosticList& diagnostics, const BindingTable* bindings = nullptr);
 
 } // namespace Fluxion::Script
