@@ -12,7 +12,8 @@ namespace Fluxion::ShaderCompiler
 
 Fluxion::Foundation::Result<CompiledShader> Compile(const std::string& source, const CompileOptions& options, DiagnosticList& outDiagnostics)
 {
-    std::string preprocessed = Preprocess(source, options.fileName, options.includeResolver, outDiagnostics);
+    std::vector<ResolvedInclude> includes;
+    std::string preprocessed = Preprocess(source, options.fileName, options.includeResolver, outDiagnostics, &includes);
     if (outDiagnostics.HasErrors())
         return Fluxion::Foundation::Result<CompiledShader>::Error(1, "shader preprocessing failed");
 
@@ -38,6 +39,7 @@ Fluxion::Foundation::Result<CompiledShader> Compile(const std::string& source, c
     if (outDiagnostics.HasErrors())
         return Fluxion::Foundation::Result<CompiledShader>::Error(6, "shader backend emission failed");
 
+    result.includes = std::move(includes);
     return Fluxion::Foundation::Result<CompiledShader>::Ok(std::move(result));
 }
 

@@ -1,5 +1,7 @@
 #include <Fluxion/ShaderCompiler/Frontend/Preprocessor.hpp>
 
+#include <Fluxion/Foundation/Hashing.h>
+
 #include <cctype>
 #include <sstream>
 #include <unordered_map>
@@ -78,8 +80,8 @@ std::string JoinContinuations(const std::string& source)
 class PreprocessorState
 {
 public:
-    PreprocessorState(const IncludeResolver& resolver, DiagnosticList& diagnostics)
-        : m_resolver(resolver), m_diagnostics(diagnostics)
+    PreprocessorState(const IncludeResolver& resolver, DiagnosticList& diagnostics, std::vector<ResolvedInclude>* outIncludes)
+        : m_resolver(resolver), m_diagnostics(diagnostics), m_includes(outIncludes)
     {
     }
 
@@ -128,6 +130,14 @@ public:
                         m_diagnostics.AddError(SourceLocation{ fileName, lineNumber, 1 }, "cannot resolve #include \"" + name + "\"");
                         continue;
                     }
+                    // Recorded before it is expanded, so the order is the
+                    // order they were read, and recorded as the text that
+                    // came back rather than the name that asked for it --
+                    // two builds can resolve the same name to different
+                    // files, and it is the text that decides the answer.
+                    if (m_includes != nullptr)
+                        m_includes->push_back(ResolvedInclude{ name, Fluxion_HashBytes64(content.data(), content.size()) });
+
                     out << Run(content, name, depth + 1) << "\n";
                     continue;
                 }
@@ -192,6 +202,7 @@ public:
 private:
     const IncludeResolver& m_resolver;
     DiagnosticList& m_diagnostics;
+    std::vector<ResolvedInclude>* m_includes;
     std::unordered_map<std::string, std::string> m_macros;
 
     std::string ExpandMacros(const std::string& line) const
@@ -224,9 +235,11 @@ private:
 
 } // namespace
 
-std::string Preprocess(const std::string& source, const std::string& fileName, const IncludeResolver& resolver, DiagnosticList& diagnostics)
+std::string Preprocess(const std::string& source, const std::string& fileName, const IncludeResolver& resolver, DiagnosticList& diagnostics,
+    std::vector<ResolvedInclude>* outIncludes)
 {
-    PreprocessorState state(resolver, diagnostics);
+    if (outIncludes != nullptr) outIncludes->clear();
+    PreprocessorState state(resolver, diagnostics, outIncludes);
     return state.Run(source, fileName, 0);
 }
 
