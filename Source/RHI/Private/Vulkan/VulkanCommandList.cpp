@@ -300,7 +300,18 @@ void Fluxion_RHIVulkan_CommandListBeginRendering(FluxionRHICommandListHandle com
     // what every caller wants -- this also avoids adding SetViewport/
     // SetScissor to the RHI contract before anything actually needs a
     // different value.
-    VkViewport viewport = { 0.0f, 0.0f, (f32)desc->width, (f32)desc->height, 0.0f, 1.0f };
+    // The viewport is given a negative height, starting at the bottom
+    // rather than the top. Vulkan's clip space puts +Y downwards, unlike
+    // every other backend here, and a flipped viewport is what turns it
+    // back the right way up -- so a positive Y is upwards on the screen
+    // whichever backend is running, and nothing above the RHI has to know
+    // which one that is. Left uncompensated, the difference hides inside
+    // anything symmetrical and only shows when something is not: a cube
+    // looks identical either way, a line pointing up does not.
+    //
+    // Available without asking since Vulkan 1.1, and this backend already
+    // refuses anything below 1.2.
+    VkViewport viewport = { 0.0f, (f32)desc->height, (f32)desc->width, -(f32)desc->height, 0.0f, 1.0f };
     VkRect2D scissor = { { 0, 0 }, { desc->width, desc->height } };
     vkCmdSetViewport(cl->commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(cl->commandBuffer, 0, 1, &scissor);

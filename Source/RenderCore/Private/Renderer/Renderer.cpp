@@ -201,13 +201,22 @@ void CreateDebugDrawPipelineObject(FluxionRenderer& renderer)
     pipelineDesc.fragmentShader = renderer.debugFragmentShader;
     pipelineDesc.vertexLayout = vertexLayout;
     pipelineDesc.rasterState.cullMode = FLUXION_RHI_CULL_MODE_NONE;
-    pipelineDesc.depthState.testEnable = false;
+
+    // Tested against the scene's depth once the caller has said what that
+    // depth is, so a line behind something is behind it. Never written,
+    // though: these are marks laid over a scene, and a mark that pushed
+    // the depth around would start hiding the very thing it is pointing
+    // at. Without a stated depth target there is nothing to test against,
+    // and it all draws over the top.
+    const bool testAgainstDepth = renderer.debugDepthFormat != FLUXION_RHI_FORMAT_UNKNOWN;
+    pipelineDesc.depthState.testEnable = testAgainstDepth;
+    pipelineDesc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL;
     pipelineDesc.depthState.writeEnable = false;
     pipelineDesc.blendState.blendEnable = true;
     pipelineDesc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_LINE_LIST; // triangles are appended as their own 3 vertices too -- see DebugDraw.c
     pipelineDesc.colorFormats[0] = renderer.debugColorFormat;
     pipelineDesc.colorFormatCount = 1;
-    pipelineDesc.depthFormat = FLUXION_RHI_FORMAT_UNKNOWN;
+    pipelineDesc.depthFormat = renderer.debugDepthFormat;
     pipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_FRAME] = renderer.debugFrameBindGroupLayout;
     pipelineDesc.bindGroupLayoutCount = FLUXION_RHI_BIND_GROUP_FRAME + 1;
     pipelineDesc.debugName = "Fluxion.Renderer.DebugDraw.Pipeline";
@@ -289,6 +298,7 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     // is why saying so exists: a frame drawn into a colour attachment of
     // any other format needs the pipeline rebuilt against that one.
     renderer->debugColorFormat = FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
+    renderer->debugDepthFormat = FLUXION_RHI_FORMAT_UNKNOWN;
 
     FluxionRHIBindGroupLayoutDesc objectLayoutDesc = FluxionRendererInternal_MakeObjectLayoutDesc();
     renderer->objectBindGroupLayout = Fluxion_RHI_CreateBindGroupLayout(device, &objectLayoutDesc);
@@ -450,10 +460,25 @@ extern "C" void Fluxion_Renderer_EndFrame(FluxionRendererHandle rendererHandle, 
             colorAttachment.view = colorViews[0];
             colorAttachment.clear = false;
 
+            // The scene's own depth, carried in and not cleared, so what
+            // was already drawn can hide a line behind it. Attached only
+            // when the caller has said what format it is, because that is
+            // the same condition the pipeline was built under -- attaching
+            // one the pipeline was not built against is a mismatch, not a
+            // bonus.
+            FluxionRHIRenderingAttachment depthAttachment{};
+            const bool testAgainstDepth =
+                renderer->debugDepthFormat != FLUXION_RHI_FORMAT_UNKNOWN && FLUXION_HANDLE_IS_VALID(depthView);
+            if (testAgainstDepth)
+            {
+                depthAttachment.view = depthView;
+                depthAttachment.clear = false;
+            }
+
             FluxionRHIRenderingDesc renderingDesc{};
             renderingDesc.colorAttachments = &colorAttachment;
             renderingDesc.colorAttachmentCount = 1;
-            renderingDesc.depthAttachment = nullptr;
+            renderingDesc.depthAttachment = testAgainstDepth ? &depthAttachment : nullptr;
             renderingDesc.width = (u32)viewport.width;
             renderingDesc.height = (u32)viewport.height;
 
@@ -485,6 +510,22 @@ extern "C" void Fluxion_Renderer_SetDebugDrawColorFormat(FluxionRendererHandle r
     // against the new one. Nothing is built here, because a caller that
     // says this at startup -- which is where it belongs -- may never draw
     // a debug line at all.
+    if (FLUXION_HANDLE_IS_VALID(renderer->debugPipeline)) Fluxion_RHI_DestroyPipeline(renderer->debugPipeline);
+    renderer->debugPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+}
+
+extern "C" void Fluxion_Renderer_SetDebugDrawDepthFormat(FluxionRendererHandle rendererHandle, FluxionRHIFormat format)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr || format == renderer->debugDepthFormat) return;
+
+    FLUXION_ASSERT_MSG(!renderer->inFrame, "Renderer: the debug-draw depth format cannot change in the middle of a frame");
+
+    renderer->debugDepthFormat = format;
+
+    // Same reasoning as the colour format above: what was built was built
+    // against the old answer, so it goes, and the next debug draw builds
+    // one that matches.
     if (FLUXION_HANDLE_IS_VALID(renderer->debugPipeline)) Fluxion_RHI_DestroyPipeline(renderer->debugPipeline);
     renderer->debugPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
 }

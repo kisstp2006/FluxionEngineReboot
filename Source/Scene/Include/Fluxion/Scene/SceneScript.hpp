@@ -3,8 +3,12 @@
 #include <Fluxion/Scene/Scene.h>
 #include <Fluxion/Script/Diagnostics.hpp>
 #include <Fluxion/Script/Runtime/Binding.hpp>
+#include <Fluxion/Script/Runtime/CompileCache.hpp>
 #include <Fluxion/Script/Runtime/Value.hpp>
 #include <Fluxion/Script/Runtime/Vm.hpp>
+#include <Fluxion/Script/Script.hpp>
+
+#include <string>
 
 // The part of this module that has to be C++, and only because the
 // scripting runtime's own interface is: everything a scene does that does
@@ -41,6 +45,80 @@ const char* ComponentPreludeSource();
 bool AttachRuntime(FluxionSceneHandle scene, Script::Vm* vm);
 
 Script::Vm* GetRuntime(FluxionSceneHandle scene);
+
+// --- Putting new code under a scene that is already running -------------
+
+// What to build the replacement out of. The table the options name is the
+// same one the scene was described to in the first place: the engine has
+// not changed, only the source has.
+struct ReloadRequest
+{
+    std::string source;
+    Script::CompileOptions options;
+
+    // Leave the directory empty to compile unconditionally. A reload
+    // usually follows an edit, so the interesting hit is the one on the
+    // way back to source that was compiled before.
+    Script::CompileCacheOptions cache;
+};
+
+// What a reload did, and what it could not do.
+//
+// WHAT A RELOAD CARRIES OVER, AND WHAT IT DOES NOT:
+//
+//   * The values a component holds in its own fields come with it, matched
+//     by name and by type. A field that is gone, renamed, or declared with
+//     a different type in the new source is left at whatever the new
+//     class starts it at, and counted in `fieldsDropped`.
+//
+//   * A field holding a reference does not come across. The object it
+//     names lives in the machine being stood down, and nothing in the
+//     machine taking over is that object -- carrying it would mean
+//     rebuilding the whole graph reachable from it against a different set
+//     of classes, which is a far larger job than this and is not attempted
+//     here. Such a field starts out null and is counted as dropped.
+//
+//   * Nothing that is not a component's own field survives at all. A
+//     static field, anything a class holds on behalf of the whole module,
+//     and anything a component reached only through a local variable are
+//     all gone with the machine that held them.
+//
+// This is a real boundary rather than an unfinished one: a component's own
+// state is what a reload is for, and everything else is state the new code
+// is entitled to start afresh with.
+struct ReloadReport
+{
+    bool reloaded = false;
+
+    u32 componentsCarried = 0;
+    u32 fieldsCarried = 0;
+    u32 fieldsDropped = 0;
+
+    // The machine the scene was running until this call, with every
+    // component the scene was holding up let go of, so a collection on it
+    // reclaims them. It is still a valid machine and nothing has been
+    // destroyed: the caller releases it with DestroyVm once it is sure
+    // nothing of its own still points into it. Null when nothing was
+    // replaced, which is every case where this answered false.
+    Script::Vm* retired = nullptr;
+};
+
+// Puts new code under a scene without stopping it.
+//
+// Nothing is disturbed until the new source has been compiled, loaded, and
+// established to still have every component class the scene has attached,
+// each with lifecycle methods of the right shape. If any of that fails the
+// scene carries on running exactly what it was running, and the reason --
+// with the file and line it was found at, for anything the compiler
+// reported -- is in `outDiagnostics`.
+//
+// Past that point the scene gets a fresh instance of every component it
+// had, built by the new code, handed back the field values the old ones
+// held, and put back at the same point in its life: a component that had
+// already been woken and started is not woken and started again, so a
+// reload is not a restart.
+bool ReloadRuntime(FluxionSceneHandle scene, const ReloadRequest& request, Script::DiagnosticList& outDiagnostics,
+    ReloadReport& outReport);
 
 // --- Components ---------------------------------------------------------
 

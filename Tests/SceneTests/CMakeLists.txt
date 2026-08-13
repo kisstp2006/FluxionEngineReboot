@@ -7,6 +7,7 @@ engine_add_test(
         Test_Components.cpp
         Test_Attributes.cpp
         Test_EngineApi.cpp
+        Test_Reload.cpp
     DEPENDENCIES
         Fluxion::Scene
         Fluxion::Script

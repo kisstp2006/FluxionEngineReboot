@@ -37,6 +37,8 @@ public:
     {
         using namespace Fluxion::Script;
 
+        m_label = label;
+        m_withEngineTypes = withEngineTypes;
         m_scene = Fluxion_Scene_Create();
         if (!Fluxion_Scene_IsValid(m_scene))
         {
@@ -98,6 +100,36 @@ public:
         return true;
     }
 
+    // Puts new source under the running scene. False means it was refused
+    // and the scene is still running exactly what it was; `outDiagnostics`
+    // says why, with the file and line for anything the compiler found.
+    //
+    // The machine that was stood down is released here unless the caller
+    // asks to keep it, which is what a test looking at what that machine
+    // is still holding needs -- it then owns it and destroys it itself.
+    bool Reload(const std::string& source, Fluxion::Script::DiagnosticList& outDiagnostics,
+        Fluxion::Scene::ReloadReport& outReport, const char* cacheDirectory = nullptr, bool keepRetired = false)
+    {
+        Fluxion::Scene::ReloadRequest request;
+        request.source = source;
+        request.options.fileName = m_label;
+        request.options.bindings = &m_bindings;
+        request.options.hostPrelude = Fluxion::Scene::ComponentPreludeSource();
+        if (m_withEngineTypes) request.options.hostPrelude += Fluxion::Scene::EnginePreludeSource();
+        if (cacheDirectory != nullptr) request.cache.directory = cacheDirectory;
+
+        const bool reloaded = Fluxion::Scene::ReloadRuntime(m_scene, request, outDiagnostics, outReport);
+        if (!reloaded) return false;
+
+        m_vm = Fluxion::Scene::GetRuntime(m_scene);
+        if (!keepRetired)
+        {
+            Fluxion::Script::DestroyVm(outReport.retired);
+            outReport.retired = nullptr;
+        }
+        return true;
+    }
+
     FluxionSceneHandle Scene() const { return m_scene; }
     Fluxion::Script::Vm* Machine() const { return m_vm; }
 
@@ -137,6 +169,8 @@ private:
         if (!line.empty()) self->m_lines.push_back(line);
     }
 
+    const char* m_label = "<source>";
+    bool m_withEngineTypes = false;
     FluxionSceneHandle m_scene = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     Fluxion::Script::BindingTable m_bindings;
     Fluxion::Script::CompiledModule m_module;

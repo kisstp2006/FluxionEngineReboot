@@ -277,11 +277,13 @@ void Fluxion_RHIOpenGL_ApplyPipelineState(FluxionRHIOpenGLDevice* deviceState, c
     }
     if (!cache->valid || cache->frontFaceCCW != raster->frontFaceCounterClockwise)
     {
-        // Inverted, not a direct passthrough -- see the matching comment
-        // in D3D12Pipeline.cpp: Vulkan's clip space has +Y down
-        // (uncompensated), OpenGL's (like D3D12's) has +Y up, so the same
-        // portable frontFaceCounterClockwise value needs its native
-        // winding flipped here to visually match Vulkan's rendering.
+        // Inverted, not a direct passthrough -- the same inversion the
+        // D3D12 and Vulkan backends make, for the same reason: what the
+        // portable flag calls the front is the opposite of what these
+        // rasterizers call it, given how the geometry reaching them is
+        // wound. Three backends agreeing is what matters; the flag's own
+        // sense is the thing that is off, and correcting it belongs where
+        // the flag is set, not here.
         glFrontFace(raster->frontFaceCounterClockwise ? GL_CW : GL_CCW);
         cache->frontFaceCCW = raster->frontFaceCounterClockwise;
     }

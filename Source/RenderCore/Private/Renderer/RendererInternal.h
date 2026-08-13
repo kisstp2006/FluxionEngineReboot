@@ -148,6 +148,11 @@ typedef struct FluxionRenderer
     // so the caller says it (Fluxion_Renderer_SetDebugDrawColorFormat) and
     // this is what it last said.
     FluxionRHIFormat debugColorFormat;
+
+    // The depth target the debug geometry is tested against. Unknown means
+    // no depth attachment and no test, so it all draws over the top --
+    // which is what a caller that never says otherwise gets.
+    FluxionRHIFormat debugDepthFormat;
 } FluxionRenderer;
 
 // --- Cross-file internal accessors ------------------------------------------

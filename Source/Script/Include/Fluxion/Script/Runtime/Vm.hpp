@@ -52,6 +52,12 @@ void DestroyVm(Vm* vm);
 // the default streams.
 void SetOutputHandler(Vm* vm, OutputHandler handler, void* user);
 
+// What was installed last, null when nothing was. Asked for by whatever
+// stands one machine down in favour of another: without this the
+// replacement would quietly go back to the default streams, and the host
+// that redirected them would have no way of noticing.
+OutputHandler GetOutputHandler(const Vm* vm, void** outUser);
+
 // Runs a static method named as "Class.Method". The method must take no
 // parameters and must not need a receiver. On success the result holds
 // the method's return value (a Void value for a void method). The error
@@ -107,6 +113,61 @@ u32 ClassFieldCount(const Vm* vm, u32 classIndex);
 const FieldInfo* ClassFieldAt(const Vm* vm, u32 classIndex, u32 fieldIndex);
 const FieldInfo* FindClassField(const Vm* vm, u32 classIndex, const char* name);
 const Attribute* FindFieldAttribute(const Vm* vm, u32 classIndex, const char* fieldName, const char* attributeName);
+
+// --- Reading and writing the fields of a live object --------------------
+
+// A script-written accessor only exists where whoever wrote the class
+// chose to write one, which is not enough for anything that has to read
+// or write an object's whole state from outside -- saving it, showing it,
+// carrying it into a freshly loaded module. Everything below reaches a
+// field directly, always named by the description the module carries
+// rather than by a slot number a caller worked out for itself.
+//
+// A FieldInfo handed to any of these must have come from this machine's
+// own module: it says which slot to touch, and slot numbers mean nothing
+// across two modules.
+
+// Which class the object actually is, which is where a caller with
+// nothing but a reference starts. kNoClass when the handle names no live
+// object.
+u32 ObjectClass(const Vm* vm, ObjectHandle instance);
+
+// The class `classIndex` was declared on top of, or kNoClass for a root
+// class. A class lists only the fields it declared itself, so walking
+// this chain is how a caller reaches every field an object has.
+u32 ClassBaseClass(const Vm* vm, u32 classIndex);
+
+// How many slots one field occupies: one for everything except a value
+// type, which occupies one slot per field of its own. Zero when the field
+// names a value type this machine does not have.
+u32 FieldSlotCount(const Vm* vm, const FieldInfo& field);
+
+// Reads one field of a live object. Refused, leaving `outValue` untouched,
+// when the handle names nothing live, when the field lies outside what the
+// object was created with, or when the field is a value type -- that
+// occupies several slots and has no single-value form, so it is read with
+// ReadInstanceFieldSlots instead.
+//
+// A reference field answers with the handle it holds, which names an
+// object of this same machine and of no other. A handle field answers with
+// the engine handle it holds and nothing more: what that names is the
+// engine's business, and nothing here resolves it or checks it -- which is
+// also why no collection ever follows one.
+bool ReadInstanceField(const Vm* vm, ObjectHandle instance, const FieldInfo& field, ScriptValue& outValue);
+
+// Writes one field of a live object, refused in the same cases and in one
+// more: the value has to have the type the field was declared with. The
+// only conversion made is the language's own widening of a whole number to
+// a float, the same one a call from outside is allowed.
+bool WriteInstanceField(Vm* vm, ObjectHandle instance, const FieldInfo& field, const ScriptValue& value);
+
+// The same pair for a field of a value type, whose slots travel as a run.
+// `count` has to be exactly what FieldSlotCount answers. A value type may
+// hold only numbers, truth values, named constants and other value types
+// -- no text and no reference -- so the run is self-contained: one read
+// out of one machine may be written straight into another.
+bool ReadInstanceFieldSlots(const Vm* vm, ObjectHandle instance, const FieldInfo& field, Slot* outSlots, u32 count);
+bool WriteInstanceFieldSlots(Vm* vm, ObjectHandle instance, const FieldInfo& field, const Slot* slots, u32 count);
 
 // Creates an instance of `classIndex` and runs its constructor with
 // `argCount` arguments. The object is not held by anything afterwards, so

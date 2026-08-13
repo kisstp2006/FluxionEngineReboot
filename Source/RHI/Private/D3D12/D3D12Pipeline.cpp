@@ -337,15 +337,12 @@ FluxionRHIPipelineHandle Fluxion_RHID3D12_CreateGraphicsPipeline(FluxionRHIDevic
 
     psoDesc.RasterizerState.FillMode = desc->rasterState.wireframe ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
     psoDesc.RasterizerState.CullMode = Fluxion_RHID3D12_MapCullMode(desc->rasterState.cullMode);
-    // Inverted, not a direct passthrough: Vulkan's clip space has +Y
-    // pointing down (by spec, uncompensated anywhere in this engine's
-    // Vulkan backend -- no negative-viewport-height trick), while D3D12's
-    // (like OpenGL's) has +Y pointing up. The same object-space winding
-    // and the same portable frontFaceCounterClockwise value therefore
-    // project to visually opposite screen-space winding between the two
-    // -- Vulkan is treated as the reference here, so D3D12 (and
-    // OpenGLPipeline.cpp's glFrontFace, for the same reason) compensate
-    // by flipping which native winding counts as "front".
+    // Inverted, not a direct passthrough -- the same inversion the OpenGL
+    // and Vulkan backends make, for the same reason: what the portable
+    // flag calls the front is the opposite of what these rasterizers call
+    // it, given how the geometry reaching them is wound. Three backends
+    // agreeing is what matters; the flag's own sense is the thing that is
+    // off, and correcting it belongs where the flag is set, not here.
     psoDesc.RasterizerState.FrontCounterClockwise = desc->rasterState.frontFaceCounterClockwise ? FALSE : TRUE;
     psoDesc.RasterizerState.DepthClipEnable = TRUE;
 

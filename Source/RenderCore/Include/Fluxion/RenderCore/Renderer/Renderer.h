@@ -58,6 +58,19 @@ void Fluxion_Renderer_EndFrame(FluxionRendererHandle renderer, FluxionRHICommand
 // never calls Fluxion_DebugDraw_* need not call this at all.
 void Fluxion_Renderer_SetDebugDrawColorFormat(FluxionRendererHandle renderer, FluxionRHIFormat format);
 
+// The depth target debug geometry is tested against, for the same reason
+// the colour format has to be said: a texture view carries no queryable
+// format, so the caller who made it is the one who knows.
+//
+// Unknown until told otherwise, which means no depth attachment and no
+// test -- every line drawn over the top of everything. Given a real
+// format, a line behind an object is hidden by it. Depth is never
+// written either way. Saying the format already in force does nothing;
+// saying a different one rebuilds the pipeline, so this belongs with the
+// rest of a program's setup and must not be called between BeginFrame and
+// EndFrame.
+void Fluxion_Renderer_SetDebugDrawDepthFormat(FluxionRendererHandle renderer, FluxionRHIFormat format);
+
 // Not in the original sketch: "ForwardOpaquePass" is registered once per
 // FluxionRenderer instance, but a render graph node's userData is
 // supplied by whoever calls Fluxion_RenderGraph_AddPassFromRegistry --

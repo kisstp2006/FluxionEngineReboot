@@ -78,6 +78,28 @@ void ReportScriptDiagnostics(const Fluxion::Script::DiagnosticList& diagnostics)
     }
 }
 
+// Every script file the demo has, read fresh and handed to the compiler as
+// one source: a module is compiled in one go, and a component in one file
+// may perfectly well name a class declared in another. Read again on every
+// reload, which is the whole point -- what is on disk now is what runs
+// next.
+std::string ReadDemoScripts()
+{
+    std::string combined;
+    for (const char* scriptFile : { "/Rotator.fls", "/CubeRenderer.fls" })
+    {
+        std::string contents = ReadFile((std::string(FLUXION_DEMO_SCRIPT_DIR) + scriptFile).c_str());
+        if (contents.empty())
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to read %s from %s", scriptFile, FLUXION_DEMO_SCRIPT_DIR);
+            return std::string();
+        }
+        combined += contents;
+        combined += "\n";
+    }
+    return combined;
+}
+
 // --- Small local math helpers ------------------------------------------
 //
 // Foundation/Math.h explicitly keeps view/projection/rotation helpers out
@@ -470,21 +492,8 @@ int main(int argc, char** argv)
         std::exit(1);
     }
 
-    // Every script file the demo has, handed to the compiler as one
-    // source: a module is compiled in one go, and a component in one file
-    // may perfectly well name a class declared in another.
-    std::string demoScriptSource;
-    for (const char* scriptFile : { "/Rotator.fls", "/CubeRenderer.fls" })
-    {
-        std::string contents = ReadFile((std::string(FLUXION_DEMO_SCRIPT_DIR) + scriptFile).c_str());
-        if (contents.empty())
-        {
-            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to read %s from %s", scriptFile, FLUXION_DEMO_SCRIPT_DIR);
-            std::exit(1);
-        }
-        demoScriptSource += contents;
-        demoScriptSource += "\n";
-    }
+    std::string demoScriptSource = ReadDemoScripts();
+    if (demoScriptSource.empty()) std::exit(1);
 
     Fluxion::Script::CompileOptions scriptOptions;
     scriptOptions.fileName = "DemoScripts.fls";
@@ -492,13 +501,24 @@ int main(int argc, char** argv)
     scriptOptions.hostPrelude =
         std::string(Fluxion::Scene::ComponentPreludeSource()) + Fluxion::Scene::EnginePreludeSource();
 
-    auto compiledScript = Fluxion::Script::Compile(demoScriptSource, scriptOptions, scriptDiagnostics);
+    // Compiling is the slowest thing done between the window appearing and
+    // the first frame, and a run that starts with the same scripts as the
+    // last one need not do it at all. The directory is under the build
+    // tree, so a checkout is never written to and deleting the build tree
+    // is all it takes to be rid of it.
+    Fluxion::Script::CompileCacheOptions scriptCache;
+    scriptCache.directory = FLUXION_DEMO_SCRIPT_CACHE_DIR;
+
+    Fluxion::Script::CompileCacheReport cacheReport;
+    auto compiledScript =
+        Fluxion::Script::CompileCached(demoScriptSource, scriptOptions, scriptCache, scriptDiagnostics, cacheReport);
     if (!compiledScript.IsOk())
     {
         ReportScriptDiagnostics(scriptDiagnostics);
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to compile the demo's scripts.");
         std::exit(1);
     }
+    FLUXION_LOG_INFO("ForwardRendererDemo", "Scripts %s.", cacheReport.wasCached ? "loaded from the compile cache" : "compiled");
 
     Fluxion::Script::CompiledModule scriptModule = compiledScript.Value();
     Fluxion::Script::Vm* scriptVm = Fluxion::Script::CreateVm(scriptModule, scriptDiagnostics, &sceneBindings);
@@ -513,6 +533,7 @@ int main(int argc, char** argv)
     // as everything else, which is a swapchain image -- and the renderer
     // cannot work its format out for itself.
     Fluxion_Renderer_SetDebugDrawColorFormat(renderer, swapchainDesc.format);
+    Fluxion_Renderer_SetDebugDrawDepthFormat(renderer, depthTextureDesc.format);
 
     // What a script may name, and what it draws through. The three names
     // are the ones Scripts/CubeRenderer.fls asks for; making any of them
@@ -542,7 +563,7 @@ int main(int argc, char** argv)
 
     FLUXION_LOG_INFO("ForwardRendererDemo",
         "Window created. Space stops and starts the spin, the arrow keys and the wheel change how fast, Tab shows and hides the axes, "
-        "Escape closes.");
+        "R puts whatever is in Scripts/ now under the running cube, Escape closes.");
 
     bool running = true;
     u32 frameIndex = 0;
@@ -567,6 +588,52 @@ int main(int argc, char** argv)
         }
         if (Fluxion_Input_WasKeyPressed(FLUXION_KEY_ESCAPE)) running = false;
         if (!running) break;
+
+        // Edit a file in Scripts/, press R, and the cube goes on turning
+        // -- at whatever speed the file now says, from wherever it had got
+        // to. Nothing here stops the scene, and nothing here decides what
+        // survives: the components keep the values they were holding, and
+        // a component that had already been woken and started is not woken
+        // and started again.
+        //
+        // Source that does not compile changes nothing at all: the message
+        // names the file and the line, and the cube carries on running the
+        // code it was running.
+        if (Fluxion_Input_WasKeyPressed(FLUXION_KEY_R))
+        {
+            Fluxion::Scene::ReloadRequest reload;
+            reload.source = ReadDemoScripts();
+            reload.options = scriptOptions;
+            reload.cache = scriptCache;
+
+            if (reload.source.empty())
+            {
+                FLUXION_LOG_ERROR("ForwardRendererDemo", "Nothing was read from %s, so the scripts were left as they are.",
+                    FLUXION_DEMO_SCRIPT_DIR);
+            }
+            else
+            {
+                Fluxion::Script::DiagnosticList reloadDiagnostics;
+                Fluxion::Scene::ReloadReport reloadReport;
+                if (Fluxion::Scene::ReloadRuntime(scene, reload, reloadDiagnostics, reloadReport))
+                {
+                    // The machine that was running until a moment ago. It
+                    // has let go of every component the scene was holding,
+                    // and nothing in this file points into it any more.
+                    Fluxion::Script::DestroyVm(reloadReport.retired);
+                    scriptVm = Fluxion::Scene::GetRuntime(scene);
+
+                    FLUXION_LOG_INFO("ForwardRendererDemo", "Reloaded: %u component(s), %u field value(s) carried across, %u left behind.",
+                        reloadReport.componentsCarried, reloadReport.fieldsCarried, reloadReport.fieldsDropped);
+                }
+                else
+                {
+                    ReportScriptDiagnostics(reloadDiagnostics);
+                    FLUXION_LOG_ERROR("ForwardRendererDemo", "The scripts were not reloaded (%s); the cube is still running the old ones.",
+                        Fluxion_Scene_GetLastError(scene));
+                }
+            }
+        }
 
         // How long the last frame took, worked out once and read by
         // everything below. A frame that stalled -- a debugger break, the

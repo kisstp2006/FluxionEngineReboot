@@ -464,6 +464,33 @@ void MarkComponentsOf(FluxionSceneRecord* record, FluxionGameObjectHandle object
     }
 }
 
+// Every lifecycle method the class declares, looked up once so a turn of
+// the scene never compares a name against anything. False, with
+// `outProblem` saying which one and what is wrong with it, when a class
+// declares one of them with a shape the scene cannot call.
+bool ResolveLifecycle(Vm* vm, u32 classIndex, const char* className, u32* outMethods, std::string& outProblem)
+{
+    for (u32 i = 0; i < FLUXION_SCENE_LIFECYCLE_COUNT; ++i)
+    {
+        outMethods[i] = FindMethod(vm, classIndex, kLifecycleNames[i]);
+        if (outMethods[i] == kNoFunction)
+        {
+            outMethods[i] = FLUXION_SCENE_NO_FUNCTION;
+            continue;
+        }
+
+        const u32 declared = MethodParameterCount(vm, outMethods[i]);
+        const bool sameShape = declared == kLifecycleParameterCount[i] &&
+                               (declared == 0 || MethodParameterType(vm, outMethods[i], 0) == ValueType::Float);
+        if (sameShape) continue;
+
+        outProblem = std::string("'") + className + "." + kLifecycleNames[i] + "' has to take " +
+                     (kLifecycleParameterCount[i] == 0 ? "nothing" : "how much time has passed, as a float");
+        return false;
+    }
+    return true;
+}
+
 // One step of a turn: the same walk each time, over the records that
 // existed when the turn began.
 void DispatchStep(FluxionSceneRecord* record, FluxionSceneLifecycle which, u32 limit, f32 deltaTime, bool onceOnly)
@@ -486,6 +513,191 @@ void DispatchStep(FluxionSceneRecord* record, FluxionSceneLifecycle which, u32 l
     record->dispatching = false;
 
     FlushRemovals(record);
+}
+
+// --- Carrying a component's state from one machine to another -----------
+//
+// Nothing below ever keeps a class index or a method index across the
+// swap. They are handed out in the order declarations are added, so a
+// single class written at the top of a file moves every index after it:
+// the only thing about a declaration that survives an edit is its name,
+// and names are what all of this is matched on.
+
+struct CarriedField
+{
+    std::string name;
+    ValueType type = ValueType::Void;
+
+    // For a reference, a value type or a named set: the declaration the
+    // field's type names, written out. For an engine handle it is empty
+    // and `boundType` is what says which of the host's types it names --
+    // that number comes from the host's own table, which is the same table
+    // on both sides of a reload and so does keep its meaning.
+    std::string typeName;
+    u32 boundType = kNoBoundType;
+
+    // One or the other: a value type travels as the run of slots it
+    // occupies, everything else as a single value.
+    ScriptValue value;
+    std::vector<Slot> slots;
+};
+
+struct CarriedComponent
+{
+    // Which record this was, so the same record is the one written back.
+    u32 record = 0;
+
+    std::string className;
+    bool awakePending = false;
+    bool startPending = false;
+
+    std::vector<CarriedField> fields;
+
+    // Counted here rather than reported as it happens, so a reload that
+    // is refused later says nothing about fields it was never going to
+    // write.
+    u32 dropped = 0;
+
+    // What the new machine turned out to have, filled in by the step that
+    // checks the new code still has somewhere to put all of this.
+    u32 newClass = kNoClass;
+    u32 newMethods[FLUXION_SCENE_LIFECYCLE_COUNT] = {};
+    ObjectHandle newInstance;
+};
+
+std::string TypeNameOfField(Vm* vm, const FieldInfo& field)
+{
+    const bool namesOwnClass =
+        field.type == ValueType::Object || field.type == ValueType::Struct || field.type == ValueType::Enum;
+    if (!namesOwnClass || field.typeClass == kNoClass) return std::string();
+
+    const char* name = ClassName(vm, field.typeClass);
+    return name != nullptr ? std::string(name) : std::string();
+}
+
+// Every field a component of this class declared for itself, its own base
+// classes included, stopping short of the class every component is built
+// on. That one holds the object a component belongs to and that object's
+// transform, both of which are handed over afresh straight after the new
+// instance is made -- carrying them would be writing the same two values
+// twice.
+template<typename Visitor>
+void ForEachOwnField(Vm* vm, u32 classIndex, u32 stopAt, Visitor&& visit)
+{
+    u32 current = classIndex;
+    while (current != kNoClass && current != stopAt)
+    {
+        const u32 count = ClassFieldCount(vm, current);
+        for (u32 i = 0; i < count; ++i)
+        {
+            const FieldInfo* field = ClassFieldAt(vm, current, i);
+            if (field != nullptr) visit(*field);
+        }
+        current = ClassBaseClass(vm, current);
+    }
+}
+
+// A field of this name anywhere in the chain, nearest declaration first.
+// The language does not let a derived class re-declare a name a base
+// already used, so at most one can ever answer.
+const FieldInfo* FindFieldInChain(Vm* vm, u32 classIndex, u32 stopAt, const std::string& name)
+{
+    u32 current = classIndex;
+    while (current != kNoClass && current != stopAt)
+    {
+        if (const FieldInfo* found = FindClassField(vm, current, name.c_str())) return found;
+        current = ClassBaseClass(vm, current);
+    }
+    return nullptr;
+}
+
+void SaveComponent(Vm* vm, const FluxionSceneComponentRecord& component, u32 componentClass, CarriedComponent& out)
+{
+    const char* className = ClassName(vm, component.classIndex);
+    out.className = className != nullptr ? className : std::string();
+    out.awakePending = component.awakePending;
+    out.startPending = component.startPending;
+
+    const ObjectHandle instance = InstanceOf(component);
+
+    ForEachOwnField(vm, component.classIndex, componentClass, [&](const FieldInfo& field) {
+        // A field holding a reference is left behind. What it names is an
+        // object of the machine being stood down, and there is nothing in
+        // the machine taking over that is that object -- bringing it
+        // across would mean rebuilding everything reachable from it
+        // against a different set of classes, which this does not do.
+        if (field.type == ValueType::Object || field.type == ValueType::Null)
+        {
+            ++out.dropped;
+            return;
+        }
+
+        CarriedField carried;
+        carried.name = field.name;
+        carried.type = field.type;
+        carried.typeName = TypeNameOfField(vm, field);
+        carried.boundType = field.type == ValueType::Handle ? field.typeClass : kNoBoundType;
+
+        if (field.type == ValueType::Struct)
+        {
+            // A value type may hold only numbers, truth values, named
+            // constants and other value types, so its slots are
+            // self-contained: what is read out of one machine can be
+            // written straight into another.
+            const u32 width = FieldSlotCount(vm, field);
+            carried.slots.resize(width);
+            if (width == 0 || !ReadInstanceFieldSlots(vm, instance, field, carried.slots.data(), width))
+            {
+                ++out.dropped;
+                return;
+            }
+        }
+        else if (!ReadInstanceField(vm, instance, field, carried.value))
+        {
+            ++out.dropped;
+            return;
+        }
+
+        out.fields.push_back(std::move(carried));
+    });
+}
+
+// Writes back everything that still has somewhere to go. A field that is
+// gone, renamed, or now declared with a different type is left at whatever
+// the new class starts it at and counted, rather than forced into a slot
+// that no longer means what it meant.
+void RestoreComponent(Vm* vm, CarriedComponent& carried, u32 componentClass, ReloadReport& report)
+{
+    for (const CarriedField& field : carried.fields)
+    {
+        const FieldInfo* target = FindFieldInChain(vm, carried.newClass, componentClass, field.name);
+
+        const char* why = nullptr;
+        if (target == nullptr) why = "the new code does not declare it";
+        else if (target->type != field.type) why = "it is declared with a different type now";
+        else if (TypeNameOfField(vm, *target) != field.typeName) why = "the type it is declared with is a different one now";
+        else if (field.type == ValueType::Handle && target->typeClass != field.boundType)
+            why = "it names a different engine type now";
+
+        if (why == nullptr)
+        {
+            const bool written = field.type == ValueType::Struct
+                ? WriteInstanceFieldSlots(vm, carried.newInstance, *target, field.slots.data(), (u32)field.slots.size())
+                : WriteInstanceField(vm, carried.newInstance, *target, field.value);
+            if (written)
+            {
+                ++report.fieldsCarried;
+                continue;
+            }
+            why = "it does not hold the same shape of value now";
+        }
+
+        ++report.fieldsDropped;
+        FLUXION_LOG_WARN(kLogChannel, "'%s.%s' was not carried across the reload: %s", carried.className.c_str(),
+            field.name.c_str(), why);
+    }
+
+    report.fieldsDropped += carried.dropped;
 }
 
 } // namespace
@@ -572,6 +784,209 @@ Vm* GetRuntime(FluxionSceneHandle scene)
     return record != nullptr ? MachineOf(record) : nullptr;
 }
 
+bool ReloadRuntime(FluxionSceneHandle scene, const ReloadRequest& request, DiagnosticList& outDiagnostics, ReloadReport& outReport)
+{
+    outReport = ReloadReport{};
+
+    FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
+    if (record == nullptr) return false;
+
+    Vm* oldVm = MachineOf(record);
+    if (oldVm == nullptr)
+    {
+        Fluxion_SceneInternal_SetError(record, "this scene has no script machine to put new code under");
+        return false;
+    }
+
+    // A component that was already going is finished with first: it has no
+    // state worth carrying and it would otherwise be rebuilt only to be
+    // taken apart again on the next turn.
+    FlushRemovals(record);
+
+    // --- Nothing below this point disturbs anything until it has all
+    // succeeded. The scene keeps running what it is running.
+
+    CompileCacheReport cacheReport;
+    auto compiled = CompileCached(request.source, request.options, request.cache, outDiagnostics, cacheReport);
+    if (!compiled.IsOk())
+    {
+        Fluxion_SceneInternal_SetError(record, "the new script source did not compile, so the scene is still running the old one");
+        return false;
+    }
+
+    Vm* newVm = CreateVm(compiled.Value(), outDiagnostics, request.options.bindings);
+    if (newVm == nullptr)
+    {
+        Fluxion_SceneInternal_SetError(record, "the new script module did not load, so the scene is still running the old one");
+        return false;
+    }
+
+    // Everything the old machine was printing to goes on being printed to.
+    // Instances are made below, and a constructor may well write
+    // something, so this is put in place before any of that happens.
+    void* outputUser = nullptr;
+    OutputHandler outputHandler = GetOutputHandler(oldVm, &outputUser);
+    if (outputHandler != nullptr) SetOutputHandler(newVm, outputHandler, outputUser);
+
+    struct MachineGuard
+    {
+        Vm* machine = nullptr;
+        ~MachineGuard() { DestroyVm(machine); }
+        void Keep() { machine = nullptr; }
+    } guard{ newVm };
+
+    const u32 newComponentClass = FindClass(newVm, kComponentClassName);
+    const u32 newBindMethod =
+        newComponentClass != kNoClass ? FindMethod(newVm, newComponentClass, kComponentBindMethod) : kNoFunction;
+    if (newComponentClass == kNoClass || newBindMethod == kNoFunction)
+    {
+        Fluxion_SceneInternal_SetError(record,
+            "the new script module has no class for components to be built on, so the scene is still running the old one");
+        return false;
+    }
+
+    // --- What the scene is holding, in terms that outlive the machine ---
+
+    std::vector<CarriedComponent> carried;
+    for (u32 i = 0; i < record->componentHighWater; ++i)
+    {
+        const FluxionSceneComponentRecord& component = record->components[i];
+        if (!component.inUse || component.removing) continue;
+
+        CarriedComponent entry;
+        entry.record = i;
+        SaveComponent(oldVm, component, record->componentClass, entry);
+        carried.push_back(std::move(entry));
+    }
+
+    // --- Does the new code still have somewhere to put all of it? -------
+
+    for (CarriedComponent& entry : carried)
+    {
+        entry.newClass = FindClass(newVm, entry.className.c_str());
+        if (entry.newClass == kNoClass || !ClassDerivesFrom(newVm, entry.newClass, newComponentClass))
+        {
+            const std::string message = std::string("the new script source has no component called '") + entry.className +
+                                        "', which the scene has attached, so the scene is still running the old one";
+            Fluxion_SceneInternal_SetError(record, message.c_str());
+            FLUXION_LOG_ERROR(kLogChannel, "%s", message.c_str());
+            return false;
+        }
+
+        std::string problem;
+        if (!ResolveLifecycle(newVm, entry.newClass, entry.className.c_str(), entry.newMethods, problem))
+        {
+            const std::string message = problem + ", so the scene is still running the old one";
+            Fluxion_SceneInternal_SetError(record, message.c_str());
+            FLUXION_LOG_ERROR(kLogChannel, "%s", message.c_str());
+            return false;
+        }
+    }
+
+    // --- Building the replacements ---------------------------------------
+    //
+    // The scene is given the new machine before any of this runs, because
+    // a constructor is script code and script code may reach back into the
+    // scene: whatever it reaches has to be the machine its own class came
+    // out of. The old records are left exactly as they are, so putting the
+    // old machine back is all it takes to undo this.
+
+    void* const oldVmPointer = record->vm;
+    const u32 oldComponentClass = record->componentClass;
+    const u32 oldBindMethod = record->bindMethod;
+
+    record->vm = newVm;
+    record->componentClass = newComponentClass;
+    record->bindMethod = newBindMethod;
+
+    bool built = true;
+    for (CarriedComponent& entry : carried)
+    {
+        auto created = NewInstance(newVm, entry.newClass, nullptr, 0);
+        if (!created.IsOk())
+        {
+            ReportFault(record, "making", entry.className.c_str());
+            built = false;
+            break;
+        }
+        entry.newInstance = created.Value();
+
+        if (!PinObject(newVm, entry.newInstance))
+        {
+            Fluxion_SceneInternal_SetError(record, "a component the reload made could not be held onto");
+            built = false;
+            break;
+        }
+
+        const FluxionGameObjectHandle owner = record->components[entry.record].owner;
+        ScriptValue arguments[2];
+        arguments[0].type = ValueType::Handle;
+        arguments[0].handleValue = ToEngineHandle(owner);
+        arguments[1].type = ValueType::Handle;
+        arguments[1].handleValue = ToEngineHandle(owner);
+
+        auto bound = InvokeMethod(newVm, entry.newInstance, newBindMethod, arguments, 2);
+        if (!bound.IsOk())
+        {
+            ReportFault(record, "handing its object to", entry.className.c_str());
+            built = false;
+            break;
+        }
+
+        RestoreComponent(newVm, entry, newComponentClass, outReport);
+    }
+
+    if (!built)
+    {
+        record->vm = oldVmPointer;
+        record->componentClass = oldComponentClass;
+        record->bindMethod = oldBindMethod;
+
+        // Whatever was counted on the way to giving up describes instances
+        // that are about to be thrown away with the machine that holds
+        // them, so it describes nothing.
+        outReport = ReloadReport{};
+        return false;
+    }
+
+    // --- The swap --------------------------------------------------------
+
+    for (CarriedComponent& entry : carried)
+    {
+        FluxionSceneComponentRecord& component = record->components[entry.record];
+
+        // The scene was the only thing holding the old instance up. Let go
+        // of it here rather than leaving it to the machine going away, so
+        // a collection on that machine reclaims it: what the scene holds
+        // and what the scene has stopped holding stays the truth right up
+        // to the moment the machine is released.
+        UnpinObject(oldVm, InstanceOf(component));
+
+        component.classIndex = entry.newClass;
+        component.instanceIndex = entry.newInstance.index;
+        component.instanceGeneration = entry.newInstance.generation;
+        for (u32 i = 0; i < FLUXION_SCENE_LIFECYCLE_COUNT; ++i) component.methods[i] = entry.newMethods[i];
+
+        // A component that had already been woken and started is not woken
+        // and started again: a reload puts new code under something that
+        // is running, and running it from the beginning would undo the
+        // very state that was just carried across.
+        component.awakePending = entry.awakePending;
+        component.startPending = entry.startPending;
+
+        ++outReport.componentsCarried;
+    }
+
+    guard.Keep();
+    outReport.reloaded = true;
+    outReport.retired = oldVm;
+    Fluxion_SceneInternal_SetError(record, nullptr);
+
+    FLUXION_LOG_INFO(kLogChannel, "Reloaded %u component(s): %u field value(s) carried across, %u left behind.",
+        outReport.componentsCarried, outReport.fieldsCarried, outReport.fieldsDropped);
+    return true;
+}
+
 u32 FindComponentClass(FluxionSceneHandle scene, const char* className)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
@@ -639,27 +1054,12 @@ ObjectHandle AddComponent(FluxionSceneHandle scene, FluxionGameObjectHandle obje
         return none;
     }
 
-    // Every lifecycle method is looked up once, here, so a turn of the
-    // scene never compares a name against anything.
     u32 methods[FLUXION_SCENE_LIFECYCLE_COUNT];
-    for (u32 i = 0; i < FLUXION_SCENE_LIFECYCLE_COUNT; ++i)
+    std::string problem;
+    if (!ResolveLifecycle(vm, classIndex, ClassNameOf(record, classIndex), methods, problem))
     {
-        methods[i] = FindMethod(vm, classIndex, kLifecycleNames[i]);
-        if (methods[i] == kNoFunction)
-        {
-            methods[i] = FLUXION_SCENE_NO_FUNCTION;
-            continue;
-        }
-
-        const u32 declared = MethodParameterCount(vm, methods[i]);
-        const bool sameShape = declared == kLifecycleParameterCount[i] &&
-                               (declared == 0 || MethodParameterType(vm, methods[i], 0) == ValueType::Float);
-        if (sameShape) continue;
-
-        const std::string message = std::string("'") + ClassNameOf(record, classIndex) + "." + kLifecycleNames[i] + "' has to take " +
-                                    (kLifecycleParameterCount[i] == 0 ? "nothing" : "how much time has passed, as a float");
-        Fluxion_SceneInternal_SetError(record, message.c_str());
-        FLUXION_LOG_ERROR(kLogChannel, "%s", message.c_str());
+        Fluxion_SceneInternal_SetError(record, problem.c_str());
+        FLUXION_LOG_ERROR(kLogChannel, "%s", problem.c_str());
         return none;
     }
 

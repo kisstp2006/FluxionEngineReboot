@@ -1594,6 +1594,12 @@ void SetOutputHandler(Vm* vm, OutputHandler handler, void* user)
     vm->outputUser = user;
 }
 
+OutputHandler GetOutputHandler(const Vm* vm, void** outUser)
+{
+    if (outUser) *outUser = vm ? vm->outputUser : nullptr;
+    return vm ? vm->outputHandler : nullptr;
+}
+
 Fluxion::Foundation::Result<ScriptValue> Invoke(Vm* vm, const char* qualifiedName)
 {
     using ResultType = Fluxion::Foundation::Result<ScriptValue>;
@@ -1754,6 +1760,96 @@ const Attribute* FindFieldAttribute(const Vm* vm, u32 classIndex, const char* fi
         if (attribute.name == attributeName) return &attribute;
     }
     return nullptr;
+}
+
+u32 ObjectClass(const Vm* vm, ObjectHandle instance)
+{
+    if (!vm) return kNoClass;
+    return vm->heap.ClassOf(instance);
+}
+
+u32 ClassBaseClass(const Vm* vm, u32 classIndex)
+{
+    if (!vm || classIndex >= vm->module.classes.size()) return kNoClass;
+    return vm->module.classes[classIndex].baseClass;
+}
+
+u32 FieldSlotCount(const Vm* vm, const FieldInfo& field)
+{
+    if (!vm) return 0;
+    if (field.type != ValueType::Struct) return 1;
+
+    // A value type's width is a property of the declaration the field
+    // names, not of the field, so it is read off that class.
+    if (field.typeClass >= vm->module.classes.size()) return 0;
+    return vm->module.classes[field.typeClass].fieldSlotCount;
+}
+
+namespace
+{
+
+// True when the run this field occupies lies wholly inside what the object
+// was actually created with. Every read and write below goes through this
+// first: a FieldInfo is a description, and a description from the wrong
+// class would otherwise reach into a neighbouring object's storage.
+bool FieldFitsObject(const Vm& vm, ObjectHandle instance, const FieldInfo& field, u32 count)
+{
+    if (count == 0) return false;
+
+    u32 slotCount = 0;
+    if (!vm.heap.TrySlotCount(instance, slotCount)) return false;
+    if (field.slot >= slotCount) return false;
+    return (u32)(slotCount - field.slot) >= count;
+}
+
+} // namespace
+
+bool ReadInstanceField(const Vm* vm, ObjectHandle instance, const FieldInfo& field, ScriptValue& outValue)
+{
+    if (!vm || field.type == ValueType::Struct) return false;
+    if (!FieldFitsObject(*vm, instance, field, 1)) return false;
+
+    Slot slot;
+    if (!vm->heap.ReadField(instance, field.slot, slot)) return false;
+
+    outValue = ValueFromSlot(*vm, field.type, slot);
+    return true;
+}
+
+bool WriteInstanceField(Vm* vm, ObjectHandle instance, const FieldInfo& field, const ScriptValue& value)
+{
+    if (!vm || field.type == ValueType::Struct) return false;
+    if (!FieldFitsObject(*vm, instance, field, 1)) return false;
+
+    Slot slot;
+    if (!SlotFromValue(*vm, field.type, value, slot)) return false;
+    return vm->heap.WriteField(instance, field.slot, slot);
+}
+
+bool ReadInstanceFieldSlots(const Vm* vm, ObjectHandle instance, const FieldInfo& field, Slot* outSlots, u32 count)
+{
+    if (!vm || !outSlots) return false;
+    if (count != FieldSlotCount(vm, field)) return false;
+    if (!FieldFitsObject(*vm, instance, field, count)) return false;
+
+    for (u32 i = 0; i < count; ++i)
+    {
+        if (!vm->heap.ReadField(instance, field.slot + i, outSlots[i])) return false;
+    }
+    return true;
+}
+
+bool WriteInstanceFieldSlots(Vm* vm, ObjectHandle instance, const FieldInfo& field, const Slot* slots, u32 count)
+{
+    if (!vm || !slots) return false;
+    if (count != FieldSlotCount(vm, field)) return false;
+    if (!FieldFitsObject(*vm, instance, field, count)) return false;
+
+    for (u32 i = 0; i < count; ++i)
+    {
+        if (!vm->heap.WriteField(instance, field.slot + i, slots[i])) return false;
+    }
+    return true;
 }
 
 namespace

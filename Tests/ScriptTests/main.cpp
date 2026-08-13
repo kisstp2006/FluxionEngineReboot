@@ -18,6 +18,7 @@ void Test_Arrays_Run(TestContext& ctx);
 void Test_Gc_Run(TestContext& ctx);
 void Test_Binding_Run(TestContext& ctx);
 void Test_StackTrace_Run(TestContext& ctx);
+void Test_Serialization_Run(TestContext& ctx);
 
 int main()
 {
@@ -41,6 +42,7 @@ int main()
     Test_Gc_Run(ctx);
     Test_Binding_Run(ctx);
     Test_StackTrace_Run(ctx);
+    Test_Serialization_Run(ctx);
 
     if (ctx.failures == 0)
     {

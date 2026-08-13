@@ -7,6 +7,7 @@ void Test_Transform_Run(TestContext& ctx);
 void Test_Components_Run(TestContext& ctx);
 void Test_Attributes_Run(TestContext& ctx);
 void Test_EngineApi_Run(TestContext& ctx);
+void Test_Reload_Run(TestContext& ctx);
 
 int main()
 {
@@ -19,6 +20,7 @@ int main()
     Test_Components_Run(ctx);
     Test_Attributes_Run(ctx);
     Test_EngineApi_Run(ctx);
+    Test_Reload_Run(ctx);
 
     if (ctx.failures == 0)
     {

@@ -1,5 +1,6 @@
 #include <Fluxion/Script/ScriptRuntimeService.hpp>
 
+#include <string>
 #include <utility>
 
 namespace Fluxion::Script
@@ -71,6 +72,58 @@ bool ServiceInvokeMethod(Vm* vm, ObjectHandle instance, u32 methodIndex, const S
     return true;
 }
 
+u32 ServiceObjectClass(const Vm* vm, ObjectHandle instance)
+{
+    return ObjectClass(vm, instance);
+}
+
+u32 ServiceClassBaseClass(const Vm* vm, u32 classIndex)
+{
+    return ClassBaseClass(vm, classIndex);
+}
+
+const FieldInfo* ServiceFindClassField(const Vm* vm, u32 classIndex, const char* name)
+{
+    return FindClassField(vm, classIndex, name);
+}
+
+bool ServiceReadInstanceField(const Vm* vm, ObjectHandle instance, const FieldInfo* field, ScriptValue* outValue)
+{
+    if (!field || !outValue) return false;
+    return ReadInstanceField(vm, instance, *field, *outValue);
+}
+
+bool ServiceWriteInstanceField(Vm* vm, ObjectHandle instance, const FieldInfo* field, const ScriptValue* value)
+{
+    if (!field || !value) return false;
+    return WriteInstanceField(vm, instance, *field, *value);
+}
+
+bool ServiceWriteModule(const CompiledModule* module, std::vector<u8>* outBytes)
+{
+    if (!module || !outBytes) return false;
+    return WriteModule(*module, *outBytes);
+}
+
+bool ServiceReadModule(const u8* bytes, size_t byteCount, CompiledModule* outModule, DiagnosticList* outDiagnostics)
+{
+    if (!outModule || !outDiagnostics) return false;
+    return ReadModule(bytes, byteCount, *outModule, *outDiagnostics);
+}
+
+bool ServiceCompileCached(const char* source, const CompileOptions* options, const CompileCacheOptions* cache,
+    DiagnosticList* outDiagnostics, CompileCacheReport* outReport, CompiledModule* outModule)
+{
+    if (!source || !cache || !outDiagnostics || !outReport || !outModule) return false;
+
+    const CompileOptions defaults;
+    auto compiled = CompileCached(std::string(source), options ? *options : defaults, *cache, *outDiagnostics, *outReport);
+    if (!compiled.IsOk()) return false;
+
+    *outModule = std::move(compiled.Value());
+    return true;
+}
+
 } // namespace
 
 ScriptRuntimeService MakeScriptRuntimeService()
@@ -87,6 +140,14 @@ ScriptRuntimeService MakeScriptRuntimeService()
     service.findMethod = &ServiceFindMethod;
     service.newInstance = &ServiceNewInstance;
     service.invokeMethod = &ServiceInvokeMethod;
+    service.objectClass = &ServiceObjectClass;
+    service.classBaseClass = &ServiceClassBaseClass;
+    service.findClassField = &ServiceFindClassField;
+    service.readInstanceField = &ServiceReadInstanceField;
+    service.writeInstanceField = &ServiceWriteInstanceField;
+    service.writeModule = &ServiceWriteModule;
+    service.readModule = &ServiceReadModule;
+    service.compileCached = &ServiceCompileCached;
     return service;
 }
 

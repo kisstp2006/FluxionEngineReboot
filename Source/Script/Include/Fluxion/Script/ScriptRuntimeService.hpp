@@ -4,11 +4,15 @@
 #include <Fluxion/Foundation/Types.h>
 #include <Fluxion/Script/Diagnostics.hpp>
 #include <Fluxion/Script/Runtime/Binding.hpp>
+#include <Fluxion/Script/Runtime/CompileCache.hpp>
+#include <Fluxion/Script/Runtime/ModuleSerializer.hpp>
 #include <Fluxion/Script/Runtime/Value.hpp>
 #include <Fluxion/Script/Runtime/Vm.hpp>
 #include <Fluxion/Script/Script.hpp>
 
+#include <cstddef>
 #include <type_traits>
+#include <vector>
 
 namespace Fluxion::Script
 {
@@ -30,7 +34,13 @@ struct ScriptRuntimeService
     FluxionServiceHeader header;
 
     static constexpr const char* Name = "ScriptRuntimeService";
-    static constexpr u32 Version = 1;
+
+    // Two rather than one because the table grew: a module can now be
+    // written out and read back, a compilation can be answered out of what
+    // an earlier one produced, and a field of a live object can be reached
+    // without a script-written accessor. A caller that resolved this by
+    // name and found version one has none of that.
+    static constexpr u32 Version = 2;
 
     // Compiles `source` into `outModule`. `options` may be null, in which
     // case the defaults apply and the source reaches nothing outside
@@ -55,6 +65,38 @@ struct ScriptRuntimeService
     bool (*newInstance)(Vm* vm, u32 classIndex, const ScriptValue* args, u32 argCount, ObjectHandle* outInstance);
     bool (*invokeMethod)(Vm* vm, ObjectHandle instance, u32 methodIndex, const ScriptValue* args, u32 argCount,
         ScriptValue* outValue);
+
+    // --- Reaching an object's state directly ----------------------------
+
+    // A class lists only the fields it declared itself, so a caller after
+    // everything an object holds walks the chain `classBaseClass` gives it
+    // and asks each class in turn. `objectClass` is where that walk starts
+    // when all the caller has is a reference.
+    u32 (*objectClass)(const Vm* vm, ObjectHandle instance);
+    u32 (*classBaseClass)(const Vm* vm, u32 classIndex);
+
+    // Null when the class does not declare a field of that name. What
+    // comes back is only valid for as long as the machine is.
+    const FieldInfo* (*findClassField)(const Vm* vm, u32 classIndex, const char* name);
+
+    // Both refuse a field of a value type: it occupies several slots and
+    // has no single-value form.
+    bool (*readInstanceField)(const Vm* vm, ObjectHandle instance, const FieldInfo* field, ScriptValue* outValue);
+    bool (*writeInstanceField)(Vm* vm, ObjectHandle instance, const FieldInfo* field, const ScriptValue* value);
+
+    // --- Keeping a compiled module -------------------------------------
+
+    // `readModule` refuses anything it cannot fully account for rather
+    // than answering with a half-built module, and says why through the
+    // diagnostics.
+    bool (*writeModule)(const CompiledModule* module, std::vector<u8>* outBytes);
+    bool (*readModule)(const u8* bytes, size_t byteCount, CompiledModule* outModule, DiagnosticList* outDiagnostics);
+
+    // Compiles unless an image of exactly this compilation is already on
+    // disk. A cache file that is stale, truncated or not one of these at
+    // all is a miss and never a failure.
+    bool (*compileCached)(const char* source, const CompileOptions* options, const CompileCacheOptions* cache,
+        DiagnosticList* outDiagnostics, CompileCacheReport* outReport, CompiledModule* outModule);
 };
 
 static_assert(std::is_standard_layout_v<ScriptRuntimeService>,

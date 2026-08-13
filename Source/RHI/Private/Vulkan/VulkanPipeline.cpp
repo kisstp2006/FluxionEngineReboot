@@ -153,7 +153,17 @@ FluxionRHIPipelineHandle Fluxion_RHIVulkan_CreateGraphicsPipeline(FluxionRHIDevi
     rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterization.polygonMode = desc->rasterState.wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
     rasterization.cullMode = Fluxion_RHIVulkan_MapCullMode(desc->rasterState.cullMode);
-    rasterization.frontFace = desc->rasterState.frontFaceCounterClockwise ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
+    // Inverted, like the OpenGL and D3D12 backends -- but arriving there
+    // by a different route, and this is worth knowing before touching
+    // either. Those two invert because the portable flag's sense is the
+    // opposite of what their rasterizers mean by it. This one would have
+    // matched the flag directly, except that the viewport here is set
+    // with a negative height (see VulkanCommandList.cpp) to turn +Y the
+    // right way up, and turning the image over turns the direction a
+    // triangle is wound over with it. Two reversals, one flag: the
+    // setting ends up written the same way as the other two, and all
+    // three keep the same faces.
+    rasterization.frontFace = desc->rasterState.frontFaceCounterClockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterization.lineWidth = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo multisample = {};

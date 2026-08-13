@@ -92,6 +92,25 @@ void Fluxion_RHIOpenGL_CommandListEnd(FluxionRHICommandListHandle commandList)
 // attachment shape is a natural follow-up if per-frame FBO churn ever
 // shows up in a profile.
 
+// Clearing depth is masked by the depth-write mask, exactly as drawing is:
+// with writes switched off, a clear leaves the depth buffer as it was and
+// reports nothing wrong. Any pipeline that does not write depth -- lines
+// drawn over the top, anything of that sort -- leaves the mask off behind
+// it, and it stays off, because the mask belongs to the context and not to
+// the pass. So it is put back before every depth clear, and the state
+// cache is told what really happened, or the next frame silently keeps the
+// previous frame's depths and everything drawn into them disappears.
+static void Fluxion_RHIOpenGL_AllowDepthClear(FluxionRHIOpenGLDevice* deviceState)
+{
+    if (deviceState == nullptr) return;
+
+    FluxionRHIOpenGLStateCache* cache = &deviceState->stateCache;
+    if (cache->valid && cache->depthWriteEnable) return;
+
+    glDepthMask(GL_TRUE);
+    cache->depthWriteEnable = true;
+}
+
 void Fluxion_RHIOpenGL_CommandListBeginRendering(FluxionRHICommandListHandle commandList, const FluxionRHIRenderingDesc* desc)
 {
     if (!Fluxion_RHIOpenGL_RequireRecording(commandList, "BeginRendering")) return;
@@ -125,7 +144,11 @@ void Fluxion_RHIOpenGL_CommandListBeginRendering(FluxionRHICommandListHandle com
             const f32* c = desc->colorAttachments[0].clearColor;
             glClearColor(c[0], c[1], c[2], c[3]);
             GLbitfield clearBits = GL_COLOR_BUFFER_BIT;
-            if (desc->depthAttachment != nullptr && desc->depthAttachment->clear) clearBits |= GL_DEPTH_BUFFER_BIT;
+            if (desc->depthAttachment != nullptr && desc->depthAttachment->clear)
+            {
+                clearBits |= GL_DEPTH_BUFFER_BIT;
+                Fluxion_RHIOpenGL_AllowDepthClear(deviceState);
+            }
             glClear(clearBits);
         }
         glViewport(0, 0, (GLsizei)desc->width, (GLsizei)desc->height);
@@ -158,6 +181,7 @@ void Fluxion_RHIOpenGL_CommandListBeginRendering(FluxionRHICommandListHandle com
             if (desc->depthAttachment->clear)
             {
                 f32 depthValue = desc->depthAttachment->clearColor[0];
+                Fluxion_RHIOpenGL_AllowDepthClear(deviceState);
                 glClearNamedFramebufferfv(fbo, GL_DEPTH, 0, &depthValue);
             }
         }
