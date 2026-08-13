@@ -10,9 +10,11 @@
 #include <Fluxion/Foundation/Assert.h>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/ShaderCompiler/Backends/DXC/DXCAdapter.hpp>
+#include <Fluxion/ShaderCompiler/ShaderCache.hpp>
 #include <Fluxion/ShaderCompiler/ShaderCompiler.hpp>
 
 #include <cstring>
+#include <string>
 
 using namespace Fluxion::ShaderCompiler;
 
@@ -210,17 +212,40 @@ FluxionRHIShaderStage ToRHIStage(ShaderStage stage)
 // through dxc to DXIL, and Vulkan (and everything else, e.g. the Null
 // backend) wants HLSL text run through dxc to SPIR-V. Mirrors
 // Samples/ForwardRendererDemo's CompileShaderStage exactly.
+// Said once by the host, and empty until it does. Kept here rather than
+// on each program's description because it is one answer for a whole run.
+std::string s_cacheDirectory;
+
+// Which shape a backend wants handed to it. The compiler names these in
+// its own terms and knows nothing about backends; this is the one place
+// the two vocabularies meet.
+ArtifactTarget TargetForBackend(FluxionRHIBackendType backend)
+{
+    if (backend == FLUXION_RHI_BACKEND_OPENGL) return ArtifactTarget::Glsl;
+    if (backend == FLUXION_RHI_BACKEND_D3D12) return ArtifactTarget::Dxil;
+    return ArtifactTarget::Spirv; // Vulkan, Null, and anything else
+}
+
 bool CompileStage(FluxionRHIDeviceHandle device, FluxionRHIBackendType backend, const char* source, const char* entryPoint, const char* debugName, ShaderStage stage, ShaderIRModule* outIR, FluxionRHIShaderHandle* outShader)
 {
     DiagnosticList diagnostics;
-    CompileOptions options;
-    options.stage = stage;
-    options.entryPoint = (entryPoint != nullptr) ? entryPoint : "main";
-    options.fileName = (debugName != nullptr) ? debugName : "<FluxionShaderProgram>";
 
-    auto compiled = Compile(source, options, diagnostics);
-    if (!compiled.IsOk())
+    ArtifactRequest request;
+    request.target = TargetForBackend(backend);
+    request.compile.stage = stage;
+    request.compile.entryPoint = (entryPoint != nullptr) ? entryPoint : "main";
+    request.compile.fileName = (debugName != nullptr) ? debugName : "<FluxionShaderProgram>";
+
+    ShaderCacheOptions cache;
+    cache.directory = s_cacheDirectory;
+
+    ShaderCacheReport report;
+    auto artifact = CompileArtifactCached(source, request, cache, diagnostics, report);
+    if (!artifact.IsOk())
     {
+        // One report for both halves of the work: a failure in the front
+        // end and a failure in the external tool both land here, and both
+        // have already put what they know into the same list.
         for (const Diagnostic& d : diagnostics.entries)
         {
             FLUXION_LOG_ERROR("ShaderProgram", "%s:%u: %s", d.location.file.c_str(), d.location.line, d.message.c_str());
@@ -228,64 +253,16 @@ bool CompileStage(FluxionRHIDeviceHandle device, FluxionRHIBackendType backend, 
         return false;
     }
 
-    *outIR = compiled.Value().reflection;
-
-    if (backend == FLUXION_RHI_BACKEND_OPENGL)
-    {
-        const std::string& glsl = compiled.Value().glslSource;
-
-        FluxionRHIShaderDesc shaderDesc;
-        shaderDesc.stage = ToRHIStage(stage);
-        shaderDesc.bytecode = reinterpret_cast<const u8*>(glsl.data());
-        shaderDesc.bytecodeSize = glsl.size();
-        shaderDesc.entryPoint = "main";
-        shaderDesc.debugName = debugName;
-
-        *outShader = Fluxion_RHI_CreateShader(device, &shaderDesc);
-        return FLUXION_HANDLE_IS_VALID(*outShader);
-    }
-
-    DiagnosticList dxcDiagnostics;
-
-    if (backend == FLUXION_RHI_BACKEND_D3D12)
-    {
-        auto dxil = CompileToDxil(compiled.Value().hlslSource, stage, "main", dxcDiagnostics);
-        if (!dxil.IsOk())
-        {
-            for (const Diagnostic& d : dxcDiagnostics.entries)
-            {
-                FLUXION_LOG_ERROR("ShaderProgram", "dxc: %s", d.message.c_str());
-            }
-            return false;
-        }
-
-        FluxionRHIShaderDesc shaderDesc;
-        shaderDesc.stage = ToRHIStage(stage);
-        shaderDesc.bytecode = dxil.Value().data();
-        shaderDesc.bytecodeSize = dxil.Value().size();
-        shaderDesc.entryPoint = "main"; // the HLSL backend always emits a function literally named `main`, regardless of the .jsl source's own entry name
-        shaderDesc.debugName = debugName;
-
-        *outShader = Fluxion_RHI_CreateShader(device, &shaderDesc);
-        return FLUXION_HANDLE_IS_VALID(*outShader);
-    }
-
-    // Vulkan, Null, and anything else: HLSL text -> dxc -> SPIR-V.
-    auto spirv = CompileToSpirv(compiled.Value().hlslSource, stage, "main", dxcDiagnostics);
-    if (!spirv.IsOk())
-    {
-        for (const Diagnostic& d : dxcDiagnostics.entries)
-        {
-            FLUXION_LOG_ERROR("ShaderProgram", "dxc: %s", d.message.c_str());
-        }
-        return false;
-    }
+    *outIR = artifact.Value().reflection;
 
     FluxionRHIShaderDesc shaderDesc;
     shaderDesc.stage = ToRHIStage(stage);
-    shaderDesc.bytecode = spirv.Value().data();
-    shaderDesc.bytecodeSize = spirv.Value().size();
-    shaderDesc.entryPoint = "main"; // the HLSL backend always emits a function literally named `main`, regardless of the .jsl source's own entry name
+    shaderDesc.bytecode = artifact.Value().bytes.data();
+    shaderDesc.bytecodeSize = artifact.Value().bytes.size();
+    // Always literally `main`: the HLSL backend emits a function by that
+    // name whatever the source called its own, and the GLSL backend does
+    // the same.
+    shaderDesc.entryPoint = "main";
     shaderDesc.debugName = debugName;
 
     *outShader = Fluxion_RHI_CreateShader(device, &shaderDesc);
@@ -293,6 +270,11 @@ bool CompileStage(FluxionRHIDeviceHandle device, FluxionRHIBackendType backend, 
 }
 
 } // namespace
+
+extern "C" void Fluxion_ShaderProgram_SetCacheDirectory(const char* directory)
+{
+    s_cacheDirectory = (directory != nullptr) ? directory : "";
+}
 
 extern "C" FluxionShaderProgramHandle Fluxion_ShaderProgram_Create(FluxionRHIDeviceHandle device, const FluxionShaderProgramDesc* desc)
 {

@@ -9,4 +9,5 @@ target_compile_definitions(ForwardRendererDemo PRIVATE
     # never written to, and deleting the build tree is all it takes to be
     # rid of what has accumulated here.
     FLUXION_DEMO_SCRIPT_CACHE_DIR="${CMAKE_CURRENT_BINARY_DIR}/ScriptCache"
+    FLUXION_DEMO_SHADER_CACHE_DIR="${CMAKE_CURRENT_BINARY_DIR}/ShaderCache"
 )

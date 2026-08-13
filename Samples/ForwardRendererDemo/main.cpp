@@ -402,6 +402,11 @@ int main(int argc, char** argv)
         std::exit(1);
     }
 
+    // Said before the first program is made, so the first one already
+    // benefits. Kept beside the build rather than anywhere shared: it
+    // belongs to this build of these shaders and nothing else.
+    Fluxion_ShaderProgram_SetCacheDirectory(FLUXION_DEMO_SHADER_CACHE_DIR);
+
     FluxionShaderProgramDesc cubeProgramDesc{};
     cubeProgramDesc.debugName = "ForwardRendererDemo.CubeProgram";
     cubeProgramDesc.vertexSource = cubeVertexSource.c_str();

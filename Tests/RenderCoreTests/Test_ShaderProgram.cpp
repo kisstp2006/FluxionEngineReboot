@@ -3,6 +3,9 @@
 #include <Fluxion/RHI/RHI.h>
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
 #include <Fluxion/ShaderCompiler/Backends/DXC/DXCAdapter.hpp>
+#include <Fluxion/ShaderCompiler/ShaderCache.hpp>
+#include <filesystem>
+#include <system_error>
 
 #include <cstdio>
 
@@ -89,6 +92,57 @@ extern "C" void Test_ShaderProgram_Run(TestContext* ctx)
 
     Fluxion_ShaderProgram_Destroy(graphicsProgram);
     Fluxion_ShaderProgram_Destroy(computeProgram);
+
+    {
+        // The cache has its own tests; what is checked here is only that
+        // this path reaches it. Without this, the cache could be perfect
+        // and the engine could still be building every shader from
+        // scratch on every run, and every test would still pass.
+        std::error_code error;
+        const std::filesystem::path directory =
+            std::filesystem::temp_directory_path(error) / "FluxionShaderProgramCacheTest";
+        std::filesystem::remove_all(directory, error);
+
+        Fluxion_ShaderProgram_SetCacheDirectory(directory.string().c_str());
+
+        FluxionShaderProgramDesc cachedDesc = { 0 };
+        cachedDesc.debugName = "Test_ShaderProgram.Cached";
+        cachedDesc.vertexSource = kVertexSource;
+        cachedDesc.fragmentSource = kFragmentSource;
+
+        const Fluxion::ShaderCompiler::ShaderCacheCounters before = Fluxion::ShaderCompiler::GetShaderCacheCounters();
+        FluxionShaderProgramHandle first = Fluxion_ShaderProgram_Create(fixture.device, &cachedDesc);
+        TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(first));
+
+        // Two stages, so two artifacts built and nothing read.
+        const Fluxion::ShaderCompiler::ShaderCacheCounters afterFirst = Fluxion::ShaderCompiler::GetShaderCacheCounters();
+        TEST_CHECK(ctx, afterFirst.compiled == before.compiled + 2);
+        TEST_CHECK(ctx, afterFirst.loaded == before.loaded);
+
+        FluxionShaderProgramHandle second = Fluxion_ShaderProgram_Create(fixture.device, &cachedDesc);
+        TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(second));
+
+        // The same two stages again, both read rather than built.
+        const Fluxion::ShaderCompiler::ShaderCacheCounters afterSecond = Fluxion::ShaderCompiler::GetShaderCacheCounters();
+        TEST_CHECK(ctx, afterSecond.compiled == afterFirst.compiled);
+        TEST_CHECK(ctx, afterSecond.loaded == afterFirst.loaded + 2);
+
+        Fluxion_ShaderProgram_Destroy(first);
+        Fluxion_ShaderProgram_Destroy(second);
+
+        // Switched off again, so nothing after this test is affected by
+        // what this test did -- and switching off has to work as well.
+        Fluxion_ShaderProgram_SetCacheDirectory(nullptr);
+
+        FluxionShaderProgramHandle uncached = Fluxion_ShaderProgram_Create(fixture.device, &cachedDesc);
+        TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(uncached));
+        const Fluxion::ShaderCompiler::ShaderCacheCounters afterOff = Fluxion::ShaderCompiler::GetShaderCacheCounters();
+        TEST_CHECK(ctx, afterOff.loaded == afterSecond.loaded);
+        TEST_CHECK(ctx, afterOff.compiled == afterSecond.compiled + 2);
+        Fluxion_ShaderProgram_Destroy(uncached);
+
+        std::filesystem::remove_all(directory, error);
+    }
 
     DestroyNullRHIFixture(fixture);
 }

@@ -30,6 +30,23 @@ typedef struct FluxionShaderProgramDesc
     const char* computeEntryPoint;
 } FluxionShaderProgramDesc;
 
+// Where finished shaders are kept so they need not be built again, for
+// every program created from here on. NULL or empty turns it off, which
+// is the state a program starts in: a host that says nothing gets the
+// behaviour it always had.
+//
+// One directory for the whole process rather than one per program,
+// because it is one answer -- every program in a run wants the same
+// place, and a per-program field would only be the same string written
+// out at every call site. Said once, at startup, by the host that knows
+// where its files belong.
+//
+// The directory itself is created when first written to. Nothing here
+// fails because of it: a path that cannot be written to means every
+// program is built the long way, and nothing is reported, because from
+// the caller's point of view nothing went wrong.
+void Fluxion_ShaderProgram_SetCacheDirectory(const char* directory);
+
 // Returns an invalid handle on a source compile error or a shader-stage
 // creation failure (logged via FLUXION_LOG_ERROR either way) -- never
 // asserts on a bad shader source, only on a malformed desc (both/neither
