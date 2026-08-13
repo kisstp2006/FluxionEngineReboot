@@ -302,7 +302,14 @@ void Test_EngineApi_Run(TestContext& ctx)
                 TEST_CHECK(ctx, seen[1] == "false"); // right button
                 TEST_CHECK(ctx, seen[2] == "false"); // pressed this frame
                 TEST_CHECK(ctx, seen[6] == "false"); // the W key
-                TEST_CHECK(ctx, seen[7] == "false"); // gamepad zero
+                // Whether a controller is plugged into the machine running
+                // this is not something a test gets to decide, so the only
+                // thing asserted about the first one is that the question
+                // has an answer at all. Demanding "false" here would be a
+                // test that passes on the machine it was written on and
+                // fails the moment someone plugs something in -- which is
+                // exactly what happened.
+                TEST_CHECK(ctx, seen[7] == "false" || seen[7] == "true"); // gamepad zero, if there is one
                 TEST_CHECK(ctx, seen[10] == "false"); // a gamepad that could not exist
             }
 

@@ -57,9 +57,22 @@ struct FluxionRHID3D12Slot
 {
     bool alive;
     u32 generation;
+
+    // Set between a destroy and the moment the GPU is known to be done
+    // with what lived here. The handle is already dead by then -- the
+    // generation moved on -- but the slot must not be handed out again,
+    // because the object it names has not been let go of yet and the
+    // storage still holds it. Handing it out would put a new object where
+    // a queued release is still pointing, and that release would then
+    // free the new one.
+    bool pendingFinalize;
 };
 
 bool Fluxion_RHID3D12_PoolAllocate(FluxionRHID3D12Slot* slots, u32 capacity, u32* outIndex, u32* outGeneration);
+// Ends a handle's life without freeing its slot; the slot comes back only
+// at PoolFinalize, once the queued release has actually run.
+void Fluxion_RHID3D12_PoolRetire(FluxionRHID3D12Slot* slots, u32 capacity, u32 index, u32 generation);
+void Fluxion_RHID3D12_PoolFinalize(FluxionRHID3D12Slot* slots, u32 index);
 bool Fluxion_RHID3D12_PoolIsValid(const FluxionRHID3D12Slot* slots, u32 capacity, u32 index, u32 generation);
 void Fluxion_RHID3D12_PoolFree(FluxionRHID3D12Slot* slots, u32 capacity, u32 index, u32 generation);
 

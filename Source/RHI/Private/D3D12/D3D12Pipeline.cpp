@@ -42,7 +42,11 @@ FluxionRHIShaderHandle Fluxion_RHID3D12_CreateShader(FluxionRHIDeviceHandle devi
     return handle;
 }
 
-void Fluxion_RHID3D12_FinalizeShaderSlot(u32 index) { s_shaders[index] = FluxionRHID3D12Shader{}; }
+void Fluxion_RHID3D12_FinalizeShaderSlot(u32 index)
+{
+    s_shaders[index] = FluxionRHID3D12Shader{};
+    Fluxion_RHID3D12_PoolFinalize(s_shaderSlots, index);
+}
 
 void Fluxion_RHID3D12_DestroyShader(FluxionRHIShaderHandle shader)
 {
@@ -51,7 +55,7 @@ void Fluxion_RHID3D12_DestroyShader(FluxionRHIShaderHandle shader)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: DestroyShader called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHID3D12_PoolFree(s_shaderSlots, FLUXION_RHI_D3D12_MAX_SHADERS, shader.index, shader.generation);
+    Fluxion_RHID3D12_PoolRetire(s_shaderSlots, FLUXION_RHI_D3D12_MAX_SHADERS, shader.index, shader.generation);
     FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
     if (deviceState != nullptr)
         Fluxion_RHID3D12_Retire(deviceState, FluxionRHID3D12RetiredEntry::Kind::Shader, shader.index, deviceState->gcCounter);
@@ -434,7 +438,11 @@ FluxionRHIPipelineHandle Fluxion_RHID3D12_CreateComputePipeline(FluxionRHIDevice
     return handle;
 }
 
-void Fluxion_RHID3D12_FinalizePipelineSlot(u32 index) { s_pipelines[index] = FluxionRHID3D12Pipeline{}; }
+void Fluxion_RHID3D12_FinalizePipelineSlot(u32 index)
+{
+    s_pipelines[index] = FluxionRHID3D12Pipeline{};
+    Fluxion_RHID3D12_PoolFinalize(s_pipelineSlots, index);
+}
 
 void Fluxion_RHID3D12_DestroyPipeline(FluxionRHIPipelineHandle pipeline)
 {
@@ -443,7 +451,7 @@ void Fluxion_RHID3D12_DestroyPipeline(FluxionRHIPipelineHandle pipeline)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: DestroyPipeline called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHID3D12_PoolFree(s_pipelineSlots, FLUXION_RHI_D3D12_MAX_PIPELINES, pipeline.index, pipeline.generation);
+    Fluxion_RHID3D12_PoolRetire(s_pipelineSlots, FLUXION_RHI_D3D12_MAX_PIPELINES, pipeline.index, pipeline.generation);
     FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
     if (deviceState != nullptr)
         Fluxion_RHID3D12_Retire(deviceState, FluxionRHID3D12RetiredEntry::Kind::Pipeline, pipeline.index, deviceState->gcCounter);

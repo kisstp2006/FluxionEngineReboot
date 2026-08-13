@@ -227,6 +227,7 @@ void Fluxion_RHID3D12_FinalizeBindGroupSlot(u32 index)
         if (bindGroup->samplerRange.count > 0) Fluxion_RHID3D12_HeapAllocatorFree(&deviceState->samplerAllocator, bindGroup->samplerRange.offset, bindGroup->samplerRange.count);
     }
     *bindGroup = FluxionRHID3D12BindGroup{};
+    Fluxion_RHID3D12_PoolFinalize(s_bindGroupSlots, index);
 }
 
 void Fluxion_RHID3D12_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup)
@@ -236,7 +237,7 @@ void Fluxion_RHID3D12_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: DestroyBindGroup called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHID3D12_PoolFree(s_bindGroupSlots, FLUXION_RHI_D3D12_MAX_BIND_GROUPS, bindGroup.index, bindGroup.generation);
+    Fluxion_RHID3D12_PoolRetire(s_bindGroupSlots, FLUXION_RHI_D3D12_MAX_BIND_GROUPS, bindGroup.index, bindGroup.generation);
     FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
     if (deviceState != nullptr)
         Fluxion_RHID3D12_Retire(deviceState, FluxionRHID3D12RetiredEntry::Kind::BindGroup, bindGroup.index, deviceState->gcCounter);

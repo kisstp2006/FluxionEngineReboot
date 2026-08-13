@@ -104,6 +104,7 @@ void Fluxion_RHID3D12_FinalizeBuffer(u32 index)
     FluxionRHID3D12Buffer* buffer = &s_buffers[index];
     if (buffer->resource != nullptr && buffer->mappedPointer != nullptr) buffer->resource->Unmap(0, nullptr);
     *buffer = FluxionRHID3D12Buffer{};
+    Fluxion_RHID3D12_PoolFinalize(s_bufferSlots, index);
 }
 
 void Fluxion_RHID3D12_DestroyBuffer(FluxionRHIBufferHandle buffer)
@@ -113,7 +114,7 @@ void Fluxion_RHID3D12_DestroyBuffer(FluxionRHIBufferHandle buffer)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: DestroyBuffer called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHID3D12_PoolFree(s_bufferSlots, FLUXION_RHI_D3D12_MAX_BUFFERS, buffer.index, buffer.generation);
+    Fluxion_RHID3D12_PoolRetire(s_bufferSlots, FLUXION_RHI_D3D12_MAX_BUFFERS, buffer.index, buffer.generation);
     FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
     if (deviceState != nullptr)
         Fluxion_RHID3D12_Retire(deviceState, FluxionRHID3D12RetiredEntry::Kind::Buffer, buffer.index, deviceState->gcCounter);
@@ -208,6 +209,7 @@ FluxionRHITextureHandle Fluxion_RHID3D12_CreateTexture(FluxionRHIDeviceHandle de
 void Fluxion_RHID3D12_FinalizeTexture(u32 index)
 {
     s_textures[index] = FluxionRHID3D12Texture{};
+    Fluxion_RHID3D12_PoolFinalize(s_textureSlots, index);
 }
 
 void Fluxion_RHID3D12_DestroyTexture(FluxionRHITextureHandle texture)
@@ -217,7 +219,7 @@ void Fluxion_RHID3D12_DestroyTexture(FluxionRHITextureHandle texture)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: DestroyTexture called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHID3D12_PoolFree(s_textureSlots, FLUXION_RHI_D3D12_MAX_TEXTURES, texture.index, texture.generation);
+    Fluxion_RHID3D12_PoolRetire(s_textureSlots, FLUXION_RHI_D3D12_MAX_TEXTURES, texture.index, texture.generation);
     FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
     if (deviceState != nullptr)
         Fluxion_RHID3D12_Retire(deviceState, FluxionRHID3D12RetiredEntry::Kind::Texture, texture.index, deviceState->gcCounter);
@@ -304,6 +306,7 @@ FluxionRHITextureViewHandle Fluxion_RHID3D12_CreateTextureView(FluxionRHIDeviceH
 void Fluxion_RHID3D12_FinalizeTextureView(u32 index)
 {
     s_textureViews[index] = FluxionRHID3D12TextureView{};
+    Fluxion_RHID3D12_PoolFinalize(s_textureViewSlots, index);
 }
 
 void Fluxion_RHID3D12_DestroyTextureView(FluxionRHITextureViewHandle view)
@@ -313,7 +316,7 @@ void Fluxion_RHID3D12_DestroyTextureView(FluxionRHITextureViewHandle view)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: DestroyTextureView called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHID3D12_PoolFree(s_textureViewSlots, FLUXION_RHI_D3D12_MAX_TEXTURE_VIEWS, view.index, view.generation);
+    Fluxion_RHID3D12_PoolRetire(s_textureViewSlots, FLUXION_RHI_D3D12_MAX_TEXTURE_VIEWS, view.index, view.generation);
     FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
     if (deviceState != nullptr)
         Fluxion_RHID3D12_Retire(deviceState, FluxionRHID3D12RetiredEntry::Kind::TextureView, view.index, deviceState->gcCounter);
@@ -353,7 +356,11 @@ FluxionRHISamplerHandle Fluxion_RHID3D12_CreateSampler(FluxionRHIDeviceHandle de
     return handle;
 }
 
-void Fluxion_RHID3D12_FinalizeSampler(u32 index) { s_samplers[index] = FluxionRHISamplerDesc{}; }
+void Fluxion_RHID3D12_FinalizeSampler(u32 index)
+{
+    s_samplers[index] = FluxionRHISamplerDesc{};
+    Fluxion_RHID3D12_PoolFinalize(s_samplerSlots, index);
+}
 
 void Fluxion_RHID3D12_DestroySampler(FluxionRHISamplerHandle sampler)
 {
@@ -362,7 +369,7 @@ void Fluxion_RHID3D12_DestroySampler(FluxionRHISamplerHandle sampler)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: DestroySampler called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHID3D12_PoolFree(s_samplerSlots, FLUXION_RHI_D3D12_MAX_SAMPLERS, sampler.index, sampler.generation);
+    Fluxion_RHID3D12_PoolRetire(s_samplerSlots, FLUXION_RHI_D3D12_MAX_SAMPLERS, sampler.index, sampler.generation);
     FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
     if (deviceState != nullptr)
         Fluxion_RHID3D12_Retire(deviceState, FluxionRHID3D12RetiredEntry::Kind::Sampler, sampler.index, deviceState->gcCounter);

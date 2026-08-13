@@ -16,7 +16,7 @@ bool Fluxion_RHID3D12_PoolAllocate(FluxionRHID3D12Slot* slots, u32 capacity, u32
 {
     for (u32 i = 0; i < capacity; ++i)
     {
-        if (!slots[i].alive)
+        if (!slots[i].alive && !slots[i].pendingFinalize)
         {
             slots[i].alive = true;
             *outIndex = i;
@@ -41,6 +41,27 @@ void Fluxion_RHID3D12_PoolFree(FluxionRHID3D12Slot* slots, u32 capacity, u32 ind
     }
     slots[index].alive = false;
     ++slots[index].generation;
+}
+
+// The destroy half of a deferred release. Everything PoolFree does, plus
+// holding the slot back: what lived here is still queued for release, and
+// the storage still holds it, so a fresh allocation landing on this index
+// would be freed by that queued release the moment it runs.
+void Fluxion_RHID3D12_PoolRetire(FluxionRHID3D12Slot* slots, u32 capacity, u32 index, u32 generation)
+{
+    if (!Fluxion_RHID3D12_PoolIsValid(slots, capacity, index, generation))
+    {
+        FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: destroy called with an invalid or already-destroyed handle");
+        return;
+    }
+    slots[index].alive = false;
+    ++slots[index].generation;
+    slots[index].pendingFinalize = true;
+}
+
+void Fluxion_RHID3D12_PoolFinalize(FluxionRHID3D12Slot* slots, u32 index)
+{
+    slots[index].pendingFinalize = false;
 }
 
 // --- Descriptor heap free-list allocator ------------------------------------
