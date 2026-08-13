@@ -7,4 +7,5 @@ engine_add_module(
         Fluxion::Foundation
     PRIVATE_DEPENDENCIES
         pdjson
+        Fluxion::ShaderCompiler
 )

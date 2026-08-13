@@ -6,9 +6,15 @@ engine_add_test(
         Test_GraphCompile.cpp
         Test_JsonLoader.c
         Test_DumpDot.c
+        Test_ShaderProgram.cpp
+        Test_Material.cpp
+        Test_MeshBuffer.c
+        Test_RenderView.c
+        Test_RendererFrame.cpp
     DEPENDENCIES
         Fluxion::RenderCore
         Fluxion::RHI
+        Fluxion::ShaderCompiler
 )
 
 engine_add_header_selfcontained_test(

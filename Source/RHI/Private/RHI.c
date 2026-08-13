@@ -106,6 +106,12 @@ void Fluxion_RHI_Device_CollectGarbage(FluxionRHIDeviceHandle device)
     s_backend->CollectGarbage(device);
 }
 
+FluxionRHIBackendType Fluxion_RHI_GetDeviceBackendType(FluxionRHIDeviceHandle device)
+{
+    if (s_backend == NULL) return FLUXION_RHI_BACKEND_NULL;
+    return s_backend->GetDeviceBackendType(device);
+}
+
 FluxionRHIQueueHandle Fluxion_RHI_GetQueue(FluxionRHIDeviceHandle device, FluxionRHIQueueType type)
 {
     if (s_backend == NULL) { FluxionRHIQueueHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 }; return invalid; }

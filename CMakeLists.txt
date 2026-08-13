@@ -57,5 +57,5 @@ endif()
 
 if(FLUXION_BUILD_SAMPLES)
     add_subdirectory(Samples/InputDemo)
-    add_subdirectory(Samples/VulkanTriangleDemo)
+    add_subdirectory(Samples/ForwardRendererDemo)
 endif()

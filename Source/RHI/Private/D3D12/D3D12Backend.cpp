@@ -355,6 +355,12 @@ static void Fluxion_RHID3D12_DestroyDevice(FluxionRHIDeviceHandle device)
     Fluxion_RHID3D12_PoolFree(s_deviceSlots, FLUXION_RHI_D3D12_MAX_DEVICES, device.index, device.generation);
 }
 
+static FluxionRHIBackendType Fluxion_RHID3D12_GetDeviceBackendType(FluxionRHIDeviceHandle device)
+{
+    FLUXION_UNUSED(device);
+    return FLUXION_RHI_BACKEND_D3D12;
+}
+
 static FluxionRHIQueueHandle Fluxion_RHID3D12_GetQueue(FluxionRHIDeviceHandle device, FluxionRHIQueueType type)
 {
     FluxionRHIQueueHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -483,6 +489,7 @@ static const FluxionRHIBackendVTable s_d3d12VTable = {
     Fluxion_RHID3D12_CreateDevice,
     Fluxion_RHID3D12_DestroyDevice,
     Fluxion_RHID3D12_CollectGarbage,
+    Fluxion_RHID3D12_GetDeviceBackendType,
     Fluxion_RHID3D12_GetQueue,
 
     Fluxion_RHID3D12_CreateCommandList,

@@ -23,6 +23,7 @@ typedef struct FluxionRHIBackendVTable
     FluxionRHIDeviceHandle (*CreateDevice)(FluxionRHIAdapterHandle adapter, const FluxionRHIDeviceDesc* desc);
     void (*DestroyDevice)(FluxionRHIDeviceHandle device);
     void (*CollectGarbage)(FluxionRHIDeviceHandle device);
+    FluxionRHIBackendType (*GetDeviceBackendType)(FluxionRHIDeviceHandle device);
     FluxionRHIQueueHandle (*GetQueue)(FluxionRHIDeviceHandle device, FluxionRHIQueueType type);
 
     FluxionRHICommandListHandle (*CreateCommandList)(FluxionRHIDeviceHandle device, FluxionRHIQueueType type);

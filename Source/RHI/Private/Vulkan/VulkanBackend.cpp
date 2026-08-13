@@ -16,7 +16,7 @@ bool Fluxion_RHIVulkan_PoolAllocate(FluxionRHIVulkanSlot* slots, u32 capacity, u
 {
     for (u32 i = 0; i < capacity; ++i)
     {
-        if (!slots[i].alive)
+        if (!slots[i].alive && !slots[i].pendingFinalize)
         {
             slots[i].alive = true;
             *outIndex = i;
@@ -41,6 +41,23 @@ void Fluxion_RHIVulkan_PoolFree(FluxionRHIVulkanSlot* slots, u32 capacity, u32 i
     }
     slots[index].alive = false;
     ++slots[index].generation;
+}
+
+void Fluxion_RHIVulkan_PoolRetire(FluxionRHIVulkanSlot* slots, u32 capacity, u32 index, u32 generation)
+{
+    if (!Fluxion_RHIVulkan_PoolIsValid(slots, capacity, index, generation))
+    {
+        FLUXION_ASSERT_MSG(false, "Fluxion RHI Vulkan backend: destroy called with an invalid or already-destroyed handle");
+        return;
+    }
+    slots[index].alive = false;
+    ++slots[index].generation;
+    slots[index].pendingFinalize = true;
+}
+
+void Fluxion_RHIVulkan_PoolFinalize(FluxionRHIVulkanSlot* slots, u32 index)
+{
+    slots[index].pendingFinalize = false;
 }
 
 // --- Instance / adapters -----------------------------------------------------
@@ -464,6 +481,12 @@ static void Fluxion_RHIVulkan_DestroyDevice(FluxionRHIDeviceHandle device)
     Fluxion_RHIVulkan_PoolFree(s_deviceSlots, FLUXION_RHI_VULKAN_MAX_DEVICES, device.index, device.generation);
 }
 
+static FluxionRHIBackendType Fluxion_RHIVulkan_GetDeviceBackendType(FluxionRHIDeviceHandle device)
+{
+    FLUXION_UNUSED(device);
+    return FLUXION_RHI_BACKEND_VULKAN;
+}
+
 static FluxionRHIQueueHandle Fluxion_RHIVulkan_GetQueue(FluxionRHIDeviceHandle device, FluxionRHIQueueType type)
 {
     FluxionRHIQueueHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -608,6 +631,7 @@ static const FluxionRHIBackendVTable s_vulkanVTable = {
     Fluxion_RHIVulkan_CreateDevice,
     Fluxion_RHIVulkan_DestroyDevice,
     Fluxion_RHIVulkan_CollectGarbage,
+    Fluxion_RHIVulkan_GetDeviceBackendType,
     Fluxion_RHIVulkan_GetQueue,
 
     Fluxion_RHIVulkan_CreateCommandList,

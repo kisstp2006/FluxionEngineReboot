@@ -1,10 +1,10 @@
 [Input] Vector2 vUV;
 
 [Texture(Material)] Texture2D albedoMap;
-[Buffer(Object)] float brightness;
+[Uniform(Material)] Vector3 tint;
 
 [Target(0)] Vector4 fragColor;
 
 void main() {
-  return texture(albedoMap, vUV) * brightness[0];
+  return texture(albedoMap, vUV) * Vector4(tint, 1.0);
 }

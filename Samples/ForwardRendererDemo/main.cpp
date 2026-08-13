@@ -1,26 +1,37 @@
 // Manual test tool, not an automated test (same role as Samples/InputDemo):
-// opens a window, brings up the Vulkan or OpenGL RHI backend, and every
-// frame dispatches a compute shader into a storage buffer, then draws a
-// rotating, textured, depth-tested 3D cube whose fragment shading is
-// modulated by that buffer -- a visible, on-screen demonstration of the
-// full pipeline (compute + storage buffers + depth testing + texture
-// upload) that RHITests' offscreen checks can't show on their own.
-// Vertex/index/texture data all go CPU->staging buffer->GPU_ONLY resource
-// via Map/Unmap + CommandList Copy + a Barrier, the same staging pattern
-// real game code would use. Shader source is written in the engine's own
-// shading language (Shaders/cube.vert.jsl, Shaders/cube.frag.jsl,
-// Shaders/cubeBrightness.comp.jsl) and compiled at startup through
-// Fluxion::ShaderCompiler -- this file never touches Vulkan-specific
-// bytecode directly, only the RHI's own backend-agnostic FluxionRHIShaderDesc.
+// opens a window, brings up the Vulkan/OpenGL/D3D12 RHI backend, and every
+// frame draws a rotating, textured, depth-tested 3D cube through the
+// RenderCore layer (ShaderProgram/Material/MeshBuffer/RenderPipeline/
+// RenderView/Renderer + a "ForwardOpaquePass" render graph node) rather
+// than hand-rolled RHI calls -- a visible, on-screen demonstration that the
+// whole layer actually works end to end on real hardware, across all
+// three real backends, that RHITests' offscreen checks can't show on
+// their own. The cube's material tint is animated every frame via
+// Fluxion_Material_SetVec3 + Fluxion_Material_FlushDirty, proving the
+// runtime-settable-material-parameter path specifically. Vertex/index/
+// texture data still go CPU->staging buffer->GPU_ONLY resource via
+// Map/Unmap + CommandList Copy + a Barrier by hand (MeshBuffer only owns
+// vertex/index buffers, not arbitrary textures, and RenderTarget/RenderView
+// only wrap already-created views, they don't create textures) -- the same
+// staging pattern real game code would use. Shader source is written in
+// the engine's own shading language (Shaders/cube.vert.jsl,
+// Shaders/cube.frag.jsl) and compiled by Fluxion_ShaderProgram_Create
+// itself; this file never touches backend-specific bytecode directly.
 #include <Fluxion/Application/Events/EventQueue.h>
 #include <Fluxion/Application/Window/Window.h>
 #include <Fluxion/Foundation/Defines.h>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/Foundation/Math.h>
-#include <Fluxion/Platform/Time.h>
 #include <Fluxion/RHI/RHI.h>
-#include <Fluxion/ShaderCompiler/Backends/DXC/DXCAdapter.hpp>
-#include <Fluxion/ShaderCompiler/ShaderCompiler.hpp>
+#include <Fluxion/RenderCore/RenderGraph/RenderGraph.h>
+#include <Fluxion/RenderCore/RenderGraph/RenderGraphPassRegistry.h>
+#include <Fluxion/RenderCore/Renderer/Material.h>
+#include <Fluxion/RenderCore/Renderer/MeshBuffer.h>
+#include <Fluxion/RenderCore/Renderer/RenderPipeline.h>
+#include <Fluxion/RenderCore/Renderer/RenderTarget.h>
+#include <Fluxion/RenderCore/Renderer/RenderView.h>
+#include <Fluxion/RenderCore/Renderer/Renderer.h>
+#include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
 
 #include <cmath>
 #include <cstddef>
@@ -50,71 +61,6 @@ std::string ReadFile(const char* path)
     return contents.str();
 }
 
-// Runs this engine's own shading language through the shared front end
-// (lex/parse/analyze/IR) and then branches on the *target* backend:
-// Vulkan wants real bytecode (HLSL text -> dxc -> SPIR-V), OpenGL's
-// FluxionRHIShaderDesc::bytecode field just carries GLSL source text
-// directly (the RHI's OpenGL backend compiles/links it with glShaderSource/
-// glCompileShader itself -- no intermediate bytecode step exists for this
-// backend). Fluxion::ShaderCompiler::Compile() already produces both
-// hlslSource and glslSource on every call, so no target-specific compiler
-// invocation is needed here beyond picking which string to use. Aborts the
-// process on failure (a startup-time shader compile error has no sensible
-// runtime fallback for a minimal demo like this one).
-std::vector<uint8_t> CompileShaderStage(const char* path, Fluxion::ShaderCompiler::ShaderStage stage, FluxionRHIBackendType backend)
-{
-    std::string source = ReadFile(path);
-    if (source.empty())
-    {
-        FLUXION_LOG_ERROR("VulkanTriangleDemo", "Failed to read shader source: %s", path);
-        std::exit(1);
-    }
-
-    Fluxion::ShaderCompiler::DiagnosticList diagnostics;
-    Fluxion::ShaderCompiler::CompileOptions options;
-    options.stage = stage;
-    options.fileName = path;
-    auto compiled = Fluxion::ShaderCompiler::Compile(source, options, diagnostics);
-    if (!compiled.IsOk())
-    {
-        for (const auto& d : diagnostics.entries)
-            std::fprintf(stderr, "  %s:%u: %s\n", d.location.file.c_str(), d.location.line, d.message.c_str());
-        FLUXION_LOG_ERROR("VulkanTriangleDemo", "Shader compilation failed: %s", path);
-        std::exit(1);
-    }
-
-    if (backend == FLUXION_RHI_BACKEND_OPENGL)
-    {
-        const std::string& glsl = compiled.Value().glslSource;
-        return std::vector<uint8_t>(glsl.begin(), glsl.end());
-    }
-
-    Fluxion::ShaderCompiler::DiagnosticList dxcDiagnostics;
-    if (backend == FLUXION_RHI_BACKEND_D3D12)
-    {
-        auto dxil = Fluxion::ShaderCompiler::CompileToDxil(compiled.Value().hlslSource, stage, "main", dxcDiagnostics);
-        if (!dxil.IsOk())
-        {
-            for (const auto& d : dxcDiagnostics.entries)
-                std::fprintf(stderr, "  dxc: %s\n", d.message.c_str());
-            FLUXION_LOG_ERROR("VulkanTriangleDemo", "dxc DXIL compilation failed for: %s", path);
-            std::exit(1);
-        }
-        return dxil.Value();
-    }
-
-    auto spirv = Fluxion::ShaderCompiler::CompileToSpirv(compiled.Value().hlslSource, stage, "main", dxcDiagnostics);
-    if (!spirv.IsOk())
-    {
-        for (const auto& d : dxcDiagnostics.entries)
-            std::fprintf(stderr, "  dxc: %s\n", d.message.c_str());
-        FLUXION_LOG_ERROR("VulkanTriangleDemo", "dxc SPIR-V compilation failed for: %s", path);
-        std::exit(1);
-    }
-
-    return spirv.Value();
-}
-
 // --- Small local math helpers ------------------------------------------
 //
 // Foundation/Math.h explicitly keeps view/projection/rotation helpers out
@@ -123,12 +69,16 @@ std::vector<uint8_t> CompileShaderStage(const char* path, Fluxion::ShaderCompile
 // renderer-shaped code. Convention: FluxionMat4::m[row][col] holds the
 // standard mathematical entry M_ij (row-major *storage*, ordinary
 // matrix-multiply semantics via Fluxion_Mat4_Multiply), and a shader-side
-// `mvp * Vector4(position, 1.0)` treats the vector as a column vector
-// (v' = M v). Both GLSL's default uniform-block matrix layout and HLSL's
-// default cbuffer layout are column-major, so TransposeForUpload below
-// converts our row-major-authored matrix into that column-major byte
-// layout right before it's copied into the uniform buffer -- without it,
-// the GPU would reconstruct the transpose of the matrix we intended.
+// `viewProjection * model[0] * Vector4(position, 1.0)` treats the vector
+// as a column vector (v' = M v). Both GLSL's default uniform-block matrix
+// layout and HLSL's default cbuffer/StructuredBuffer layout are
+// column-major, so TransposeForUpload converts a row-major-authored
+// matrix into that column-major byte layout right before it's handed to
+// RenderCore -- both Fluxion_RenderView_UpdateFrameConstants (the FRAME
+// viewProjection) and Fluxion_Renderer_DrawMesh (the OBJECT model matrix)
+// upload their inputs with a plain memcpy, no transpose step of their
+// own, so the caller must supply already-transposed matrices or the GPU
+// reconstructs the transpose of the matrix actually intended.
 
 FluxionMat4 MakePerspective(f32 fovYRadians, f32 aspect, f32 nearZ, f32 farZ)
 {
@@ -168,10 +118,10 @@ FluxionMat4 TransposeForUpload(FluxionMat4 m)
 int main(int argc, char** argv)
 {
     // --graphics=vulkan (default) | --graphics=opengl | --graphics=d3d12 --
-    // selects which RHI backend this demo drives, from the same portable
-    // RHI/ShaderCompiler calls either way (only CompileShaderStage's
-    // bytecode-vs-GLSL-text-vs-DXIL branch above and the
-    // FLUXION_RHI_BACKEND_* passed to CreateInstance below differ).
+    // selects which RHI backend this demo drives. Every RenderCore call
+    // below is identical regardless of backend -- ShaderProgram.cpp's own
+    // CompileStage is what branches per backend now (GLSL text for
+    // OpenGL, DXIL for D3D12, SPIR-V for Vulkan/Null), not this file.
     FluxionRHIBackendType backendType = FLUXION_RHI_BACKEND_VULKAN;
     for (int i = 1; i < argc; ++i)
     {
@@ -187,7 +137,7 @@ int main(int argc, char** argv)
     // The backend is otherwise only visible in the startup log line below
     // ("Using adapter: ...") -- putting it in the title too means it's
     // visible at a glance even if the demo wasn't launched from a console.
-    std::string windowTitle = std::string("Fluxion VulkanTriangleDemo [") + backendName + "] (close the window to quit)";
+    std::string windowTitle = std::string("Fluxion ForwardRendererDemo [") + backendName + "] (close the window to quit)";
     FluxionWindowDesc windowDesc;
     windowDesc.title = windowTitle.c_str();
     windowDesc.width = 800;
@@ -195,32 +145,26 @@ int main(int argc, char** argv)
     windowDesc.resizable = true;
     FluxionWindowHandle window = Fluxion_Window_Create(&windowDesc);
 
-    FluxionRHIInstanceDesc instanceDesc = { "VulkanTriangleDemo", true };
+    FluxionRHIInstanceDesc instanceDesc = { "ForwardRendererDemo", true };
     FluxionRHIInstanceHandle instance = Fluxion_RHI_CreateInstance(backendType, &instanceDesc);
     if (!FLUXION_HANDLE_IS_VALID(instance))
     {
-        FLUXION_LOG_ERROR("VulkanTriangleDemo", "Failed to create a %s instance -- no usable %s loader/driver on this machine.", backendName, backendName);
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create a %s instance -- no usable %s loader/driver on this machine.", backendName, backendName);
         return 1;
     }
 
     FluxionRHIAdapterHandle adapter;
     if (Fluxion_RHI_EnumerateAdapters(instance, &adapter, 1) == 0)
     {
-        FLUXION_LOG_ERROR("VulkanTriangleDemo", "No %s adapter found.", backendName);
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "No %s adapter found.", backendName);
         return 1;
     }
     FluxionRHIAdapterInfo adapterInfo;
     Fluxion_RHI_GetAdapterInfo(adapter, &adapterInfo);
-    FLUXION_LOG_INFO("VulkanTriangleDemo", "Using adapter: %s", adapterInfo.name);
+    FLUXION_LOG_INFO("ForwardRendererDemo", "Using adapter: %s", adapterInfo.name);
 
     FluxionRHIDeviceDesc deviceDesc = { FLUXION_RHI_CAPABILITY_NONE };
     FluxionRHIDeviceHandle device = Fluxion_RHI_CreateDevice(adapter, &deviceDesc);
-    // Both Vulkan and OpenGL alias compute onto the same hardware queue as
-    // graphics in this engine today (Vulkan may expose a real separate
-    // compute queue depending on hardware, OpenGL never does) -- using the
-    // graphics queue for the compute dispatch too is always valid per the
-    // RHI's own documented queue-aliasing rules, and keeps this frame's
-    // ordering trivially correct without any cross-queue synchronization.
     FluxionRHIQueueHandle graphicsQueue = Fluxion_RHI_GetQueue(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
 
     FluxionRHISwapchainDesc swapchainDesc;
@@ -279,21 +223,9 @@ int main(int argc, char** argv)
         20, 21, 22, 20, 22, 23, // bottom
     };
 
-    FluxionRHIBufferDesc stagingDesc = { sizeof(vertices) + sizeof(indices), FLUXION_RHI_BUFFER_USAGE_TRANSFER_SRC, FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU, "DemoStaging" };
-    FluxionRHIBufferHandle stagingBuffer = Fluxion_RHI_CreateBuffer(device, &stagingDesc);
-    u8* mapped = (u8*)Fluxion_RHI_MapBuffer(stagingBuffer);
-    memcpy(mapped, vertices, sizeof(vertices));
-    memcpy(mapped + sizeof(vertices), indices, sizeof(indices));
-    Fluxion_RHI_UnmapBuffer(stagingBuffer);
-
-    FluxionRHIBufferDesc vertexBufferDesc = { sizeof(vertices), FLUXION_RHI_BUFFER_USAGE_VERTEX_BUFFER | FLUXION_RHI_BUFFER_USAGE_TRANSFER_DST, FLUXION_RHI_MEMORY_CLASS_GPU_ONLY, "DemoVertexBuffer" };
-    FluxionRHIBufferHandle vertexBuffer = Fluxion_RHI_CreateBuffer(device, &vertexBufferDesc);
-    FluxionRHIBufferDesc indexBufferDesc = { sizeof(indices), FLUXION_RHI_BUFFER_USAGE_INDEX_BUFFER | FLUXION_RHI_BUFFER_USAGE_TRANSFER_DST, FLUXION_RHI_MEMORY_CLASS_GPU_ONLY, "DemoIndexBuffer" };
-    FluxionRHIBufferHandle indexBuffer = Fluxion_RHI_CreateBuffer(device, &indexBufferDesc);
-
-    // --- Checkerboard texture: staged the same way as the geometry above,
-    // then copied into a sampled texture via the new
-    // Fluxion_RHI_CommandList_CopyBufferToTexture. --------------------------
+    // --- Checkerboard texture: staged CPU->GPU by hand (MeshBuffer only
+    // owns vertex/index buffers, not arbitrary textures), then copied
+    // into a sampled texture via Fluxion_RHI_CommandList_CopyBufferToTexture. --
 
     const u32 kTextureSize = 64;
     std::vector<u8> checkerPixels(kTextureSize * kTextureSize * 4);
@@ -365,15 +297,36 @@ int main(int argc, char** argv)
     FluxionRHITextureViewDesc depthViewDesc = { depthTexture, depthTextureDesc.format, 0, 1, 0, 1 };
     FluxionRHITextureViewHandle depthView = Fluxion_RHI_CreateTextureView(device, &depthViewDesc);
 
-    // --- Upload command list: vertex/index copy, texture copy, and the
-    // one-time depth/texture layout transitions, all together. --------------
+    // --- Upload command list: cube vertex/index buffers via MeshBuffer's
+    // own internal staging path, plus this file's own texture copy and the
+    // one-time depth/texture layout transitions. -----------------------------
+
+    FluxionMeshBufferDesc cubeMeshDesc{};
+    cubeMeshDesc.vertexData = vertices;
+    cubeMeshDesc.vertexDataSize = sizeof(vertices);
+    cubeMeshDesc.indexData = indices;
+    cubeMeshDesc.indexDataSize = sizeof(indices);
+    cubeMeshDesc.use16BitIndices = true;
+    cubeMeshDesc.vertexLayout.attributes[0].location = 0;
+    cubeMeshDesc.vertexLayout.attributes[0].format = FLUXION_RHI_FORMAT_R32G32B32_FLOAT;
+    cubeMeshDesc.vertexLayout.attributes[0].offset = offsetof(FluxionDemoVertex, position);
+    cubeMeshDesc.vertexLayout.attributes[1].location = 1;
+    cubeMeshDesc.vertexLayout.attributes[1].format = FLUXION_RHI_FORMAT_R32G32_FLOAT;
+    cubeMeshDesc.vertexLayout.attributes[1].offset = offsetof(FluxionDemoVertex, uv);
+    cubeMeshDesc.vertexLayout.attributeCount = 2;
+    cubeMeshDesc.vertexLayout.stride = sizeof(FluxionDemoVertex);
+    cubeMeshDesc.bounds = FluxionAABB{ FluxionVec3{ -0.5f, -0.5f, -0.5f }, FluxionVec3{ 0.5f, 0.5f, 0.5f } };
+    cubeMeshDesc.debugName = "ForwardRendererDemo.Cube";
+    FluxionMeshBufferHandle cubeMesh = Fluxion_MeshBuffer_Create(device, graphicsQueue, &cubeMeshDesc);
+    if (!FLUXION_HANDLE_IS_VALID(cubeMesh))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube MeshBuffer.");
+        std::exit(1);
+    }
 
     FluxionRHICommandListHandle uploadCommandList = Fluxion_RHI_CreateCommandList(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
     Fluxion_RHI_CommandList_Begin(uploadCommandList);
-    Fluxion_RHI_CommandList_CopyBuffer(uploadCommandList, stagingBuffer, 0, vertexBuffer, 0, sizeof(vertices));
-    Fluxion_RHI_CommandList_CopyBuffer(uploadCommandList, stagingBuffer, sizeof(vertices), indexBuffer, 0, sizeof(indices));
 
-    FluxionRHITextureHandle noTexture = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
     FluxionRHIBarrier preCopyBarriers[2];
@@ -383,11 +336,8 @@ int main(int argc, char** argv)
 
     Fluxion_RHI_CommandList_CopyBufferToTexture(uploadCommandList, textureStagingBuffer, 0, albedoTexture, 0, 0);
 
-    FluxionRHIBarrier postUploadBarriers[3];
-    postUploadBarriers[0] = FluxionRHIBarrier{ noTexture, vertexBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_VERTEX_BUFFER };
-    postUploadBarriers[1] = FluxionRHIBarrier{ noTexture, indexBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_INDEX_BUFFER };
-    postUploadBarriers[2] = FluxionRHIBarrier{ albedoTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
-    Fluxion_RHI_CommandList_Barrier(uploadCommandList, postUploadBarriers, 3);
+    FluxionRHIBarrier postUploadBarrier = { albedoTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+    Fluxion_RHI_CommandList_Barrier(uploadCommandList, &postUploadBarrier, 1);
     Fluxion_RHI_CommandList_End(uploadCommandList);
 
     FluxionRHIFenceHandle uploadFence = Fluxion_RHI_CreateFence(device, false);
@@ -395,162 +345,57 @@ int main(int argc, char** argv)
     Fluxion_RHI_WaitForFence(uploadFence);
     Fluxion_RHI_DestroyFence(uploadFence);
     Fluxion_RHI_DestroyCommandList(uploadCommandList);
-    Fluxion_RHI_DestroyBuffer(stagingBuffer);
     Fluxion_RHI_DestroyBuffer(textureStagingBuffer);
     Fluxion_RHI_Device_CollectGarbage(device);
 
-    // --- Frame BindGroup: the cube's MVP matrix. ---------------------------
+    // --- ShaderProgram / Material / RenderPipeline / Renderer, built once
+    // at startup through the RenderCore layer rather than hand-rolled RHI
+    // bind groups and pipeline descs. -----------------------------------------
 
-    FluxionRHIBindGroupLayoutEntryDesc frameEntry;
-    memset(&frameEntry, 0, sizeof(frameEntry));
-    frameEntry.binding = 0;
-    frameEntry.type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
-    frameEntry.visibility = FLUXION_RHI_SHADER_STAGE_FLAG_VERTEX;
+    Fluxion_RenderGraphPassRegistry_Init(); // must run before Fluxion_Renderer_Create, which registers "ForwardOpaquePass" into it
 
-    FluxionRHIBindGroupLayoutDesc frameLayoutDesc;
-    memset(&frameLayoutDesc, 0, sizeof(frameLayoutDesc));
-    frameLayoutDesc.entries[0] = frameEntry;
-    frameLayoutDesc.entryCount = 1;
-    frameLayoutDesc.debugName = "CubeFrameLayout";
-    FluxionRHIBindGroupLayoutHandle frameLayout = Fluxion_RHI_CreateBindGroupLayout(device, &frameLayoutDesc);
+    std::string cubeVertexSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.vert.jsl");
+    std::string cubeFragmentSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.frag.jsl");
+    if (cubeVertexSource.empty() || cubeFragmentSource.empty())
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to read cube.vert.jsl/cube.frag.jsl from %s", FLUXION_DEMO_SHADER_DIR);
+        std::exit(1);
+    }
 
-    FluxionRHIBufferDesc mvpBufferDesc = { sizeof(FluxionMat4), FLUXION_RHI_BUFFER_USAGE_CONSTANT_BUFFER, FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU, "CubeMvpBuffer" };
-    FluxionRHIBufferHandle mvpBuffer = Fluxion_RHI_CreateBuffer(device, &mvpBufferDesc);
+    FluxionShaderProgramDesc cubeProgramDesc{};
+    cubeProgramDesc.debugName = "ForwardRendererDemo.CubeProgram";
+    cubeProgramDesc.vertexSource = cubeVertexSource.c_str();
+    cubeProgramDesc.fragmentSource = cubeFragmentSource.c_str();
+    FluxionShaderProgramHandle cubeProgram = Fluxion_ShaderProgram_Create(device, &cubeProgramDesc);
+    if (!FLUXION_HANDLE_IS_VALID(cubeProgram))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube ShaderProgram (see prior dxc/compile errors above).");
+        std::exit(1);
+    }
 
-    FluxionRHIBindGroupEntry frameGroupEntry;
-    memset(&frameGroupEntry, 0, sizeof(frameGroupEntry));
-    frameGroupEntry.binding = 0;
-    frameGroupEntry.type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
-    frameGroupEntry.buffer = mvpBuffer;
-    frameGroupEntry.bufferSize = sizeof(FluxionMat4);
+    FluxionMaterialHandle cubeMaterial = Fluxion_Material_Create(device, cubeProgram);
+    if (!FLUXION_HANDLE_IS_VALID(cubeMaterial))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube Material.");
+        std::exit(1);
+    }
+    Fluxion_Material_SetTexture(cubeMaterial, "albedoMap", albedoView, albedoSampler);
+    Fluxion_Material_SetVec3(cubeMaterial, "tint", FluxionVec3{ 1.0f, 1.0f, 1.0f });
+    Fluxion_Material_FlushDirty(cubeMaterial);
 
-    FluxionRHIBindGroupDesc frameGroupDesc;
-    memset(&frameGroupDesc, 0, sizeof(frameGroupDesc));
-    frameGroupDesc.layout = frameLayout;
-    frameGroupDesc.entries = &frameGroupEntry;
-    frameGroupDesc.entryCount = 1;
-    FluxionRHIBindGroupHandle frameBindGroup = Fluxion_RHI_CreateBindGroup(device, &frameGroupDesc);
+    FluxionRenderPipelineHandle cubePipeline = Fluxion_RenderPipeline_Create(device, cubeProgram, FLUXION_RENDER_PIPELINE_CATEGORY_OPAQUE, swapchainDesc.format, depthTextureDesc.format);
+    if (!FLUXION_HANDLE_IS_VALID(cubePipeline))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube RenderPipeline.");
+        std::exit(1);
+    }
 
-    // --- Material BindGroup: albedo texture + sampler. ----------------------
-
-    FluxionRHIBindGroupLayoutEntryDesc materialEntries[2];
-    memset(materialEntries, 0, sizeof(materialEntries));
-    materialEntries[0].binding = 0;
-    materialEntries[0].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
-    materialEntries[0].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
-    materialEntries[1].binding = 1;
-    materialEntries[1].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
-    materialEntries[1].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
-
-    FluxionRHIBindGroupLayoutDesc materialLayoutDesc;
-    memset(&materialLayoutDesc, 0, sizeof(materialLayoutDesc));
-    materialLayoutDesc.entries[0] = materialEntries[0];
-    materialLayoutDesc.entries[1] = materialEntries[1];
-    materialLayoutDesc.entryCount = 2;
-    materialLayoutDesc.debugName = "CubeMaterialLayout";
-    FluxionRHIBindGroupLayoutHandle materialLayout = Fluxion_RHI_CreateBindGroupLayout(device, &materialLayoutDesc);
-
-    FluxionRHIBindGroupEntry materialGroupEntries[2];
-    memset(materialGroupEntries, 0, sizeof(materialGroupEntries));
-    materialGroupEntries[0].binding = 0;
-    materialGroupEntries[0].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
-    materialGroupEntries[0].textureView = albedoView;
-    materialGroupEntries[1].binding = 1;
-    materialGroupEntries[1].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
-    materialGroupEntries[1].sampler = albedoSampler;
-
-    FluxionRHIBindGroupDesc materialGroupDesc;
-    memset(&materialGroupDesc, 0, sizeof(materialGroupDesc));
-    materialGroupDesc.layout = materialLayout;
-    materialGroupDesc.entries = materialGroupEntries;
-    materialGroupDesc.entryCount = 2;
-    FluxionRHIBindGroupHandle materialBindGroup = Fluxion_RHI_CreateBindGroup(device, &materialGroupDesc);
-
-    // --- Object BindGroup: the compute-dispatched brightness storage
-    // buffer -- shared by both the compute pipeline (written) and the
-    // cube's graphics pipeline (read in the fragment shader). ---------------
-
-    FluxionRHIBindGroupLayoutEntryDesc objectEntry;
-    memset(&objectEntry, 0, sizeof(objectEntry));
-    objectEntry.binding = 0;
-    objectEntry.type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    objectEntry.visibility = FLUXION_RHI_SHADER_STAGE_FLAG_COMPUTE | FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
-
-    FluxionRHIBindGroupLayoutDesc objectLayoutDesc;
-    memset(&objectLayoutDesc, 0, sizeof(objectLayoutDesc));
-    objectLayoutDesc.entries[0] = objectEntry;
-    objectLayoutDesc.entryCount = 1;
-    objectLayoutDesc.debugName = "CubeObjectLayout";
-    FluxionRHIBindGroupLayoutHandle objectLayout = Fluxion_RHI_CreateBindGroupLayout(device, &objectLayoutDesc);
-
-    const u32 kBrightnessElementCount = 64; // one workgroup's worth (local_size_x = 64)
-    FluxionRHIBufferDesc brightnessBufferDesc = { kBrightnessElementCount * sizeof(f32), FLUXION_RHI_BUFFER_USAGE_STORAGE_BUFFER, FLUXION_RHI_MEMORY_CLASS_GPU_ONLY, "CubeBrightnessBuffer" };
-    FluxionRHIBufferHandle brightnessBuffer = Fluxion_RHI_CreateBuffer(device, &brightnessBufferDesc);
-
-    FluxionRHIBindGroupEntry objectGroupEntry;
-    memset(&objectGroupEntry, 0, sizeof(objectGroupEntry));
-    objectGroupEntry.binding = 0;
-    objectGroupEntry.type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    objectGroupEntry.buffer = brightnessBuffer;
-    objectGroupEntry.bufferSize = brightnessBufferDesc.size;
-
-    FluxionRHIBindGroupDesc objectGroupDesc;
-    memset(&objectGroupDesc, 0, sizeof(objectGroupDesc));
-    objectGroupDesc.layout = objectLayout;
-    objectGroupDesc.entries = &objectGroupEntry;
-    objectGroupDesc.entryCount = 1;
-    FluxionRHIBindGroupHandle objectBindGroup = Fluxion_RHI_CreateBindGroup(device, &objectGroupDesc);
-
-    // --- Cube graphics pipeline -------------------------------------------
-
-    std::vector<uint8_t> vsSpirv = CompileShaderStage(FLUXION_DEMO_SHADER_DIR "/cube.vert.jsl", Fluxion::ShaderCompiler::ShaderStage::Vertex, backendType);
-    std::vector<uint8_t> fsSpirv = CompileShaderStage(FLUXION_DEMO_SHADER_DIR "/cube.frag.jsl", Fluxion::ShaderCompiler::ShaderStage::Fragment, backendType);
-
-    FluxionRHIShaderDesc vsDesc = { FLUXION_RHI_SHADER_STAGE_VERTEX, vsSpirv.data(), vsSpirv.size(), "main", "CubeVS" };
-    FluxionRHIShaderHandle vertexShader = Fluxion_RHI_CreateShader(device, &vsDesc);
-    FluxionRHIShaderDesc fsDesc = { FLUXION_RHI_SHADER_STAGE_FRAGMENT, fsSpirv.data(), fsSpirv.size(), "main", "CubeFS" };
-    FluxionRHIShaderHandle fragmentShader = Fluxion_RHI_CreateShader(device, &fsDesc);
-
-    FluxionRHIGraphicsPipelineDesc pipelineDesc;
-    memset(&pipelineDesc, 0, sizeof(pipelineDesc));
-    pipelineDesc.vertexShader = vertexShader;
-    pipelineDesc.fragmentShader = fragmentShader;
-    pipelineDesc.vertexLayout.attributes[0].location = 0;
-    pipelineDesc.vertexLayout.attributes[0].format = FLUXION_RHI_FORMAT_R32G32B32_FLOAT;
-    pipelineDesc.vertexLayout.attributes[0].offset = offsetof(FluxionDemoVertex, position);
-    pipelineDesc.vertexLayout.attributes[1].location = 1;
-    pipelineDesc.vertexLayout.attributes[1].format = FLUXION_RHI_FORMAT_R32G32_FLOAT;
-    pipelineDesc.vertexLayout.attributes[1].offset = offsetof(FluxionDemoVertex, uv);
-    pipelineDesc.vertexLayout.attributeCount = 2;
-    pipelineDesc.vertexLayout.stride = sizeof(FluxionDemoVertex);
-    pipelineDesc.rasterState.cullMode = FLUXION_RHI_CULL_MODE_NONE;
-    pipelineDesc.depthState.testEnable = true;
-    pipelineDesc.depthState.writeEnable = true;
-    pipelineDesc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_LESS;
-    pipelineDesc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    pipelineDesc.colorFormats[0] = swapchainDesc.format;
-    pipelineDesc.colorFormatCount = 1;
-    pipelineDesc.depthFormat = depthTextureDesc.format;
-    pipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_FRAME] = frameLayout;
-    pipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_MATERIAL] = materialLayout;
-    pipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_OBJECT] = objectLayout;
-    pipelineDesc.bindGroupLayoutCount = FLUXION_RHI_BIND_GROUP_OBJECT + 1;
-    pipelineDesc.debugName = "CubePipeline";
-    FluxionRHIPipelineHandle pipeline = Fluxion_RHI_CreateGraphicsPipeline(device, &pipelineDesc);
-
-    // --- Brightness compute pipeline ---------------------------------------
-
-    std::vector<uint8_t> csSpirv = CompileShaderStage(FLUXION_DEMO_SHADER_DIR "/cubeBrightness.comp.jsl", Fluxion::ShaderCompiler::ShaderStage::Compute, backendType);
-    FluxionRHIShaderDesc csDesc = { FLUXION_RHI_SHADER_STAGE_COMPUTE, csSpirv.data(), csSpirv.size(), "main", "CubeBrightnessCS" };
-    FluxionRHIShaderHandle computeShader = Fluxion_RHI_CreateShader(device, &csDesc);
-
-    FluxionRHIComputePipelineDesc computePipelineDesc;
-    memset(&computePipelineDesc, 0, sizeof(computePipelineDesc));
-    computePipelineDesc.computeShader = computeShader;
-    computePipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_OBJECT] = objectLayout;
-    computePipelineDesc.bindGroupLayoutCount = FLUXION_RHI_BIND_GROUP_OBJECT + 1;
-    computePipelineDesc.debugName = "CubeBrightnessPipeline";
-    FluxionRHIPipelineHandle computePipeline = Fluxion_RHI_CreateComputePipeline(device, &computePipelineDesc);
+    FluxionRendererHandle renderer = Fluxion_Renderer_Create(device, graphicsQueue);
+    if (!FLUXION_HANDLE_IS_VALID(renderer))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the FluxionRenderer.");
+        std::exit(1);
+    }
 
     // --- Per-frame-in-flight resources (caller-managed, no hidden
     // backend FrameContext) --------------------------------------------------
@@ -572,20 +417,12 @@ int main(int argc, char** argv)
     // on the second frame).
     FluxionRHISemaphoreHandle noSemaphore = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
-    FLUXION_LOG_INFO("VulkanTriangleDemo", "Window created. Dispatching a compute shader and rendering a rotating textured cube every frame.");
+    FLUXION_LOG_INFO("ForwardRendererDemo", "Window created. Rendering a rotating textured cube every frame through the RenderCore layer.");
 
     bool running = true;
     u32 frameIndex = 0;
     f32 rotationAngle = 0.0f;
-    // The brightness buffer's very first GPU-visible state is backend-
-    // defined (whatever Fluxion_RHI_CreateBuffer left it in), not
-    // already SHADER_READ the way every later frame leaves it after its
-    // own write->read barrier below -- a backend that validates a
-    // barrier's declared "before" state against what the resource
-    // actually last transitioned to (D3D12's debug layer does) rejects
-    // a write->read barrier on frame 0 if it claims a "before" state
-    // that never really applied yet.
-    bool firstFrame = true;
+    f32 totalTime = 0.0f;
     while (running)
     {
         Fluxion_WindowSystem_PollEvents();
@@ -597,6 +434,7 @@ int main(int argc, char** argv)
         if (!running) break;
 
         rotationAngle += 0.01f;
+        totalTime += 0.016f; // no delta-time tracking in this demo -- a fixed nominal step is good enough for a slow visual pulse
 
         u32 imageIndex = Fluxion_RHI_Swapchain_AcquireNextImage(swapchain, noSemaphore);
 
@@ -613,160 +451,159 @@ int main(int argc, char** argv)
         FluxionRHITextureViewDesc backbufferViewDesc = { backbuffer, swapchainDesc.format, 0, 1, 0, 1 };
         FluxionRHITextureViewHandle backbufferView = Fluxion_RHI_CreateTextureView(device, &backbufferViewDesc);
 
-        // Update the MVP uniform for this frame's rotation.
+        FluxionRenderTargetDesc targetDesc{};
+        targetDesc.colorViews[0] = backbufferView;
+        targetDesc.colorViewCount = 1;
+        targetDesc.depthView = depthView;
+        FluxionRenderTargetHandle frameTarget = Fluxion_RenderTarget_Create(device, &targetDesc);
+
+        // FRAME viewProjection: no separate camera/view transform in this
+        // demo (camera fixed at the origin, same as the previous version
+        // of this demo), so viewMatrix is the identity and the
+        // perspective projection alone carries the transpose-for-upload
+        // step (see TransposeForUpload's comment above -- (AB)^T = B^T A^T,
+        // and Fluxion_RenderView_UpdateFrameConstants computes
+        // projectionMatrix * viewMatrix with no transpose of its own).
         f32 aspect = surfaceHeight != 0 ? (f32)surfaceWidth / (f32)surfaceHeight : 1.0f;
         FluxionMat4 projection = MakePerspective(1.0472f /* 60 degrees */, aspect, 0.1f, 100.0f);
+
+        FluxionRenderViewDesc viewDesc{};
+        viewDesc.viewMatrix = Fluxion_Mat4_Identity();
+        viewDesc.projectionMatrix = TransposeForUpload(projection);
+        viewDesc.viewport = FluxionViewport{ 0.0f, 0.0f, (f32)surfaceWidth, (f32)surfaceHeight, 0.0f, 1.0f };
+        viewDesc.scissor = FluxionScissorRect{ 0, 0, surfaceWidth, surfaceHeight };
+        viewDesc.renderTarget = frameTarget;
+        viewDesc.layerMask = 0xFFFFFFFFu;
+        FluxionRenderViewHandle frameView = Fluxion_RenderView_Create(device, &viewDesc);
+        Fluxion_RenderView_UpdateFrameConstants(frameView);
+
+        // Slow color pulse to make the Material.SetVec3 runtime-update
+        // path visible on screen -- the whole point of this demo's tint
+        // parameter, not a static material.
+        f32 pulse = 0.5f + 0.5f * std::sin(totalTime);
+        Fluxion_Material_SetVec3(cubeMaterial, "tint", FluxionVec3{ 1.0f, 0.5f + 0.5f * pulse, 0.5f + 0.5f * (1.0f - pulse) });
+        Fluxion_Material_FlushDirty(cubeMaterial);
+
+        // OBJECT model matrix: same transpose-for-upload requirement as
+        // the FRAME matrix above -- Fluxion_Renderer_DrawMesh's `transform`
+        // is memcpy'd verbatim into the OBJECT storage buffer with no
+        // transpose of its own (see Renderer.cpp), and cube.vert.jsl reads
+        // it as `model[0]` in the same column-major-expecting multiply as
+        // viewProjection.
         FluxionMat4 rotation = MakeRotationY(rotationAngle);
         FluxionMat4 translation = Fluxion_Mat4_Translation(FluxionVec3{ 0.0f, 0.0f, -3.0f });
         FluxionMat4 model = Fluxion_Mat4_Multiply(translation, rotation);
-        FluxionMat4 mvp = Fluxion_Mat4_Multiply(projection, model);
-        FluxionMat4 mvpForUpload = TransposeForUpload(mvp);
-        void* mappedMvp = Fluxion_RHI_MapBuffer(mvpBuffer);
-        memcpy(mappedMvp, &mvpForUpload, sizeof(mvpForUpload));
-        Fluxion_RHI_UnmapBuffer(mvpBuffer);
+        FluxionMat4 modelForUpload = TransposeForUpload(model);
 
         FluxionRHICommandListHandle cmd = commandLists[frameIndex];
         Fluxion_RHI_CommandList_Begin(cmd);
 
-        // --- Compute pass: refresh the brightness storage buffer, then
-        // barrier it from shader-write to shader-read before the cube's
-        // fragment shader reads it later in this same command list. Every
-        // frame after the first also needs a read->write barrier first --
-        // the previous frame's own write->read transition (below) is the
-        // buffer's real last-known state, so re-dispatching without
-        // transitioning back to shader-write first would claim a "before"
-        // state (shader-write) that doesn't match what actually happened. ---
-        FluxionRHIBarrier brightnessToWrite = { noTexture, brightnessBuffer,
-            firstFrame ? FLUXION_RHI_RESOURCE_STATE_UNDEFINED : FLUXION_RHI_RESOURCE_STATE_SHADER_READ,
-            FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE };
-        Fluxion_RHI_CommandList_Barrier(cmd, &brightnessToWrite, 1);
-        firstFrame = false;
+        // The backbuffer is always imported as UNDEFINED, not "UNDEFINED
+        // on frame 0, PRESENT afterward": a single demo-wide "first frame"
+        // flag is wrong the moment there is more than one swapchain image
+        // (FLUXION_DEMO_FRAMES_IN_FLIGHT == 2 here) -- image B's own very
+        // first use is still genuinely UNDEFINED even on the demo's second
+        // iteration of this loop, when only image A has actually been
+        // through a real PRESENT transition so far. VK_IMAGE_LAYOUT_UNDEFINED
+        // as a barrier's old layout is always valid regardless of the
+        // resource's real current layout (it means "discard whatever was
+        // there"), which is exactly what's wanted anyway since
+        // "ForwardOpaquePass" clears both attachments every frame.
+        //
+        // The depth texture has none of that ambiguity -- it's one single
+        // persistent resource across the whole run, not N cycling
+        // swapchain images, so its real current state is always exactly
+        // known: DEPTH_WRITE, set once by the upload command list before
+        // this loop even starts (see preCopyBarriers above) and left there
+        // by every subsequent Execute. D3D12's barrier validation (unlike
+        // Vulkan's UNDEFINED-is-always-valid layout) requires the declared
+        // "before" state to actually match, so claiming UNDEFINED here
+        // every frame is a real mismatch, not just a conservative no-op.
+        FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(device);
+        Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Color0", backbuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
+        Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Depth", depthTexture, FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE);
+        Fluxion_RenderGraph_AddPassFromRegistry(graph, "ForwardOpaquePass", Fluxion_Renderer_GetForwardOpaquePassUserData(renderer));
 
-        Fluxion_RHI_CommandList_SetPipeline(cmd, computePipeline);
-        Fluxion_RHI_CommandList_SetBindGroup(cmd, FLUXION_RHI_BIND_GROUP_OBJECT, objectBindGroup);
-        Fluxion_RHI_CommandList_Dispatch(cmd, 1, 1, 1);
+        Fluxion_Renderer_BeginFrame(renderer, frameView);
+        Fluxion_Renderer_DrawMesh(renderer, cubeMesh, cubeMaterial, cubePipeline, &modelForUpload);
 
-        FluxionRHIBarrier brightnessBarrier = { noTexture, brightnessBuffer, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
-        Fluxion_RHI_CommandList_Barrier(cmd, &brightnessBarrier, 1);
+        if (!Fluxion_RenderGraph_Compile(graph))
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Render graph compilation failed -- this is a real bug, not a transient condition.");
+            std::exit(1);
+        }
+        Fluxion_RenderGraph_Execute(graph, cmd);
+        Fluxion_Renderer_EndFrame(renderer, cmd);
 
-        FluxionRHIBarrier toRenderTarget;
-        toRenderTarget.texture = backbuffer; toRenderTarget.buffer = noBuffer;
-        toRenderTarget.before = FLUXION_RHI_RESOURCE_STATE_UNDEFINED;
-        toRenderTarget.after = FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET;
-        Fluxion_RHI_CommandList_Barrier(cmd, &toRenderTarget, 1);
-
-        FluxionRHIRenderingAttachment colorAttachment;
-        colorAttachment.view = backbufferView;
-        colorAttachment.clear = true;
-        colorAttachment.clearColor[0] = 0.02f; colorAttachment.clearColor[1] = 0.02f; colorAttachment.clearColor[2] = 0.05f; colorAttachment.clearColor[3] = 1.0f;
-
-        FluxionRHIRenderingAttachment depthAttachment;
-        depthAttachment.view = depthView;
-        depthAttachment.clear = true;
-        depthAttachment.clearColor[0] = 1.0f; // clear depth to the far plane
-
-        FluxionRHIRenderingDesc renderingDesc;
-        renderingDesc.colorAttachments = &colorAttachment;
-        renderingDesc.colorAttachmentCount = 1;
-        renderingDesc.depthAttachment = &depthAttachment;
-        renderingDesc.width = surfaceWidth;
-        renderingDesc.height = surfaceHeight;
-        Fluxion_RHI_CommandList_BeginRendering(cmd, &renderingDesc);
-
-        Fluxion_RHI_CommandList_SetPipeline(cmd, pipeline);
-        Fluxion_RHI_CommandList_SetBindGroup(cmd, FLUXION_RHI_BIND_GROUP_FRAME, frameBindGroup);
-        Fluxion_RHI_CommandList_SetBindGroup(cmd, FLUXION_RHI_BIND_GROUP_MATERIAL, materialBindGroup);
-        Fluxion_RHI_CommandList_SetBindGroup(cmd, FLUXION_RHI_BIND_GROUP_OBJECT, objectBindGroup);
-        Fluxion_RHI_CommandList_SetVertexBuffer(cmd, 0, vertexBuffer, 0);
-        Fluxion_RHI_CommandList_SetIndexBuffer(cmd, indexBuffer, 0, true);
-        Fluxion_RHI_CommandList_DrawIndexed(cmd, 36, 1, 0, 0, 0);
-
-        Fluxion_RHI_CommandList_EndRendering(cmd);
-
-        FluxionRHIBarrier toPresent;
-        toPresent.texture = backbuffer; toPresent.buffer = noBuffer;
-        toPresent.before = FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET;
-        toPresent.after = FLUXION_RHI_RESOURCE_STATE_PRESENT;
+        // The render graph's own compiled barrier list ends the backbuffer
+        // in whatever state "ForwardOpaquePass" last wrote it as
+        // (RENDER_TARGET) -- RenderGraphCompiler.cpp never transitions an
+        // imported resource back to its import-time state at the end of
+        // Execute, so Present still needs one manual barrier here, the
+        // same role the old hand-rolled demo's own toPresent barrier
+        // played.
+        FluxionRHIBarrier toPresent = { backbuffer, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_PRESENT };
         Fluxion_RHI_CommandList_Barrier(cmd, &toPresent, 1);
 
         Fluxion_RHI_CommandList_End(cmd);
 
         Fluxion_RHI_Queue_Submit(graphicsQueue, &cmd, 1, frameFences[frameIndex]);
 
-        // Fluxion_RHI_Queue_Submit has no way to signal a binary
-        // semaphore (only a signalFence), so there is nothing that could
-        // ever signal a present-wait semaphore. Symmetric with the
-        // Acquire-side design (VulkanSwapchain.cpp CPU-blocks on an
-        // internal fence instead of relying on the acquire semaphore):
-        // wait for this frame's own submission to finish CPU-side before
-        // presenting, so Present needs no GPU-side wait at all -- pass an
-        // invalid semaphore handle, which the backend correctly turns
-        // into "0 wait semaphores" rather than a present that waits on
-        // something that can never be signaled.
-        // WaitForFence can time out (backend-defined bound, not
-        // infinite) instead of observing the GPU submission actually
-        // finish -- e.g. a wedged driver/validation-layer thread rather
-        // than a real GPU hang (see VulkanSync.cpp). When that happens,
-        // this frame's resources (backbufferView, and anything the
-        // submission touched) cannot safely be reclaimed or presented,
-        // and continuing to run risks cascading into further, harder to
-        // diagnose failures. Exiting immediately, without running the
-        // rest of this iteration or the normal teardown path below,
-        // keeps that failure a single clear log line instead of an
-        // unresponsive window or a crash during device destruction.
+        // WaitForFence can time out (backend-defined bound, not infinite)
+        // instead of observing the GPU submission actually finish -- e.g.
+        // a wedged driver/validation-layer thread rather than a real GPU
+        // hang (see VulkanSync.cpp). When that happens, this frame's
+        // resources cannot safely be reclaimed or presented, and
+        // continuing to run risks cascading into further, harder to
+        // diagnose failures. Exiting immediately keeps that failure a
+        // single clear log line instead of an unresponsive window or a
+        // crash during device destruction.
         if (!Fluxion_RHI_WaitForFence(frameFences[frameIndex]))
         {
-            FLUXION_LOG_ERROR("VulkanTriangleDemo", "GPU submission did not complete in time -- exiting rather than risk using unfinished GPU resources.");
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "GPU submission did not complete in time -- exiting rather than risk using unfinished GPU resources.");
             std::exit(1);
         }
         Fluxion_RHI_ResetFence(frameFences[frameIndex]); // ready for this slot's next use, FLUXION_DEMO_FRAMES_IN_FLIGHT frames from now
         Fluxion_RHI_Swapchain_Present(swapchain, imageIndex, noSemaphore);
 
-        // Safe to actually reclaim the retired backbuffer view right
+        // Safe to actually reclaim this frame's transient objects right
         // here, since the WaitForFence above already confirmed the GPU
         // is done with this frame's work.
         Fluxion_RHI_Device_CollectGarbage(device);
+        Fluxion_RenderView_Destroy(frameView);
+        Fluxion_RenderTarget_Destroy(frameTarget);
         Fluxion_RHI_DestroyTextureView(backbufferView);
+        Fluxion_RenderGraph_Destroy(graph);
 
         frameIndex = (frameIndex + 1) % FLUXION_DEMO_FRAMES_IN_FLIGHT;
     }
 
-    for (u32 i = 0; i < FLUXION_DEMO_FRAMES_IN_FLIGHT; ++i)
-    {
-        if (!Fluxion_RHI_WaitForFence(frameFences[i]))
-        {
-            FLUXION_LOG_ERROR("VulkanTriangleDemo", "GPU submission did not complete in time during shutdown -- exiting rather than risk destroying resources still in use.");
-            std::exit(1);
-        }
-    }
-
-    FLUXION_LOG_INFO("VulkanTriangleDemo", "Closing.");
+    // No extra fence-drain loop needed here: this demo's frame loop is
+    // already fully synchronous (every iteration's WaitForFence above
+    // blocks until that iteration's own submission finishes before moving
+    // on), so nothing is ever left in flight by the time the loop exits --
+    // each frameFences[i] is already back in its unsignaled, no-pending-
+    // work state, and waiting on it again here would just block until the
+    // bounded timeout for work that was never submitted.
+    FLUXION_LOG_INFO("ForwardRendererDemo", "Closing.");
 
     for (u32 i = 0; i < FLUXION_DEMO_FRAMES_IN_FLIGHT; ++i)
     {
         Fluxion_RHI_DestroyFence(frameFences[i]);
         Fluxion_RHI_DestroyCommandList(commandLists[i]);
     }
-    Fluxion_RHI_DestroyPipeline(computePipeline);
-    Fluxion_RHI_DestroyPipeline(pipeline);
-    Fluxion_RHI_DestroyShader(computeShader);
-    Fluxion_RHI_DestroyShader(vertexShader);
-    Fluxion_RHI_DestroyShader(fragmentShader);
-    Fluxion_RHI_DestroyBindGroup(objectBindGroup);
-    Fluxion_RHI_DestroyBindGroup(materialBindGroup);
-    Fluxion_RHI_DestroyBindGroup(frameBindGroup);
-    Fluxion_RHI_DestroyBindGroupLayout(objectLayout);
-    Fluxion_RHI_DestroyBindGroupLayout(materialLayout);
-    Fluxion_RHI_DestroyBindGroupLayout(frameLayout);
+    Fluxion_Renderer_Destroy(renderer);
+    Fluxion_RenderPipeline_Destroy(cubePipeline);
+    Fluxion_MeshBuffer_Destroy(cubeMesh);
+    Fluxion_Material_Destroy(cubeMaterial);
+    Fluxion_ShaderProgram_Destroy(cubeProgram);
+    Fluxion_RenderGraphPassRegistry_Shutdown();
+
     Fluxion_RHI_DestroySampler(albedoSampler);
     Fluxion_RHI_DestroyTextureView(albedoView);
     Fluxion_RHI_DestroyTexture(albedoTexture);
     Fluxion_RHI_DestroyTextureView(depthView);
     Fluxion_RHI_DestroyTexture(depthTexture);
-    Fluxion_RHI_DestroyBuffer(brightnessBuffer);
-    Fluxion_RHI_DestroyBuffer(mvpBuffer);
-    Fluxion_RHI_DestroyBuffer(vertexBuffer);
-    Fluxion_RHI_DestroyBuffer(indexBuffer);
     Fluxion_RHI_Device_CollectGarbage(device);
     Fluxion_RHI_DestroySwapchain(swapchain);
     Fluxion_RHI_DestroyDevice(device);

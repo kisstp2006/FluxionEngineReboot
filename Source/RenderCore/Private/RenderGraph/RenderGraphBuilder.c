@@ -152,6 +152,16 @@ FluxionRenderGraphTextureHandle Fluxion_RenderGraphBuilder_WriteTexture(FluxionR
     return Fluxion_RenderGraphBuilder_TextureUsage(builder, resourceName, FLUXION_RENDER_GRAPH_USAGE_WRITE);
 }
 
+FluxionRenderGraphTextureHandle Fluxion_RenderGraphBuilder_WriteColorTarget(FluxionRenderGraphBuilder* builder, const char* resourceName)
+{
+    return Fluxion_RenderGraphBuilder_TextureUsage(builder, resourceName, FLUXION_RENDER_GRAPH_USAGE_WRITE_COLOR_TARGET);
+}
+
+FluxionRenderGraphTextureHandle Fluxion_RenderGraphBuilder_WriteDepthTarget(FluxionRenderGraphBuilder* builder, const char* resourceName)
+{
+    return Fluxion_RenderGraphBuilder_TextureUsage(builder, resourceName, FLUXION_RENDER_GRAPH_USAGE_WRITE_DEPTH_TARGET);
+}
+
 FluxionRenderGraphBufferHandle Fluxion_RenderGraphBuilder_ReadBuffer(FluxionRenderGraphBuilder* builder, const char* resourceName)
 {
     return Fluxion_RenderGraphBuilder_BufferUsage(builder, resourceName, FLUXION_RENDER_GRAPH_USAGE_READ);

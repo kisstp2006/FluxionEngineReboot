@@ -1,0 +1,156 @@
+#include <Fluxion/RenderCore/Renderer/MeshBuffer.h>
+
+#include "RendererInternal.h"
+
+#include <Fluxion/Foundation/Assert.h>
+
+#include <string.h>
+
+typedef struct FluxionMeshBufferRecord
+{
+    bool alive;
+    u32 generation;
+
+    FluxionRHIBufferHandle vertexBuffer;
+    FluxionRHIBufferHandle indexBuffer; // invalid if this mesh has no index data
+    u32 vertexCount;
+    u32 indexCount;
+    bool use16BitIndices;
+    FluxionRHIVertexLayout vertexLayout;
+    FluxionAABB bounds;
+} FluxionMeshBufferRecord;
+
+static FluxionMeshBufferRecord s_meshBuffers[FLUXION_RENDERER_MAX_MESH_BUFFERS];
+
+static FluxionMeshBufferRecord* Fluxion_MeshBufferInternal_Resolve(FluxionMeshBufferHandle handle)
+{
+    if (handle.index >= FLUXION_RENDERER_MAX_MESH_BUFFERS) return NULL;
+    FluxionMeshBufferRecord* record = &s_meshBuffers[handle.index];
+    if (!record->alive || record->generation != handle.generation) return NULL;
+    return record;
+}
+
+FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device, FluxionRHIQueueHandle queue, const FluxionMeshBufferDesc* desc)
+{
+    FluxionMeshBufferHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    FLUXION_ASSERT(desc != NULL && desc->vertexData != NULL && desc->vertexDataSize > 0);
+
+    u32 index = FLUXION_RENDERER_MAX_MESH_BUFFERS;
+    for (u32 i = 0; i < FLUXION_RENDERER_MAX_MESH_BUFFERS; ++i)
+    {
+        if (!s_meshBuffers[i].alive) { index = i; break; }
+    }
+    if (index == FLUXION_RENDERER_MAX_MESH_BUFFERS) return invalid;
+
+    bool hasIndices = desc->indexData != NULL && desc->indexDataSize > 0;
+    usize stagingSize = desc->vertexDataSize + (hasIndices ? desc->indexDataSize : 0);
+
+    FluxionRHIBufferDesc stagingDesc;
+    stagingDesc.size = stagingSize;
+    stagingDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_TRANSFER_SRC;
+    stagingDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
+    stagingDesc.debugName = "Fluxion.MeshBuffer.Staging";
+    FluxionRHIBufferHandle stagingBuffer = Fluxion_RHI_CreateBuffer(device, &stagingDesc);
+
+    u8* mapped = (u8*)Fluxion_RHI_MapBuffer(stagingBuffer);
+    memcpy(mapped, desc->vertexData, desc->vertexDataSize);
+    if (hasIndices) memcpy(mapped + desc->vertexDataSize, desc->indexData, desc->indexDataSize);
+    Fluxion_RHI_UnmapBuffer(stagingBuffer);
+
+    FluxionRHIBufferDesc vertexBufferDesc;
+    vertexBufferDesc.size = desc->vertexDataSize;
+    vertexBufferDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_VERTEX_BUFFER | FLUXION_RHI_BUFFER_USAGE_TRANSFER_DST;
+    vertexBufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
+    vertexBufferDesc.debugName = desc->debugName;
+    FluxionRHIBufferHandle vertexBuffer = Fluxion_RHI_CreateBuffer(device, &vertexBufferDesc);
+
+    FluxionRHIBufferHandle indexBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    if (hasIndices)
+    {
+        FluxionRHIBufferDesc indexBufferDesc;
+        indexBufferDesc.size = desc->indexDataSize;
+        indexBufferDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_INDEX_BUFFER | FLUXION_RHI_BUFFER_USAGE_TRANSFER_DST;
+        indexBufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
+        indexBufferDesc.debugName = desc->debugName;
+        indexBuffer = Fluxion_RHI_CreateBuffer(device, &indexBufferDesc);
+    }
+
+    FluxionRHICommandListHandle uploadCommandList = Fluxion_RHI_CreateCommandList(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
+    Fluxion_RHI_CommandList_Begin(uploadCommandList);
+    Fluxion_RHI_CommandList_CopyBuffer(uploadCommandList, stagingBuffer, 0, vertexBuffer, 0, desc->vertexDataSize);
+    if (hasIndices) Fluxion_RHI_CommandList_CopyBuffer(uploadCommandList, stagingBuffer, desc->vertexDataSize, indexBuffer, 0, desc->indexDataSize);
+
+    FluxionRHITextureHandle noTexture = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    FluxionRHIBarrier postUploadBarriers[2];
+    u32 barrierCount = 0;
+    postUploadBarriers[barrierCount].texture = noTexture;
+    postUploadBarriers[barrierCount].buffer = vertexBuffer;
+    postUploadBarriers[barrierCount].before = FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION;
+    postUploadBarriers[barrierCount].after = FLUXION_RHI_RESOURCE_STATE_VERTEX_BUFFER;
+    ++barrierCount;
+    if (hasIndices)
+    {
+        postUploadBarriers[barrierCount].texture = noTexture;
+        postUploadBarriers[barrierCount].buffer = indexBuffer;
+        postUploadBarriers[barrierCount].before = FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION;
+        postUploadBarriers[barrierCount].after = FLUXION_RHI_RESOURCE_STATE_INDEX_BUFFER;
+        ++barrierCount;
+    }
+    Fluxion_RHI_CommandList_Barrier(uploadCommandList, postUploadBarriers, barrierCount);
+    Fluxion_RHI_CommandList_End(uploadCommandList);
+
+    FluxionRHIFenceHandle uploadFence = Fluxion_RHI_CreateFence(device, false);
+    Fluxion_RHI_Queue_Submit(queue, &uploadCommandList, 1, uploadFence);
+    Fluxion_RHI_WaitForFence(uploadFence);
+
+    Fluxion_RHI_DestroyFence(uploadFence);
+    Fluxion_RHI_DestroyCommandList(uploadCommandList);
+    Fluxion_RHI_DestroyBuffer(stagingBuffer);
+    Fluxion_RHI_Device_CollectGarbage(device);
+
+    FluxionMeshBufferRecord* record = &s_meshBuffers[index];
+    u32 generation = record->generation;
+    memset(record, 0, sizeof(*record));
+    record->alive = true;
+    record->generation = generation;
+    record->vertexBuffer = vertexBuffer;
+    record->indexBuffer = indexBuffer;
+    record->vertexCount = desc->vertexLayout.stride > 0 ? (u32)(desc->vertexDataSize / desc->vertexLayout.stride) : 0;
+    record->indexCount = hasIndices ? (u32)(desc->indexDataSize / (desc->use16BitIndices ? sizeof(u16) : sizeof(u32))) : 0;
+    record->use16BitIndices = desc->use16BitIndices;
+    record->vertexLayout = desc->vertexLayout;
+    record->bounds = desc->bounds;
+
+    FluxionMeshBufferHandle handle = { index, generation };
+    return handle;
+}
+
+void Fluxion_MeshBuffer_Destroy(FluxionMeshBufferHandle mesh)
+{
+    FluxionMeshBufferRecord* record = Fluxion_MeshBufferInternal_Resolve(mesh);
+    if (record == NULL)
+    {
+        FLUXION_ASSERT_MSG(false, "Fluxion_MeshBuffer_Destroy called with an invalid or already-destroyed handle");
+        return;
+    }
+
+    Fluxion_RHI_DestroyBuffer(record->vertexBuffer);
+    if (FLUXION_HANDLE_IS_VALID(record->indexBuffer)) Fluxion_RHI_DestroyBuffer(record->indexBuffer);
+
+    record->alive = false;
+    ++record->generation;
+}
+
+bool FluxionRendererInternal_MeshBuffer_Get(FluxionMeshBufferHandle mesh, FluxionRHIBufferHandle* outVertexBuffer, FluxionRHIBufferHandle* outIndexBuffer, u32* outVertexCount, u32* outIndexCount, bool* outUse16BitIndices, FluxionRHIVertexLayout* outVertexLayout)
+{
+    FluxionMeshBufferRecord* record = Fluxion_MeshBufferInternal_Resolve(mesh);
+    if (record == NULL) return false;
+
+    if (outVertexBuffer != NULL) *outVertexBuffer = record->vertexBuffer;
+    if (outIndexBuffer != NULL) *outIndexBuffer = record->indexBuffer;
+    if (outVertexCount != NULL) *outVertexCount = record->vertexCount;
+    if (outIndexCount != NULL) *outIndexCount = record->indexCount;
+    if (outUse16BitIndices != NULL) *outUse16BitIndices = record->use16BitIndices;
+    if (outVertexLayout != NULL) *outVertexLayout = record->vertexLayout;
+    return true;
+}

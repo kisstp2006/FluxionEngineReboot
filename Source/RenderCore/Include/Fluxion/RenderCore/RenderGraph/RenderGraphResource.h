@@ -23,6 +23,14 @@ typedef enum FluxionRenderGraphResourceUsage
     FLUXION_RENDER_GRAPH_USAGE_WRITE,
     FLUXION_RENDER_GRAPH_USAGE_CREATE,
     FLUXION_RENDER_GRAPH_USAGE_IMPORT,
+    // Texture-only refinements of WRITE, for a pass that writes a texture
+    // by binding it as a color/depth attachment (Fluxion_RHI_RESOURCE_STATE_
+    // RENDER_TARGET/DEPTH_WRITE) rather than as a compute/UAV storage image
+    // (FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, what plain WRITE still maps
+    // to) -- the two need different VkImageLayouts/D3D12 resource states,
+    // and a generic WRITE has no way to say which one a pass meant.
+    FLUXION_RENDER_GRAPH_USAGE_WRITE_COLOR_TARGET,
+    FLUXION_RENDER_GRAPH_USAGE_WRITE_DEPTH_TARGET,
 } FluxionRenderGraphResourceUsage;
 
 // Thin wrappers around the RHI descs -- kept distinct from

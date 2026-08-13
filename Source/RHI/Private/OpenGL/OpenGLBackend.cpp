@@ -281,6 +281,12 @@ static void Fluxion_RHIOpenGL_CollectGarbage(FluxionRHIDeviceHandle device)
     FLUXION_UNUSED(device);
 }
 
+static FluxionRHIBackendType Fluxion_RHIOpenGL_GetDeviceBackendType(FluxionRHIDeviceHandle device)
+{
+    FLUXION_UNUSED(device);
+    return FLUXION_RHI_BACKEND_OPENGL;
+}
+
 static FluxionRHIQueueHandle Fluxion_RHIOpenGL_GetQueue(FluxionRHIDeviceHandle device, FluxionRHIQueueType type)
 {
     FluxionRHIQueueHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -346,6 +352,7 @@ static const FluxionRHIBackendVTable s_openglVTable = {
     Fluxion_RHIOpenGL_CreateDevice,
     Fluxion_RHIOpenGL_DestroyDevice,
     Fluxion_RHIOpenGL_CollectGarbage,
+    Fluxion_RHIOpenGL_GetDeviceBackendType,
     Fluxion_RHIOpenGL_GetQueue,
 
     Fluxion_RHIOpenGL_CreateCommandList,

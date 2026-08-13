@@ -347,6 +347,7 @@ void Fluxion_RHIVulkan_FinalizeBindGroupSlot(u32 index)
     if (bindGroup->set != VK_NULL_HANDLE && deviceState != nullptr && deviceState->bindGroupPool != VK_NULL_HANDLE)
         vkFreeDescriptorSets(deviceState->device, deviceState->bindGroupPool, 1, &bindGroup->set);
     *bindGroup = FluxionRHIVulkanBindGroup{};
+    Fluxion_RHIVulkan_PoolFinalize(s_bindGroupSlots, index);
 }
 
 void Fluxion_RHIVulkan_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup)
@@ -356,7 +357,8 @@ void Fluxion_RHIVulkan_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI Vulkan backend: DestroyBindGroup called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHIVulkan_PoolFree(s_bindGroupSlots, FLUXION_RHI_VULKAN_MAX_BIND_GROUPS, bindGroup.index, bindGroup.generation);
+    // See VulkanMemory.cpp's DestroyBuffer comment -- PoolRetire, not PoolFree.
+    Fluxion_RHIVulkan_PoolRetire(s_bindGroupSlots, FLUXION_RHI_VULKAN_MAX_BIND_GROUPS, bindGroup.index, bindGroup.generation);
     FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_SoleDevice();
     if (deviceState != nullptr)
         Fluxion_RHIVulkan_Retire(deviceState, FluxionRHIVulkanRetiredEntry::Kind::BindGroup, bindGroup.index, deviceState->gcCounter);

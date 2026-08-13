@@ -28,8 +28,8 @@ FluxionRHIShaderHandle Fluxion_RHID3D12_CreateShader(FluxionRHIDeviceHandle devi
     u32 index, generation;
     if (!Fluxion_RHID3D12_PoolAllocate(s_shaderSlots, FLUXION_RHI_D3D12_MAX_SHADERS, &index, &generation)) return invalid;
 
-    // desc->bytecode is already compiled DXIL (Samples/VulkanTriangleDemo's
-    // CompileShaderStage routes it through ShaderCompiler::CompileToDxil
+    // desc->bytecode is already compiled DXIL (e.g. ShaderProgram.cpp's
+    // CompileStage routes it through ShaderCompiler::CompileToDxil
     // for this backend) -- copied verbatim, same as the Vulkan backend
     // copies already-compiled SPIR-V into a VkShaderModule.
     FluxionRHID3D12Shader* shader = &s_shaders[index];
@@ -337,7 +337,16 @@ FluxionRHIPipelineHandle Fluxion_RHID3D12_CreateGraphicsPipeline(FluxionRHIDevic
 
     psoDesc.RasterizerState.FillMode = desc->rasterState.wireframe ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
     psoDesc.RasterizerState.CullMode = Fluxion_RHID3D12_MapCullMode(desc->rasterState.cullMode);
-    psoDesc.RasterizerState.FrontCounterClockwise = desc->rasterState.frontFaceCounterClockwise ? TRUE : FALSE;
+    // Inverted, not a direct passthrough: Vulkan's clip space has +Y
+    // pointing down (by spec, uncompensated anywhere in this engine's
+    // Vulkan backend -- no negative-viewport-height trick), while D3D12's
+    // (like OpenGL's) has +Y pointing up. The same object-space winding
+    // and the same portable frontFaceCounterClockwise value therefore
+    // project to visually opposite screen-space winding between the two
+    // -- Vulkan is treated as the reference here, so D3D12 (and
+    // OpenGLPipeline.cpp's glFrontFace, for the same reason) compensate
+    // by flipping which native winding counts as "front".
+    psoDesc.RasterizerState.FrontCounterClockwise = desc->rasterState.frontFaceCounterClockwise ? FALSE : TRUE;
     psoDesc.RasterizerState.DepthClipEnable = TRUE;
 
     psoDesc.DepthStencilState.DepthEnable = desc->depthState.testEnable ? TRUE : FALSE;

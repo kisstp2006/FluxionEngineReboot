@@ -18,16 +18,18 @@ extern "C"
 namespace
 {
 
-// v1 simplification: this graph only distinguishes READ/WRITE, not the
-// specific kind of write (render-target vs. compute-UAV vs. copy
-// destination) or read (sampled vs. vertex/index/constant buffer) a pass
-// actually performs -- so every WRITE maps to the same
-// FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE and every READ to
-// FLUXION_RHI_RESOURCE_STATE_SHADER_READ, regardless of what the pass is
-// really doing with the resource. A future revision that lets a pass
-// declare a more specific usage kind (e.g. WriteRenderTarget vs.
-// WriteStorage) can refine this mapping without changing the barrier-
-// generation algorithm itself.
+// v1 simplification: this graph mostly only distinguishes READ/WRITE, not
+// the specific kind of read (sampled vs. vertex/index/constant buffer) a
+// pass actually performs, so every READ still maps to the same
+// FLUXION_RHI_RESOURCE_STATE_SHADER_READ regardless of what the pass is
+// really doing with the resource -- WRITE does get two texture-only
+// refinements (WRITE_COLOR_TARGET/WRITE_DEPTH_TARGET, see
+// RenderGraphResource.h) because a plain WRITE's SHADER_WRITE state
+// produces the wrong VkImageLayout/D3D12 state for a pass (e.g.
+// "ForwardOpaquePass") that actually binds the texture as a color/depth
+// attachment rather than a compute/UAV storage image. A future revision
+// that lets a pass declare even more specific usage kinds can keep
+// refining this without changing the barrier-generation algorithm itself.
 FluxionRHIResourceState MapUsageToState(FluxionRenderGraphResourceUsage usage)
 {
     switch (usage)
@@ -35,6 +37,8 @@ FluxionRHIResourceState MapUsageToState(FluxionRenderGraphResourceUsage usage)
         case FLUXION_RENDER_GRAPH_USAGE_CREATE: return FLUXION_RHI_RESOURCE_STATE_UNDEFINED;
         case FLUXION_RENDER_GRAPH_USAGE_READ: return FLUXION_RHI_RESOURCE_STATE_SHADER_READ;
         case FLUXION_RENDER_GRAPH_USAGE_WRITE: return FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE;
+        case FLUXION_RENDER_GRAPH_USAGE_WRITE_COLOR_TARGET: return FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET;
+        case FLUXION_RENDER_GRAPH_USAGE_WRITE_DEPTH_TARGET: return FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE;
         case FLUXION_RENDER_GRAPH_USAGE_IMPORT: return FLUXION_RHI_RESOURCE_STATE_UNDEFINED;
     }
     return FLUXION_RHI_RESOURCE_STATE_UNDEFINED;
@@ -63,7 +67,8 @@ std::vector<UsageRef> GatherUsages(const FluxionRenderGraph* graph, FluxionRende
 
 bool IsProducerUsage(FluxionRenderGraphResourceUsage usage)
 {
-    return usage == FLUXION_RENDER_GRAPH_USAGE_CREATE || usage == FLUXION_RENDER_GRAPH_USAGE_WRITE;
+    return usage == FLUXION_RENDER_GRAPH_USAGE_CREATE || usage == FLUXION_RENDER_GRAPH_USAGE_WRITE ||
+        usage == FLUXION_RENDER_GRAPH_USAGE_WRITE_COLOR_TARGET || usage == FLUXION_RENDER_GRAPH_USAGE_WRITE_DEPTH_TARGET;
 }
 
 // Deliberately NOT "READ || WRITE" -- a WRITE is already a producer (see
@@ -329,7 +334,7 @@ extern "C" bool Fluxion_RenderGraphInternal_Compile(FluxionRenderGraph* graph)
             if (!imported) return;
             for (const UsageRef& usageRef : GatherUsages(graph, kind, resourceIndex))
             {
-                if (usageRef.usage == FLUXION_RENDER_GRAPH_USAGE_WRITE && !reachable[usageRef.nodeIndex])
+                if (IsProducerUsage(usageRef.usage) && !reachable[usageRef.nodeIndex])
                 {
                     reachable[usageRef.nodeIndex] = true;
                     stack.push_back(usageRef.nodeIndex);

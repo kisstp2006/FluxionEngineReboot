@@ -277,7 +277,12 @@ void Fluxion_RHIOpenGL_ApplyPipelineState(FluxionRHIOpenGLDevice* deviceState, c
     }
     if (!cache->valid || cache->frontFaceCCW != raster->frontFaceCounterClockwise)
     {
-        glFrontFace(raster->frontFaceCounterClockwise ? GL_CCW : GL_CW);
+        // Inverted, not a direct passthrough -- see the matching comment
+        // in D3D12Pipeline.cpp: Vulkan's clip space has +Y down
+        // (uncompensated), OpenGL's (like D3D12's) has +Y up, so the same
+        // portable frontFaceCounterClockwise value needs its native
+        // winding flipped here to visually match Vulkan's rendering.
+        glFrontFace(raster->frontFaceCounterClockwise ? GL_CW : GL_CCW);
         cache->frontFaceCCW = raster->frontFaceCounterClockwise;
     }
     if (!cache->valid || cache->wireframe != raster->wireframe)

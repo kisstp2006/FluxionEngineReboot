@@ -302,6 +302,12 @@ static void Fluxion_RHI_Null_CollectGarbage(FluxionRHIDeviceHandle device)
     FLUXION_UNUSED(device);
 }
 
+static FluxionRHIBackendType Fluxion_RHI_Null_GetDeviceBackendType(FluxionRHIDeviceHandle device)
+{
+    FLUXION_UNUSED(device);
+    return FLUXION_RHI_BACKEND_NULL;
+}
+
 static FluxionRHIQueueHandle Fluxion_RHI_Null_GetQueue(FluxionRHIDeviceHandle device, FluxionRHIQueueType type)
 {
     FluxionRHIQueueHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -832,6 +838,7 @@ static const FluxionRHIBackendVTable s_nullVTable = {
     Fluxion_RHI_Null_CreateDevice,
     Fluxion_RHI_Null_DestroyDevice,
     Fluxion_RHI_Null_CollectGarbage,
+    Fluxion_RHI_Null_GetDeviceBackendType,
     Fluxion_RHI_Null_GetQueue,
 
     Fluxion_RHI_Null_CreateCommandList,

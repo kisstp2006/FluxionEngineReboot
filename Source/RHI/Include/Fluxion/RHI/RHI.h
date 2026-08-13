@@ -61,6 +61,11 @@ void Fluxion_RHI_DestroyDevice(FluxionRHIDeviceHandle device);
 // no-op.
 void Fluxion_RHI_Device_CollectGarbage(FluxionRHIDeviceHandle device);
 
+// Returns which backend the device belongs to. Useful for callers that
+// need to branch shader-compilation or resource-format choices per
+// backend (e.g. ShaderProgram compiling to GLSL/DXIL/SPIR-V).
+FluxionRHIBackendType Fluxion_RHI_GetDeviceBackendType(FluxionRHIDeviceHandle device);
+
 typedef enum FluxionRHIQueueType
 {
     FLUXION_RHI_QUEUE_TYPE_GRAPHICS = 0,

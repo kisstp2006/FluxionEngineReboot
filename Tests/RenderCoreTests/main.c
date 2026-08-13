@@ -6,6 +6,11 @@ void Test_PassRegistry_Run(TestContext* ctx);
 void Test_GraphCompile_Run(TestContext* ctx);
 void Test_JsonLoader_Run(TestContext* ctx);
 void Test_DumpDot_Run(TestContext* ctx);
+void Test_ShaderProgram_Run(TestContext* ctx);
+void Test_Material_Run(TestContext* ctx);
+void Test_MeshBuffer_Run(TestContext* ctx);
+void Test_RenderView_Run(TestContext* ctx);
+void Test_RendererFrame_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -17,6 +22,11 @@ int main(void)
     Test_GraphCompile_Run(&ctx);
     Test_JsonLoader_Run(&ctx);
     Test_DumpDot_Run(&ctx);
+    Test_ShaderProgram_Run(&ctx);
+    Test_Material_Run(&ctx);
+    Test_MeshBuffer_Run(&ctx);
+    Test_RenderView_Run(&ctx);
+    Test_RendererFrame_Run(&ctx);
 
     if (ctx.failures == 0)
     {

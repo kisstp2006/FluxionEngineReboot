@@ -114,6 +114,7 @@ static void Fluxion_RHIVulkan_FinalizeBuffer(u32 index)
         vmaDestroyBuffer(Fluxion_RHIVulkan_GetOwningAllocator(), buffer->buffer, buffer->allocation);
     }
     *buffer = FluxionRHIVulkanBuffer{};
+    Fluxion_RHIVulkan_PoolFinalize(s_bufferSlots, index);
 }
 
 void Fluxion_RHIVulkan_DestroyBuffer(FluxionRHIBufferHandle buffer)
@@ -123,7 +124,12 @@ void Fluxion_RHIVulkan_DestroyBuffer(FluxionRHIBufferHandle buffer)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI Vulkan backend: DestroyBuffer called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHIVulkan_PoolFree(s_bufferSlots, FLUXION_RHI_VULKAN_MAX_BUFFERS, buffer.index, buffer.generation);
+    // PoolRetire (not PoolFree): the real vmaDestroyBuffer is deferred to
+    // FinalizeBuffer, so this slot must stay out of PoolAllocate's reuse
+    // pool until that actually runs, or a same-frame Create could reuse
+    // this exact index before the old buffer is really freed (see
+    // FluxionRHIVulkanSlot::pendingFinalize's comment in VulkanCommon.h).
+    Fluxion_RHIVulkan_PoolRetire(s_bufferSlots, FLUXION_RHI_VULKAN_MAX_BUFFERS, buffer.index, buffer.generation);
     extern FluxionRHIVulkanDevice* Fluxion_RHIVulkan_SoleDevice(void);
     FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_SoleDevice();
     if (deviceState != nullptr)
@@ -238,6 +244,7 @@ static void Fluxion_RHIVulkan_FinalizeTexture(u32 index)
         vmaDestroyImage(Fluxion_RHIVulkan_GetOwningAllocator(), texture->image, texture->allocation);
     }
     *texture = FluxionRHIVulkanTexture{};
+    Fluxion_RHIVulkan_PoolFinalize(s_textureSlots, index);
 }
 
 void Fluxion_RHIVulkan_DestroyTexture(FluxionRHITextureHandle texture)
@@ -247,7 +254,8 @@ void Fluxion_RHIVulkan_DestroyTexture(FluxionRHITextureHandle texture)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI Vulkan backend: DestroyTexture called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHIVulkan_PoolFree(s_textureSlots, FLUXION_RHI_VULKAN_MAX_TEXTURES, texture.index, texture.generation);
+    // See DestroyBuffer's comment -- PoolRetire, not PoolFree.
+    Fluxion_RHIVulkan_PoolRetire(s_textureSlots, FLUXION_RHI_VULKAN_MAX_TEXTURES, texture.index, texture.generation);
     extern FluxionRHIVulkanDevice* Fluxion_RHIVulkan_SoleDevice(void);
     FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_SoleDevice();
     if (deviceState != nullptr)
@@ -311,6 +319,7 @@ static void Fluxion_RHIVulkan_FinalizeTextureView(u32 index)
         vkDestroyImageView(Fluxion_RHIVulkan_GetOwningDevice(), view->view, nullptr);
     }
     *view = FluxionRHIVulkanTextureView{};
+    Fluxion_RHIVulkan_PoolFinalize(s_viewSlots, index);
 }
 
 void Fluxion_RHIVulkan_DestroyTextureView(FluxionRHITextureViewHandle view)
@@ -320,7 +329,8 @@ void Fluxion_RHIVulkan_DestroyTextureView(FluxionRHITextureViewHandle view)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI Vulkan backend: DestroyTextureView called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHIVulkan_PoolFree(s_viewSlots, FLUXION_RHI_VULKAN_MAX_TEXTURE_VIEWS, view.index, view.generation);
+    // See DestroyBuffer's comment -- PoolRetire, not PoolFree.
+    Fluxion_RHIVulkan_PoolRetire(s_viewSlots, FLUXION_RHI_VULKAN_MAX_TEXTURE_VIEWS, view.index, view.generation);
     extern FluxionRHIVulkanDevice* Fluxion_RHIVulkan_SoleDevice(void);
     FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_SoleDevice();
     if (deviceState != nullptr)
@@ -390,6 +400,7 @@ static void Fluxion_RHIVulkan_FinalizeSampler(u32 index)
         vkDestroySampler(Fluxion_RHIVulkan_GetOwningDevice(), s_samplers[index], nullptr);
         s_samplers[index] = VK_NULL_HANDLE;
     }
+    Fluxion_RHIVulkan_PoolFinalize(s_samplerSlots, index);
 }
 
 void Fluxion_RHIVulkan_DestroySampler(FluxionRHISamplerHandle sampler)
@@ -399,7 +410,8 @@ void Fluxion_RHIVulkan_DestroySampler(FluxionRHISamplerHandle sampler)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI Vulkan backend: DestroySampler called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHIVulkan_PoolFree(s_samplerSlots, FLUXION_RHI_VULKAN_MAX_SAMPLERS, sampler.index, sampler.generation);
+    // See DestroyBuffer's comment -- PoolRetire, not PoolFree.
+    Fluxion_RHIVulkan_PoolRetire(s_samplerSlots, FLUXION_RHI_VULKAN_MAX_SAMPLERS, sampler.index, sampler.generation);
     extern FluxionRHIVulkanDevice* Fluxion_RHIVulkan_SoleDevice(void);
     FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_SoleDevice();
     if (deviceState != nullptr)

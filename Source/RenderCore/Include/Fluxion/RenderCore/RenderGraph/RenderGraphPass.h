@@ -62,6 +62,15 @@ FluxionRenderGraphBufferHandle Fluxion_RenderGraphBuilder_CreateBuffer(FluxionRe
 FluxionRenderGraphTextureHandle Fluxion_RenderGraphBuilder_ReadTexture(FluxionRenderGraphBuilder* builder, const char* resourceName);
 FluxionRenderGraphTextureHandle Fluxion_RenderGraphBuilder_WriteTexture(FluxionRenderGraphBuilder* builder, const char* resourceName);
 
+// Same as WriteTexture, but declares the more specific "written as a
+// color/depth attachment" usage (FLUXION_RENDER_GRAPH_USAGE_WRITE_COLOR_TARGET/
+// WRITE_DEPTH_TARGET) so the compiler generates a RENDER_TARGET/DEPTH_WRITE
+// barrier instead of plain WRITE's SHADER_WRITE -- use these for a pass
+// that binds the texture via FluxionRHIRenderingDesc, not
+// Fluxion_RHI_CommandList_Dispatch's storage-image bindings.
+FluxionRenderGraphTextureHandle Fluxion_RenderGraphBuilder_WriteColorTarget(FluxionRenderGraphBuilder* builder, const char* resourceName);
+FluxionRenderGraphTextureHandle Fluxion_RenderGraphBuilder_WriteDepthTarget(FluxionRenderGraphBuilder* builder, const char* resourceName);
+
 FluxionRenderGraphBufferHandle Fluxion_RenderGraphBuilder_ReadBuffer(FluxionRenderGraphBuilder* builder, const char* resourceName);
 FluxionRenderGraphBufferHandle Fluxion_RenderGraphBuilder_WriteBuffer(FluxionRenderGraphBuilder* builder, const char* resourceName);
 

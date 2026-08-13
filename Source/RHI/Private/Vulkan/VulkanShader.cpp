@@ -76,6 +76,7 @@ void Fluxion_RHIVulkan_FinalizeShaderSlot(u32 index)
         vkDestroyShaderModule(Fluxion_RHIVulkan_GetOwningDevice(), shader->module, nullptr);
     }
     *shader = FluxionRHIVulkanShader{};
+    Fluxion_RHIVulkan_PoolFinalize(s_shaderSlots, index);
 }
 
 void Fluxion_RHIVulkan_DestroyShader(FluxionRHIShaderHandle shader)
@@ -85,7 +86,8 @@ void Fluxion_RHIVulkan_DestroyShader(FluxionRHIShaderHandle shader)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI Vulkan backend: DestroyShader called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHIVulkan_PoolFree(s_shaderSlots, FLUXION_RHI_VULKAN_MAX_SHADERS, shader.index, shader.generation);
+    // See VulkanMemory.cpp's DestroyBuffer comment -- PoolRetire, not PoolFree.
+    Fluxion_RHIVulkan_PoolRetire(s_shaderSlots, FLUXION_RHI_VULKAN_MAX_SHADERS, shader.index, shader.generation);
     FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_SoleDevice();
     if (deviceState != nullptr)
         Fluxion_RHIVulkan_Retire(deviceState, FluxionRHIVulkanRetiredEntry::Kind::Shader, shader.index, deviceState->gcCounter);

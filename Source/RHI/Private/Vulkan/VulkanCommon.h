@@ -50,11 +50,37 @@ struct FluxionRHIVulkanSlot
 {
     bool alive;
     u32 generation;
+    // Set by PoolRetire (not plain PoolFree) for any kind whose real
+    // Vulkan/VMA free is deferred through the retirement queue below --
+    // keeps PoolAllocate from handing this same index back out to a new
+    // resource while the old one's VkBuffer/VmaAllocation etc. is still
+    // sitting in FluxionRHIVulkanDevice::retired, waiting for
+    // Fluxion_RHIVulkan_FinalizeRetired to actually free it. Without
+    // this, a slot index destroyed and immediately reused (e.g. a
+    // FluxionRenderViewHandle's frame constant buffer, recreated every
+    // frame) lets the new resource's data overwrite s_buffers[index]
+    // before the old resource's deferred free runs -- the deferred free
+    // then destroys the NEW resource instead, leaking the real old one
+    // and leaving a dangling VkBuffer live under the caller's nose.
+    bool pendingFinalize;
 };
 
 bool Fluxion_RHIVulkan_PoolAllocate(FluxionRHIVulkanSlot* slots, u32 capacity, u32* outIndex, u32* outGeneration);
 bool Fluxion_RHIVulkan_PoolIsValid(const FluxionRHIVulkanSlot* slots, u32 capacity, u32 index, u32 generation);
 void Fluxion_RHIVulkan_PoolFree(FluxionRHIVulkanSlot* slots, u32 capacity, u32 index, u32 generation);
+
+// Same handle-validity effect as PoolFree (alive=false, generation++, so
+// a stale handle correctly fails PoolIsValid right away), but the slot
+// stays out of PoolAllocate's reuse pool until a matching
+// Fluxion_RHIVulkan_PoolFinalize call -- use for any kind whose real
+// free is deferred via Fluxion_RHIVulkan_Retire/FinalizeRetired instead
+// of happening synchronously inside Destroy*.
+void Fluxion_RHIVulkan_PoolRetire(FluxionRHIVulkanSlot* slots, u32 capacity, u32 index, u32 generation);
+
+// Releases a slot previously marked by PoolRetire back to PoolAllocate --
+// call from the matching FinalizeXxx, after the real vmaDestroy*/
+// vkDestroy* call, never before.
+void Fluxion_RHIVulkan_PoolFinalize(FluxionRHIVulkanSlot* slots, u32 index);
 
 // --- Device (shared by every other Vulkan/*.cpp) ----------------------------
 //

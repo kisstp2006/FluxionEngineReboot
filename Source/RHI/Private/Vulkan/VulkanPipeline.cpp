@@ -306,6 +306,7 @@ void Fluxion_RHIVulkan_FinalizePipelineSlot(u32 index)
     if (pipeline->pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline->pipeline, nullptr);
     if (pipeline->layout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipeline->layout, nullptr);
     *pipeline = FluxionRHIVulkanPipeline{};
+    Fluxion_RHIVulkan_PoolFinalize(s_pipelineSlots, index);
 }
 
 void Fluxion_RHIVulkan_DestroyPipeline(FluxionRHIPipelineHandle pipeline)
@@ -315,7 +316,8 @@ void Fluxion_RHIVulkan_DestroyPipeline(FluxionRHIPipelineHandle pipeline)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI Vulkan backend: DestroyPipeline called with an invalid or already-destroyed handle");
         return;
     }
-    Fluxion_RHIVulkan_PoolFree(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, pipeline.index, pipeline.generation);
+    // See VulkanMemory.cpp's DestroyBuffer comment -- PoolRetire, not PoolFree.
+    Fluxion_RHIVulkan_PoolRetire(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, pipeline.index, pipeline.generation);
     FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_SoleDevice();
     if (deviceState != nullptr)
         Fluxion_RHIVulkan_Retire(deviceState, FluxionRHIVulkanRetiredEntry::Kind::Pipeline, pipeline.index, deviceState->gcCounter);
