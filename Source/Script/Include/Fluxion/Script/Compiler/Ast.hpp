@@ -37,6 +37,33 @@ struct TypeRef
     u32 classIndex = kNoClass;
 };
 
+// --- Annotations -------------------------------------------------------
+
+// One value written inside an annotation's brackets. A number, a piece of
+// text, or `typeof(Name)` -- which is written as a type and resolved into
+// the class it names, so nothing downstream carries the name in text.
+struct AttributeArgNode
+{
+    AttributeArgumentKind kind = AttributeArgumentKind::Int;
+
+    long long intValue = 0;
+    double floatValue = 0.0;
+    std::string stringValue;
+
+    TypeRef typeValue;
+    u32 classIndex = kNoClass; // filled in by semantic analysis for a `typeof`
+
+    SourceLocation location;
+};
+
+// `[Name]` or `[Name(args)]`, as written ahead of a class or a field.
+struct AttributeNode
+{
+    std::string name;
+    std::vector<AttributeArgNode> args;
+    SourceLocation location;
+};
+
 // --- Expressions -------------------------------------------------------
 
 enum class ExprKind
@@ -188,6 +215,13 @@ struct MemberExpr : Expr
 {
     ExprPtr base;
     std::string member;
+
+    // What was written between angle brackets after the member name. Only
+    // a call may carry any: naming a type at a call site is how the type
+    // itself becomes one of the call's arguments, and there is nothing
+    // else for it to mean on a member that is merely read.
+    std::vector<TypeRef> typeArgs;
+    SourceLocation typeArgLocation;
 
     MemberBinding binding = MemberBinding::Unresolved;
     u32 fieldSlot = 0;
@@ -444,6 +478,7 @@ struct FieldDecl : Decl
 {
     TypeRef type;
     std::string name;
+    std::vector<AttributeNode> attributes;
 
     // Slot within the object, counted across the whole inheritance chain
     // and filled in by semantic analysis.
@@ -490,6 +525,7 @@ struct ClassDecl : Decl
     std::string name;
     bool isStatic = false;
     bool isInterface = false;
+    std::vector<AttributeNode> attributes;
 
     // The names written between angle brackets after the declared name.
     // A declaration that has any is a pattern rather than a type: it is

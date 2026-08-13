@@ -101,6 +101,8 @@ ExprPtr CloneExpr(const Expr* source)
             auto clone = MakeExprClone<MemberExpr>(*source);
             clone->base = CloneExpr(node.base.get());
             clone->member = node.member;
+            clone->typeArgs = node.typeArgs;
+            clone->typeArgLocation = node.typeArgLocation;
             clone->binding = node.binding;
             clone->fieldSlot = node.fieldSlot;
             return clone;
@@ -276,6 +278,7 @@ std::unique_ptr<FieldDecl> CloneFieldDecl(const FieldDecl& source)
     clone->location = source.location;
     clone->type = source.type;
     clone->name = source.name;
+    clone->attributes = source.attributes;
     return clone;
 }
 
@@ -374,9 +377,12 @@ void SubstituteExpr(Expr* expr, const Substitution& substitution)
             SubstituteExpr(node.length.get(), substitution);
             break;
         }
-        case ExprKind::Member:
-            SubstituteExpr(static_cast<MemberExpr*>(expr)->base.get(), substitution);
+        case ExprKind::Member: {
+            auto& node = *static_cast<MemberExpr*>(expr);
+            SubstituteExpr(node.base.get(), substitution);
+            for (TypeRef& typeArg : node.typeArgs) SubstituteType(typeArg, substitution);
             break;
+        }
         case ExprKind::Index: {
             auto& node = *static_cast<IndexExpr*>(expr);
             SubstituteExpr(node.base.get(), substitution);
@@ -419,6 +425,7 @@ std::unique_ptr<ClassDecl> CloneClassDecl(const ClassDecl& source)
     clone->name = source.name;
     clone->isStatic = source.isStatic;
     clone->isInterface = source.isInterface;
+    clone->attributes = source.attributes;
     clone->typeParams = source.typeParams;
     clone->typeParamLocations = source.typeParamLocations;
     clone->baseTypes = source.baseTypes;
@@ -439,8 +446,22 @@ void SubstituteTypeParameters(ClassDecl& target, const std::unordered_map<std::s
 {
     for (TypeRef& baseType : target.baseTypes) SubstituteType(baseType, substitution);
 
+    // An annotation naming a type parameter names whatever that parameter
+    // stood for in this copy, exactly as a field's declared type does.
+    for (AttributeNode& attribute : target.attributes)
+    {
+        for (AttributeArgNode& argument : attribute.args) SubstituteType(argument.typeValue, substitution);
+    }
+
     for (DeclPtr& fieldDecl : target.fields)
-        SubstituteType(static_cast<FieldDecl*>(fieldDecl.get())->type, substitution);
+    {
+        auto& field = *static_cast<FieldDecl*>(fieldDecl.get());
+        SubstituteType(field.type, substitution);
+        for (AttributeNode& attribute : field.attributes)
+        {
+            for (AttributeArgNode& argument : attribute.args) SubstituteType(argument.typeValue, substitution);
+        }
+    }
 
     for (DeclPtr& methodDecl : target.methods)
     {

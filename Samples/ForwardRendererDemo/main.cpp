@@ -32,6 +32,9 @@
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
 #include <Fluxion/RenderCore/Renderer/Renderer.h>
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
+#include <Fluxion/Scene/Scene.h>
+#include <Fluxion/Scene/SceneScript.hpp>
+#include <Fluxion/Script/Script.hpp>
 
 #include <cmath>
 #include <cstddef>
@@ -59,6 +62,15 @@ std::string ReadFile(const char* path)
     std::ostringstream contents;
     contents << file.rdbuf();
     return contents.str();
+}
+
+void ReportScriptDiagnostics(const Fluxion::Script::DiagnosticList& diagnostics)
+{
+    for (const Fluxion::Script::Diagnostic& entry : diagnostics.entries)
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "%s:%u:%u: %s", entry.location.file.c_str(), entry.location.line,
+            entry.location.column, entry.message.c_str());
+    }
 }
 
 // --- Small local math helpers ------------------------------------------
@@ -92,15 +104,6 @@ FluxionMat4 MakePerspective(f32 fovYRadians, f32 aspect, f32 nearZ, f32 farZ)
     m.m[2][2] = (farZ + nearZ) / (nearZ - farZ);
     m.m[2][3] = (2.0f * farZ * nearZ) / (nearZ - farZ);
     m.m[3][2] = -1.0f;
-    return m;
-}
-
-FluxionMat4 MakeRotationY(f32 radians)
-{
-    FluxionMat4 m = Fluxion_Mat4_Identity();
-    f32 c = std::cos(radians), s = std::sin(radians);
-    m.m[0][0] = c; m.m[0][2] = s;
-    m.m[2][0] = -s; m.m[2][2] = c;
     return m;
 }
 
@@ -417,12 +420,78 @@ int main(int argc, char** argv)
     // on the second frame).
     FluxionRHISemaphoreHandle noSemaphore = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
+    // --- The cube as a scene object driven by a script component -------
+    //
+    // Nothing below computes an angle. The demo makes one object, puts a
+    // Rotator on it, and hands the scene how much time has passed each
+    // frame; what the object then is, is whatever Rotator has made of it.
+
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+    if (!Fluxion_Scene_IsValid(scene))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the scene.");
+        std::exit(1);
+    }
+
+    Fluxion::Script::BindingTable sceneBindings;
+    Fluxion::Script::DiagnosticList scriptDiagnostics;
+    if (!Fluxion::Scene::BuildBindingTable(scene, sceneBindings, scriptDiagnostics))
+    {
+        ReportScriptDiagnostics(scriptDiagnostics);
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to describe the scene to the scripting runtime.");
+        std::exit(1);
+    }
+
+    std::string rotatorSource = ReadFile(FLUXION_DEMO_SCRIPT_DIR "/Rotator.fls");
+    if (rotatorSource.empty())
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to read Rotator.fls from %s", FLUXION_DEMO_SCRIPT_DIR);
+        std::exit(1);
+    }
+
+    Fluxion::Script::CompileOptions scriptOptions;
+    scriptOptions.fileName = "Rotator.fls";
+    scriptOptions.bindings = &sceneBindings;
+    scriptOptions.hostPrelude = Fluxion::Scene::ComponentPreludeSource();
+
+    auto compiledScript = Fluxion::Script::Compile(rotatorSource, scriptOptions, scriptDiagnostics);
+    if (!compiledScript.IsOk())
+    {
+        ReportScriptDiagnostics(scriptDiagnostics);
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to compile Rotator.fls.");
+        std::exit(1);
+    }
+
+    Fluxion::Script::CompiledModule scriptModule = compiledScript.Value();
+    Fluxion::Script::Vm* scriptVm = Fluxion::Script::CreateVm(scriptModule, scriptDiagnostics, &sceneBindings);
+    if (!scriptVm || !Fluxion::Scene::AttachRuntime(scene, scriptVm))
+    {
+        ReportScriptDiagnostics(scriptDiagnostics);
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to start the scripting runtime: %s", Fluxion_Scene_GetLastError(scene));
+        std::exit(1);
+    }
+
+    FluxionGameObjectHandle cubeObject = Fluxion_Scene_CreateGameObject(scene, "Cube");
+    Fluxion_GameObject_SetLocalPosition(scene, cubeObject, FluxionVec3{ 0.0f, 0.0f, -3.0f });
+
+    const u32 rotatorClass = Fluxion::Scene::FindComponentClass(scene, "Rotator");
+    if (rotatorClass == Fluxion::Script::kNoClass ||
+        Fluxion::Scene::AddComponent(scene, cubeObject, rotatorClass).IsNull())
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a Rotator on the cube: %s", Fluxion_Scene_GetLastError(scene));
+        std::exit(1);
+    }
+
     FLUXION_LOG_INFO("ForwardRendererDemo", "Window created. Rendering a rotating textured cube every frame through the RenderCore layer.");
 
     bool running = true;
     u32 frameIndex = 0;
-    f32 rotationAngle = 0.0f;
     f32 totalTime = 0.0f;
+
+    // No delta-time tracking in this demo -- a fixed nominal step, which
+    // is what the pulse below already assumed, and now also what the
+    // scene is told each frame.
+    const f32 nominalDeltaTime = 0.016f;
     while (running)
     {
         Fluxion_WindowSystem_PollEvents();
@@ -433,8 +502,9 @@ int main(int argc, char** argv)
         }
         if (!running) break;
 
-        rotationAngle += 0.01f;
-        totalTime += 0.016f; // no delta-time tracking in this demo -- a fixed nominal step is good enough for a slow visual pulse
+        // One turn of the scene: Rotator.Update is what moves the cube.
+        Fluxion_Scene_Tick(scene, nominalDeltaTime);
+        totalTime += nominalDeltaTime;
 
         u32 imageIndex = Fluxion_RHI_Swapchain_AcquireNextImage(swapchain, noSemaphore);
 
@@ -490,9 +560,7 @@ int main(int argc, char** argv)
         // transpose of its own (see Renderer.cpp), and cube.vert.jsl reads
         // it as `model[0]` in the same column-major-expecting multiply as
         // viewProjection.
-        FluxionMat4 rotation = MakeRotationY(rotationAngle);
-        FluxionMat4 translation = Fluxion_Mat4_Translation(FluxionVec3{ 0.0f, 0.0f, -3.0f });
-        FluxionMat4 model = Fluxion_Mat4_Multiply(translation, rotation);
+        FluxionMat4 model = Fluxion_GameObject_GetWorldMatrix(scene, cubeObject);
         FluxionMat4 modelForUpload = TransposeForUpload(model);
 
         FluxionRHICommandListHandle cmd = commandLists[frameIndex];
@@ -586,6 +654,11 @@ int main(int argc, char** argv)
     // work state, and waiting on it again here would just block until the
     // bounded timeout for work that was never submitted.
     FLUXION_LOG_INFO("ForwardRendererDemo", "Closing.");
+
+    // The scene goes before the machine it runs on: destroying it runs
+    // OnDestroy on everything still attached, which is script code.
+    Fluxion_Scene_Destroy(scene);
+    Fluxion::Script::DestroyVm(scriptVm);
 
     for (u32 i = 0; i < FLUXION_DEMO_FRAMES_IN_FLIGHT; ++i)
     {

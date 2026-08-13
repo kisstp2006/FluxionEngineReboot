@@ -223,10 +223,102 @@ private:
         return depth;
     }
 
+    // --- Annotations ------------------------------------------------------
+
+    // Reads every `[...]` group standing in front of a declaration. An
+    // empty list is the ordinary case and costs nothing, so this is
+    // called unconditionally wherever a declaration may begin.
+    bool ParseAttributes(std::vector<AttributeNode>& outAttributes)
+    {
+        while (Check(TokenKind::LBracket))
+        {
+            // `[` also opens an index, but never at the point a
+            // declaration starts, which is the only place this runs.
+            Advance();
+            do
+            {
+                AttributeNode attribute;
+                attribute.location = Current().location;
+
+                const Token* name = Expect(TokenKind::Identifier, "an annotation name");
+                if (!name) return false;
+                attribute.name = name->text;
+
+                if (Match(TokenKind::LParen))
+                {
+                    if (!Check(TokenKind::RParen))
+                    {
+                        do
+                        {
+                            AttributeArgNode argument;
+                            if (!ParseAttributeArgument(argument)) return false;
+                            attribute.args.push_back(std::move(argument));
+                        } while (Match(TokenKind::Comma));
+                    }
+                    if (!Expect(TokenKind::RParen, "')'")) return false;
+                }
+
+                outAttributes.push_back(std::move(attribute));
+            } while (Match(TokenKind::Comma));
+
+            if (!Expect(TokenKind::RBracket, "']'")) return false;
+        }
+        return true;
+    }
+
+    bool ParseAttributeArgument(AttributeArgNode& outArgument)
+    {
+        outArgument.location = Current().location;
+
+        // `typeof` is not a keyword: it is spelled like any other name and
+        // is only recognized here, where a type is the one other thing an
+        // annotation can be given.
+        if (Check(TokenKind::Identifier) && Current().text == "typeof" && PeekKind(1) == TokenKind::LParen)
+        {
+            Advance();
+            Advance();
+            if (!ParseTypeRef(outArgument.typeValue))
+            {
+                Error(Current().location, "expected a type name inside 'typeof', found '" + Describe(Current()) + "'");
+                return false;
+            }
+            if (!Expect(TokenKind::RParen, "')'")) return false;
+            outArgument.kind = AttributeArgumentKind::Class;
+            return true;
+        }
+
+        const bool negated = Match(TokenKind::Minus);
+
+        if (Match(TokenKind::IntLiteral))
+        {
+            outArgument.kind = AttributeArgumentKind::Int;
+            outArgument.intValue = negated ? -Previous().intValue : Previous().intValue;
+            return true;
+        }
+        if (Match(TokenKind::FloatLiteral))
+        {
+            outArgument.kind = AttributeArgumentKind::Float;
+            outArgument.floatValue = negated ? -Previous().floatValue : Previous().floatValue;
+            return true;
+        }
+        if (!negated && Match(TokenKind::StringLiteral))
+        {
+            outArgument.kind = AttributeArgumentKind::String;
+            outArgument.stringValue = Previous().text;
+            return true;
+        }
+
+        Error(outArgument.location, "an annotation takes a number, a piece of text or 'typeof(Name)', found '" + Describe(Current()) + "'");
+        return false;
+    }
+
     // --- Declarations ---------------------------------------------------
 
     DeclPtr ParseTypeDecl()
     {
+        std::vector<AttributeNode> attributes;
+        if (!ParseAttributes(attributes)) return nullptr;
+
         SourceLocation loc = Current().location;
 
         bool isStatic = false;
@@ -262,6 +354,7 @@ private:
         decl->name = nameToken->text;
         decl->isStatic = isStatic;
         decl->isInterface = isInterface;
+        decl->attributes = std::move(attributes);
 
         if (Check(TokenKind::Less))
         {
@@ -312,6 +405,9 @@ private:
     // malformed and the caller has to recover.
     bool ParseMember(ClassDecl& owner)
     {
+        std::vector<AttributeNode> attributes;
+        if (!ParseAttributes(attributes)) return false;
+
         SourceLocation loc = Current().location;
 
         bool isStatic = Match(TokenKind::KwStatic);
@@ -325,7 +421,14 @@ private:
         // named after its class and followed straight by a parameter
         // list.
         if (Check(TokenKind::Identifier) && Current().text == owner.name && PeekKind(1) == TokenKind::LParen)
+        {
+            if (!attributes.empty())
+            {
+                Error(loc, "a constructor cannot carry an annotation");
+                return false;
+            }
             return ParseConstructor(owner, loc, isStatic, isVirtual, isOverride);
+        }
 
         TypeRef type;
         if (!ParseTypeRef(type))
@@ -338,7 +441,14 @@ private:
         if (!nameToken) return false;
 
         if (Check(TokenKind::LParen))
+        {
+            if (!attributes.empty())
+            {
+                Error(loc, "'" + nameToken->text + "' is a method, and only a class or a field may carry an annotation");
+                return false;
+            }
             return ParseMethod(owner, loc, std::move(type), nameToken->text, isStatic, isVirtual, isOverride);
+        }
 
         // Anything that is not a parameter list makes this a field.
         if (isVirtual || isOverride)
@@ -352,6 +462,7 @@ private:
         field->location = loc;
         field->type = std::move(type);
         field->name = nameToken->text;
+        field->attributes = std::move(attributes);
         if (isStatic)
         {
             Error(loc, "field '" + field->name + "' cannot be declared 'static'");
@@ -824,6 +935,29 @@ private:
                 memberExpr->location = expr->location;
                 memberExpr->base = std::move(expr);
                 memberExpr->member = member->text;
+
+                // `a.B<C>(...)` names a type at a call site; `a.B < c`
+                // compares. Nothing short of reading the whole bracketed
+                // list and seeing an argument list behind it tells the
+                // two apart, so that is what is done, and the attempt is
+                // rolled back whole when it does not fit.
+                if (Check(TokenKind::Less))
+                {
+                    const size_t start = m_position;
+                    const SourceLocation argsLocation = Current().location;
+
+                    std::vector<TypeRef> typeArgs;
+                    if (ParseTypeArguments(typeArgs) && Check(TokenKind::LParen))
+                    {
+                        memberExpr->typeArgs = std::move(typeArgs);
+                        memberExpr->typeArgLocation = argsLocation;
+                    }
+                    else
+                    {
+                        m_position = start;
+                    }
+                }
+
                 expr = std::move(memberExpr);
                 continue;
             }

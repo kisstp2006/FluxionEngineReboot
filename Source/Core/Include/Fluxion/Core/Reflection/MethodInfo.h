@@ -29,6 +29,12 @@ typedef u32 FluxionMethodFlags;
 #define FLUXION_METHOD_FLAG_NONE   ((FluxionMethodFlags)0)
 #define FLUXION_METHOD_FLAG_STATIC FLUXION_BIT(0)
 
+// The method's first parameter is not one a caller writes: it identifies
+// a type, and whoever makes the call fills it in from the type the call
+// was written with. Declared here rather than guessed from the parameter
+// list, since an i32 first parameter is otherwise an ordinary number.
+#define FLUXION_METHOD_FLAG_SCRIPT_TYPE_ARGUMENT FLUXION_BIT(1)
+
 typedef struct FluxionMethodInfo
 {
     FluxionStringView name;

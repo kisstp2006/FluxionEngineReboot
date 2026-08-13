@@ -22,6 +22,36 @@ namespace Fluxion::Script
 // faults instead of reaching into whatever occupies that place now.
 using HandleResolverFn = void* (*)(void* user, EngineHandle handle);
 
+// --- The two script types that are not plain numbers -------------------
+
+// A script `string` reaches a bound method as a null-terminated pointer,
+// and leaves one the same way.
+//
+// THE LIFETIME RULE, which the marshalling enforces and every bound
+// method must honour:
+//
+//   * A string passed *into* a native is valid for that call and no
+//     longer. It points at storage the machine owns and may reuse, so a
+//     native that keeps the text must copy it before it returns.
+//
+//   * A string returned *from* a native is copied into the machine's own
+//     string table before the call site sees anything, so the native may
+//     answer with a pointer to storage it is about to change. Answering
+//     with null is answering with empty text.
+using FluxionScriptString = const char*;
+
+// A reference to an object on the script heap, travelling as the same
+// pair of numbers the machine itself uses. A native holding one past the
+// call it received it in must pin it, exactly as any other native holder
+// of a script object must.
+using FluxionScriptObject = ObjectHandle;
+
+// The identities a reflected method declares to say "this parameter is a
+// script string" / "this parameter is a script object". Offered as
+// functions so a host never has to spell the token that is hashed.
+inline FluxionTypeId ScriptStringTypeId() { return FLUXION_TYPE_ID_OF(FluxionScriptString); }
+inline FluxionTypeId ScriptObjectTypeId() { return FLUXION_TYPE_ID_OF(FluxionScriptObject); }
+
 // One method of an engine type, in the terms the script speaks: the
 // value types it takes and gives back, and the invoker that carries the
 // call across to the C side.
@@ -33,6 +63,15 @@ struct BoundMethod
 {
     std::string name;
     bool isInstance = false;
+
+    // Set when the method declared FLUXION_METHOD_FLAG_SCRIPT_TYPE_ARGUMENT:
+    // its first parameter is not written at the call site at all. The call
+    // is written with one type argument instead, and what reaches the
+    // native is that type's class index -- a number the compiler already
+    // knows, so nothing is ever looked up by name at run time. A method
+    // shaped this way that also answers with a script object answers, as
+    // far as the compiler is concerned, with that same type.
+    bool takesScriptType = false;
 
     std::vector<ValueType> parameterTypes;
     std::vector<u32> parameterBoundTypes;

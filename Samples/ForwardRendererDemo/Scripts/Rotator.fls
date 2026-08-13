@@ -1,0 +1,23 @@
+// The cube's whole animation, written as a component: the demo attaches
+// one of these to the object it draws, and every turn of the scene the
+// object is turned a little further about its up axis. Nothing in the
+// program says how fast, or in which direction -- that is here.
+class Rotator : Component
+{
+    [SerializeField]
+    [Range(0.0, 10.0)]
+    [Tooltip("Radians per second about the up axis.")]
+    float speed;
+
+    void Awake()
+    {
+        // A component is made with nothing handed to it, so what it
+        // starts with is what it sets for itself.
+        this.speed = 0.625f;
+    }
+
+    void Update(float deltaTime)
+    {
+        this.transform.Rotate(0.0f, this.speed * deltaTime, 0.0f);
+    }
+}

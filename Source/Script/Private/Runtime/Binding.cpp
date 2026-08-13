@@ -20,6 +20,8 @@ struct PrimitiveTypeIds
     FluxionTypeId intId;
     FluxionTypeId floatId;
     FluxionTypeId boolId;
+    FluxionTypeId stringId;
+    FluxionTypeId objectId;
 };
 
 const PrimitiveTypeIds& Primitives()
@@ -28,6 +30,8 @@ const PrimitiveTypeIds& Primitives()
         FLUXION_TYPE_ID_OF(i32),
         FLUXION_TYPE_ID_OF(f32),
         FLUXION_TYPE_ID_OF(bool),
+        ScriptStringTypeId(),
+        ScriptObjectTypeId(),
     };
     return ids;
 }
@@ -56,6 +60,8 @@ bool TranslateTypeId(const BindingTable& table, FluxionTypeId id, ValueType& out
     if (id == primitives.intId) { outType = ValueType::Int; return true; }
     if (id == primitives.floatId) { outType = ValueType::Float; return true; }
     if (id == primitives.boolId) { outType = ValueType::Bool; return true; }
+    if (id == primitives.stringId) { outType = ValueType::String; return true; }
+    if (id == primitives.objectId) { outType = ValueType::Object; return true; }
 
     const u32 bound = FindBoundTypeById(table, id);
     if (bound != kNoBoundType)
@@ -139,6 +145,7 @@ u32 AddBoundType(BindingTable& table, const FluxionTypeInfo& typeInfo, HandleRes
         BoundMethod method;
         method.name = TextOf(declared->name);
         method.isInstance = (declared->flags & FLUXION_METHOD_FLAG_STATIC) == 0;
+        method.takesScriptType = (declared->flags & FLUXION_METHOD_FLAG_SCRIPT_TYPE_ARGUMENT) != 0;
         method.invoke = declared->invoke;
 
         if (method.name.empty())
@@ -184,6 +191,16 @@ u32 AddBoundType(BindingTable& table, const FluxionTypeInfo& typeInfo, HandleRes
             method.parameterBoundTypes.push_back(parameterBound);
         }
         if (!ok) break;
+
+        // The type argument arrives as a class index, so the parameter it
+        // lands in has to be one that can hold one.
+        if (method.takesScriptType && (method.parameterTypes.empty() || method.parameterTypes[0] != ValueType::Int))
+        {
+            outDiagnostics.AddError(location, "'" + name + "." + method.name +
+                                                  "' is written to be called with a type, so its first argument must be an int");
+            ok = false;
+            break;
+        }
 
         if (FindBoundMethod(table, index, method.name) != kNoBoundMethod)
         {

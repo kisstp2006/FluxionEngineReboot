@@ -286,7 +286,7 @@ inline constexpr u32 kLanguageVersion = 3;
 // Bumped whenever the instruction set or the module layout changes. A
 // module carrying any other value is refused by the loader -- running it
 // would silently misinterpret opcodes.
-inline constexpr u32 kBytecodeVersion = 4;
+inline constexpr u32 kBytecodeVersion = 5;
 
 // Bumped when the engine-side interface reachable from a module changes
 // shape.
@@ -309,6 +309,54 @@ struct InterfaceImplementation
 {
     u32 interfaceClass = kNoClass;
     std::vector<u32> methods;
+};
+
+// --- What a declaration says about itself beyond its shape -------------
+
+// One value written inside the brackets of an annotation. The three
+// literal kinds are what the source can write directly; `Class` is what
+// `typeof(Name)` becomes once the name has been resolved, so nothing
+// downstream ever has to look a type up by text.
+enum class AttributeArgumentKind
+{
+    Int,
+    Float,
+    String,
+    Class,
+};
+
+struct AttributeArgument
+{
+    AttributeArgumentKind kind = AttributeArgumentKind::Int;
+
+    i32 intValue = 0;
+    f32 floatValue = 0.0f;
+    std::string stringValue;
+    u32 classIndex = kNoClass;
+};
+
+// One annotation as it was written, attached to whatever it preceded.
+struct Attribute
+{
+    std::string name;
+    std::vector<AttributeArgument> arguments;
+};
+
+// A field as the source declared it, kept beside the class so a tool --
+// or the host -- can read back what a class holds and what was said about
+// each field. The layout itself still lives in `fieldSlotCount` and
+// `fieldReferenceBits`; this is the description, not the storage.
+struct FieldInfo
+{
+    std::string name;
+    ValueType type = ValueType::Void;
+
+    // Which class the field's type names when it is a reference, or which
+    // engine type when it is a handle. kNoClass otherwise.
+    u32 typeClass = kNoClass;
+
+    u32 slot = 0;
+    std::vector<Attribute> attributes;
 };
 
 struct ClassInfo
@@ -342,6 +390,12 @@ struct ClassInfo
     std::vector<InterfaceImplementation> interfaces;
 
     u32 constructorFunction = kNoFunction;
+
+    // What was written in brackets ahead of the declaration, and ahead of
+    // each of its own fields. A derived class lists only the fields it
+    // declared itself; a base class's are read off the base.
+    std::vector<Attribute> attributes;
+    std::vector<FieldInfo> fields;
 };
 
 struct FunctionInfo

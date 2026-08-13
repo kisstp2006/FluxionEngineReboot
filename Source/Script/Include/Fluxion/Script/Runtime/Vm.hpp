@@ -77,6 +77,37 @@ u32 FindMethod(const Vm* vm, u32 classIndex, const char* name);
 const char* ClassName(const Vm* vm, u32 classIndex);
 const char* MethodName(const Vm* vm, u32 methodIndex);
 
+// True when `classIndex` is `baseIndex` or has it somewhere in the chain
+// of classes it was declared on top of.
+bool ClassDerivesFrom(const Vm* vm, u32 classIndex, u32 baseIndex);
+
+// What a method was written to take, so a caller that found one by name
+// can establish it has the shape it meant to call before calling it.
+// Void for a parameter index the method does not have.
+u32 MethodParameterCount(const Vm* vm, u32 methodIndex);
+ValueType MethodParameterType(const Vm* vm, u32 methodIndex, u32 parameterIndex);
+
+// --- Reading back what a declaration said about itself ------------------
+
+// Everything written in brackets ahead of a class or one of its fields is
+// carried in the module and readable here. None of it is consulted while
+// code runs: it exists so a host can act on it -- refusing to attach
+// something whose stated requirement is missing, laying out an editing
+// surface, and so on.
+
+u32 ClassAttributeCount(const Vm* vm, u32 classIndex);
+const Attribute* ClassAttributeAt(const Vm* vm, u32 classIndex, u32 attributeIndex);
+
+// The first annotation of that name on the class, or null. Only the class
+// itself is looked at; a base class's annotations are read off the base.
+const Attribute* FindClassAttribute(const Vm* vm, u32 classIndex, const char* name);
+
+// The fields the class declared itself, in declaration order.
+u32 ClassFieldCount(const Vm* vm, u32 classIndex);
+const FieldInfo* ClassFieldAt(const Vm* vm, u32 classIndex, u32 fieldIndex);
+const FieldInfo* FindClassField(const Vm* vm, u32 classIndex, const char* name);
+const Attribute* FindFieldAttribute(const Vm* vm, u32 classIndex, const char* fieldName, const char* attributeName);
+
 // Creates an instance of `classIndex` and runs its constructor with
 // `argCount` arguments. The object is not held by anything afterwards, so
 // a caller that means to keep it beyond the next collection must pin it.

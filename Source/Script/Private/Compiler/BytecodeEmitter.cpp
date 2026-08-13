@@ -175,6 +175,71 @@ private:
     std::unordered_map<u32, u32> m_floatConstantIndices; // keyed by bit pattern, so -0 and 0 stay distinct
     std::unordered_map<std::string, u32> m_stringConstantIndices;
 
+    // What an annotation looked like once the analyzer was done with it.
+    // Nothing is resolved here: a `typeof` already carries the class it
+    // named, and a number already knows which kind it is.
+    static std::vector<Attribute> BuildAttributes(const std::vector<AttributeNode>& written)
+    {
+        std::vector<Attribute> built;
+        built.reserve(written.size());
+
+        for (const AttributeNode& node : written)
+        {
+            Attribute attribute;
+            attribute.name = node.name;
+            attribute.arguments.reserve(node.args.size());
+
+            for (const AttributeArgNode& argument : node.args)
+            {
+                AttributeArgument value;
+                value.kind = argument.kind;
+                switch (argument.kind)
+                {
+                    case AttributeArgumentKind::Int:
+                        value.intValue = (i32)argument.intValue;
+                        // A whole number is also readable as one, so an
+                        // annotation taking a number does not have to
+                        // care which way it was written.
+                        value.floatValue = (f32)argument.intValue;
+                        break;
+                    case AttributeArgumentKind::Float:
+                        value.floatValue = (f32)argument.floatValue;
+                        value.intValue = (i32)argument.floatValue;
+                        break;
+                    case AttributeArgumentKind::String:
+                        value.stringValue = argument.stringValue;
+                        break;
+                    case AttributeArgumentKind::Class:
+                        value.classIndex = argument.classIndex;
+                        break;
+                }
+                attribute.arguments.push_back(std::move(value));
+            }
+            built.push_back(std::move(attribute));
+        }
+        return built;
+    }
+
+    static std::vector<FieldInfo> BuildFields(const ClassDecl& classDecl)
+    {
+        std::vector<FieldInfo> built;
+        built.reserve(classDecl.fields.size());
+
+        for (const DeclPtr& fieldDecl : classDecl.fields)
+        {
+            const auto& field = *static_cast<const FieldDecl*>(fieldDecl.get());
+
+            FieldInfo info;
+            info.name = field.name;
+            info.type = field.type.type;
+            info.typeClass = field.type.classIndex;
+            info.slot = field.fieldSlot;
+            info.attributes = BuildAttributes(field.attributes);
+            built.push_back(std::move(info));
+        }
+        return built;
+    }
+
     void EmitClassTable(const std::vector<const ClassDecl*>& classes)
     {
         u32 count = 0;
@@ -205,6 +270,8 @@ private:
             info.vtable = classDecl->vtable;
             info.interfaces = classDecl->interfaceTables;
             info.constructorFunction = classDecl->constructorFunction;
+            info.attributes = BuildAttributes(classDecl->attributes);
+            info.fields = BuildFields(*classDecl);
         }
     }
 

@@ -22,14 +22,21 @@ namespace
 // The prelude is lexed on its own so its tokens keep their own file name:
 // a message about it names the prelude and not the caller's source, which
 // is what makes the two tellable apart afterwards.
-std::vector<Token> LexWithPrelude(const std::string& source, const std::string& fileName, DiagnosticList& diagnostics)
+std::vector<Token> LexWithPrelude(const std::string& source, const CompileOptions& options, DiagnosticList& diagnostics)
 {
     std::vector<Token> tokens = Lex(PreludeSource(), PreludeSourceName(), diagnostics);
 
     // Only the last stream's end-of-file terminates the whole thing.
     if (!tokens.empty()) tokens.pop_back();
 
-    std::vector<Token> userTokens = Lex(source, fileName, diagnostics);
+    if (!options.hostPrelude.empty())
+    {
+        std::vector<Token> hostTokens = Lex(options.hostPrelude, options.hostPreludeName, diagnostics);
+        if (!hostTokens.empty()) hostTokens.pop_back();
+        tokens.insert(tokens.end(), std::make_move_iterator(hostTokens.begin()), std::make_move_iterator(hostTokens.end()));
+    }
+
+    std::vector<Token> userTokens = Lex(source, options.fileName, diagnostics);
     tokens.insert(tokens.end(), std::make_move_iterator(userTokens.begin()), std::make_move_iterator(userTokens.end()));
     return tokens;
 }
@@ -58,7 +65,7 @@ Fluxion::Foundation::Result<CompiledModule> Compile(const std::string& source, c
     // tell how far the source got without parsing the diagnostic text.
     // Code 9 is the odd one out: it says the failure was not the
     // caller's.
-    std::vector<Token> tokens = LexWithPrelude(source, options.fileName, outDiagnostics);
+    std::vector<Token> tokens = LexWithPrelude(source, options, outDiagnostics);
     if (outDiagnostics.HasErrors())
     {
         assert(!BlamesThePrelude(outDiagnostics) && "Fluxion: the script prelude must always lex");

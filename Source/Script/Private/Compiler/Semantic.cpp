@@ -448,13 +448,123 @@ private:
         if (m_classes[index].constructor) decl.constructorFunction = m_classes[index].constructor->functionIndex;
     }
 
+    // --- Annotations ---------------------------------------------------------
+
+    // What each annotation the language knows accepts, and where it may
+    // be written. An annotation nothing here describes is refused: an
+    // unrecognized one that was quietly carried along would look like it
+    // had been acted on when nothing had read it at all.
+    struct AttributeShape
+    {
+        const char* name;
+        bool onClass;
+        bool onField;
+        u32 argumentCount;
+        AttributeArgumentKind arguments[2];
+    };
+
+    static const AttributeShape* FindAttributeShape(const std::string& name)
+    {
+        static const AttributeShape shapes[] = {
+            { "SerializeField", false, true, 0, { AttributeArgumentKind::Int, AttributeArgumentKind::Int } },
+            { "Range", false, true, 2, { AttributeArgumentKind::Float, AttributeArgumentKind::Float } },
+            { "Header", false, true, 1, { AttributeArgumentKind::String, AttributeArgumentKind::Int } },
+            { "Tooltip", false, true, 1, { AttributeArgumentKind::String, AttributeArgumentKind::Int } },
+            { "RequireComponent", true, false, 1, { AttributeArgumentKind::Class, AttributeArgumentKind::Int } },
+        };
+
+        for (const AttributeShape& shape : shapes)
+        {
+            if (name == shape.name) return &shape;
+        }
+        return nullptr;
+    }
+
+    // A number written where a Float is wanted may have been written
+    // without a decimal point, which is the one place an annotation
+    // argument is allowed to differ from the shape.
+    static bool ArgumentFits(AttributeArgumentKind wanted, AttributeArgumentKind given)
+    {
+        if (wanted == given) return true;
+        return wanted == AttributeArgumentKind::Float && given == AttributeArgumentKind::Int;
+    }
+
+    static const char* AttributeArgumentName(AttributeArgumentKind kind)
+    {
+        switch (kind)
+        {
+            case AttributeArgumentKind::Int: return "a whole number";
+            case AttributeArgumentKind::Float: return "a number";
+            case AttributeArgumentKind::String: return "a piece of text";
+            default: return "'typeof(Name)'";
+        }
+    }
+
+    void ResolveAttributes(std::vector<AttributeNode>& attributes, bool onClass, const std::string& what)
+    {
+        for (AttributeNode& attribute : attributes)
+        {
+            const AttributeShape* shape = FindAttributeShape(attribute.name);
+            if (!shape)
+            {
+                Error(attribute.location, "there is no annotation named '" + attribute.name + "'");
+                continue;
+            }
+            if (onClass && !shape->onClass)
+            {
+                Error(attribute.location, "'" + attribute.name + "' belongs on a field, not on " + what);
+                continue;
+            }
+            if (!onClass && !shape->onField)
+            {
+                Error(attribute.location, "'" + attribute.name + "' belongs on a class, not on " + what);
+                continue;
+            }
+            if (attribute.args.size() != (size_t)shape->argumentCount)
+            {
+                Error(attribute.location, "'" + attribute.name + "' takes " + std::to_string(shape->argumentCount) +
+                                              " argument(s) but " + std::to_string(attribute.args.size()) + " were given");
+                continue;
+            }
+
+            for (u32 i = 0; i < shape->argumentCount; ++i)
+            {
+                AttributeArgNode& argument = attribute.args[i];
+                if (!ArgumentFits(shape->arguments[i], argument.kind))
+                {
+                    Error(argument.location, "argument " + std::to_string(i + 1) + " of '" + attribute.name + "' must be " +
+                                                 AttributeArgumentName(shape->arguments[i]));
+                    continue;
+                }
+
+                if (argument.kind != AttributeArgumentKind::Class) continue;
+
+                // The name inside `typeof` becomes the class it named, so
+                // whoever reads the annotation back is handed an index and
+                // never has to look anything up by text.
+                if (!ResolveTypeRef(argument.typeValue, argument.location,
+                        "so '" + attribute.name + "' names no type"))
+                    continue;
+                if (argument.typeValue.type != ValueType::Object || argument.typeValue.classIndex == kNoClass)
+                {
+                    Error(argument.location, "'" + attribute.name + "' must be given a declared type");
+                    continue;
+                }
+                argument.classIndex = argument.typeValue.classIndex;
+            }
+        }
+    }
+
     void ResolveMemberTypes(u32 index)
     {
         ClassDecl& decl = *m_classes[index].decl;
 
+        ResolveAttributes(decl.attributes, true, "'" + decl.name + "'");
+
         for (DeclPtr& fieldDecl : decl.fields)
         {
             auto* field = static_cast<FieldDecl*>(fieldDecl.get());
+            ResolveAttributes(field->attributes, false, "field '" + field->name + "'");
             if (field->type.type == ValueType::Void && field->type.arrayDepth == 0)
             {
                 Error(field->location, "field '" + field->name + "' cannot have type 'void'");
@@ -1700,6 +1810,13 @@ private:
 
     void AnalyzeMemberValue(MemberExpr& expr)
     {
+        if (!expr.typeArgs.empty())
+        {
+            Error(expr.typeArgLocation, "a type can only be named at a call, and '" + expr.member + "' is not being called");
+            expr.resolvedType = ValueType::Unknown;
+            return;
+        }
+
         u32 classIndex = kNoClass;
         if (NamesAClass(*expr.base, classIndex))
         {
@@ -2131,6 +2248,12 @@ private:
     {
         const std::string qualified = DescribeCallee(callee);
 
+        if (!callee.typeArgs.empty())
+        {
+            AnalyzeCallWithType(call, callee, qualified);
+            return;
+        }
+
         u32 scopeClass = kNoClass;
         if (NamesAClass(*callee.base, scopeClass))
         {
@@ -2218,6 +2341,72 @@ private:
 
         call.receiver = std::move(callee.base);
         BindInstanceCall(call, *method, receiverClass, qualified);
+    }
+
+    // `receiver.Name<T>(args)`. Naming a type at a call site is how the
+    // type itself becomes an argument: the class it resolves to is
+    // settled here, at compile time, and travels as its index. Nothing at
+    // run time ever looks a component type up by name, because no name
+    // survives this point.
+    void AnalyzeCallWithType(CallExpr& call, MemberExpr& callee, const std::string& displayName)
+    {
+        call.resolvedType = ValueType::Unknown;
+
+        if (callee.typeArgs.size() != 1)
+        {
+            Error(callee.typeArgLocation, "'" + displayName + "' is called with one type, but " +
+                                              std::to_string(callee.typeArgs.size()) + " were given");
+            return;
+        }
+
+        TypeRef named = callee.typeArgs[0];
+        if (!ResolveTypeRef(named, callee.typeArgLocation, "so '" + displayName + "' names no type")) return;
+        if (named.type != ValueType::Object || named.classIndex == kNoClass ||
+            (named.classIndex < m_classes.size() && m_classes[named.classIndex].isArray))
+        {
+            Error(callee.typeArgLocation, "'" + displayName + "' has to be given a declared type");
+            return;
+        }
+        callee.typeArgs[0] = named;
+
+        AnalyzeExpr(*callee.base);
+        if (IsPoisoned(callee.base->resolvedType)) return;
+        if (callee.base->resolvedType != ValueType::Handle)
+        {
+            Error(call.location, Quoted(*callee.base) + " has no method named '" + callee.member + "' that is called with a type");
+            return;
+        }
+
+        const u32 boundType = callee.base->resolvedClass;
+        const u32 methodIndex = m_bindings ? FindBoundMethod(*m_bindings, boundType, callee.member) : kNoBoundMethod;
+        if (methodIndex == kNoBoundMethod)
+        {
+            Error(call.location, "'" + m_bindings->types[boundType].name + "' has no method named '" + callee.member + "'");
+            return;
+        }
+        if (!m_bindings->types[boundType].methods[methodIndex].takesScriptType)
+        {
+            Error(callee.typeArgLocation, "'" + displayName + "' is not called with a type");
+            return;
+        }
+
+        // The class index goes in ahead of everything that was written,
+        // already analyzed, so the rest of the call is checked exactly as
+        // any other call into the engine is.
+        auto index = std::make_unique<IntLiteralExpr>();
+        index->location = callee.typeArgLocation;
+        index->value = (long long)named.classIndex;
+        index->resolvedType = ValueType::Int;
+        call.args.insert(call.args.begin(), std::move(index));
+
+        call.receiver = std::move(callee.base);
+        BindBoundCall(call, boundType, callee.member, true, displayName);
+
+        // A method shaped this way that answers with a reference answers
+        // with one of the type the call named, which is the whole reason
+        // the type is written at the call site rather than passed as a
+        // number by hand.
+        if (call.resolvedType == ValueType::Object) call.resolvedClass = named.classIndex;
     }
 
     bool IsKnownValueName(const Expr& expr) const

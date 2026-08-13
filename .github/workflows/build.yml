@@ -27,6 +27,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The RHI module and the vendored VMA both resolve Vulkan through
+      # find_package(Vulkan), which needs a real SDK -- the runner image
+      # has none, unlike a desktop dev machine. Installed silently from
+      # LunarG; the SDK also brings dxc, so the shader/script tests that
+      # skip themselves without it actually run here.
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk.exe'
+          Invoke-WebRequest -Uri 'https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe' -OutFile $installer
+          Start-Process -FilePath $installer -ArgumentList '--accept-licenses','--default-answer','--confirm-command','install' -Wait
+          $sdk = (Get-ChildItem 'C:\VulkanSDK' -Directory | Sort-Object Name -Descending | Select-Object -First 1).FullName
+          if (-not $sdk) { throw 'the Vulkan SDK installer did not leave anything under C:\VulkanSDK' }
+          "VULKAN_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "$sdk\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
       - name: Check CMake version
         run: cmake --version
 
@@ -80,8 +97,8 @@ jobs:
       # provides a virtual X server for ApplicationTests to actually open
       # a window against -- the runner itself is headless, unlike a local
       # WSL2/WSLg setup which already has a real DISPLAY.
-      - name: Install X11 dev packages
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev xvfb
+      - name: Install X11 and Vulkan dev packages
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libvulkan-dev xvfb
 
       - name: Check CMake version
         run: cmake --version
@@ -125,8 +142,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install X11 dev packages
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev xvfb
+      - name: Install X11 and Vulkan dev packages
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libvulkan-dev xvfb
 
       - name: Configure (ASan + UBSan)
         run: cmake --preset linux-gcc -DFLUXION_ENABLE_ASAN=ON

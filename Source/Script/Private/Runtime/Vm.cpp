@@ -51,6 +51,8 @@ struct ArgumentStorage
     f32 asFloat = 0.0f;
     bool asBool = false;
     EngineHandle asHandle;
+    FluxionScriptString asString = nullptr;
+    FluxionScriptObject asObject;
 };
 
 std::string FormatInt(i32 value) { return std::to_string(value); }
@@ -121,6 +123,11 @@ struct Vm
     // Objects native code is holding onto. Listed one entry per pin, so
     // two holders releasing independently do not surprise each other.
     std::vector<ObjectHandle> pinnedRoots;
+
+    // How many runs are stacked on this machine. One is the ordinary
+    // case; more than one means a bound method reached back in and
+    // started another while the run that called it is suspended.
+    u32 runDepth = 0;
 
     // What each of the module's calls into the engine turned out to name,
     // worked out once when the module was loaded. The module itself holds
@@ -600,7 +607,13 @@ private:
             case OpCode::ReturnVoid: ExecuteReturn(false); break;
 
             case OpCode::SafePoint:
-                if (m_vm.collectPending && StackIsQuiet(m_vm)) Collect(m_vm);
+                // A suspended run's own operand stack is not described by
+                // any bitmap -- it was halted mid-expression, holding
+                // values only that expression knows the shape of -- so
+                // while one is stacked underneath, nothing here is in a
+                // position to say what is still reachable. The request
+                // keeps until the outermost run reaches a quiet point.
+                if (m_vm.collectPending && m_vm.runDepth <= 1 && StackIsQuiet(m_vm)) Collect(m_vm);
                 break;
 
             case OpCode::Halt:
@@ -900,6 +913,16 @@ private:
             case ValueType::Float: storage.asFloat = SlotAsFloat(slot); return &storage.asFloat;
             case ValueType::Bool: storage.asBool = SlotAsBool(slot); return &storage.asBool;
             case ValueType::Handle: storage.asHandle = SlotAsHandle(slot); return &storage.asHandle;
+
+            // The text a native is handed points into this machine's own
+            // string table. It is promised for the duration of the call
+            // and nothing beyond it -- a native that keeps the text has
+            // to copy it, because the table is the machine's to rearrange
+            // once the call has returned.
+            case ValueType::String: storage.asString = StringAt(m_vm, SlotAsStringId(slot)).c_str(); return &storage.asString;
+
+            case ValueType::Object: storage.asObject = SlotAsObject(slot); return &storage.asObject;
+            case ValueType::Null: storage.asObject = ObjectHandle{}; return &storage.asObject;
             default: return nullptr;
         }
     }
@@ -965,6 +988,8 @@ private:
             case ValueType::Float: returnAddress = &returned.asFloat; break;
             case ValueType::Bool: returnAddress = &returned.asBool; break;
             case ValueType::Handle: returnAddress = &returned.asHandle; break;
+            case ValueType::String: returnAddress = &returned.asString; break;
+            case ValueType::Object: returnAddress = &returned.asObject; break;
             default:
                 Fault(kFaultCodeMalformed, "script called an engine method answering with a type it cannot hold");
                 return;
@@ -978,6 +1003,17 @@ private:
             case ValueType::Float: PushFloat(returned.asFloat); break;
             case ValueType::Bool: PushBool(returned.asBool); break;
             case ValueType::Handle: Push(MakeHandleSlot(returned.asHandle)); break;
+
+            // Text a native answered with is taken into this machine's
+            // string table here and now, before anything else runs, so
+            // the native is free to overwrite whatever it pointed at the
+            // moment it returned. Answering with nothing is answering
+            // with empty text rather than a fault.
+            case ValueType::String:
+                Push(MakeStringSlot(Intern(m_vm, returned.asString ? std::string(returned.asString) : std::string())));
+                break;
+
+            case ValueType::Object: Push(MakeObjectSlot(returned.asObject)); break;
             default: break;
         }
     }
@@ -1134,11 +1170,53 @@ bool ResolveBoundCalls(Vm& vm, const BindingTable* bindings, DiagnosticList& out
 // its lowest slots, and reports what came back. Every way in from outside
 // goes through here, so a fault is recorded the same way whichever one
 // was used.
+//
+// A run started while another is still going -- a bound method that
+// reached back in and asked for an object to be made, or a method to be
+// called -- is given a stack and a set of frames of its own, and the ones
+// it interrupted are put back exactly as they were when it finishes. The
+// interrupted run is left holding whatever its current expression had
+// produced, which is why no collection happens while one is stacked
+// underneath (see the SafePoint case).
 Fluxion::Foundation::Result<ScriptValue> RunEntry(Vm& vm, u32 functionIndex, const std::vector<Slot>& incoming)
 {
     using ResultType = Fluxion::Foundation::Result<ScriptValue>;
 
     const FunctionInfo& entry = vm.module.functions[functionIndex];
+
+    std::vector<Slot> suspendedStack;
+    std::vector<Frame> suspendedFrames;
+    const bool nested = !vm.frames.empty();
+    if (nested)
+    {
+        suspendedStack.swap(vm.stack);
+        suspendedFrames.swap(vm.frames);
+    }
+
+    struct RunScope
+    {
+        Vm& machine;
+        bool wasNested;
+        std::vector<Slot>& savedStack;
+        std::vector<Frame>& savedFrames;
+
+        explicit RunScope(Vm& target, bool nestedRun, std::vector<Slot>& stack, std::vector<Frame>& frames)
+            : machine(target), wasNested(nestedRun), savedStack(stack), savedFrames(frames)
+        {
+            ++machine.runDepth;
+        }
+
+        ~RunScope()
+        {
+            --machine.runDepth;
+            if (!wasNested) return;
+            machine.stack = std::move(savedStack);
+            machine.frames = std::move(savedFrames);
+        }
+
+        RunScope(const RunScope&) = delete;
+        RunScope& operator=(const RunScope&) = delete;
+    } scope(vm, nested, suspendedStack, suspendedFrames);
 
     vm.stack.clear();
     vm.frames.clear();
@@ -1316,6 +1394,98 @@ const char* MethodName(const Vm* vm, u32 methodIndex)
     return vm->module.functions[methodIndex].qualifiedName.c_str();
 }
 
+bool ClassDerivesFrom(const Vm* vm, u32 classIndex, u32 baseIndex)
+{
+    if (!vm || baseIndex >= vm->module.classes.size()) return false;
+
+    u32 current = classIndex;
+    while (current < vm->module.classes.size())
+    {
+        if (current == baseIndex) return true;
+        current = vm->module.classes[current].baseClass;
+    }
+    return false;
+}
+
+u32 MethodParameterCount(const Vm* vm, u32 methodIndex)
+{
+    if (!vm || methodIndex >= vm->module.functions.size()) return 0;
+    return (u32)vm->module.functions[methodIndex].parameterTypes.size();
+}
+
+ValueType MethodParameterType(const Vm* vm, u32 methodIndex, u32 parameterIndex)
+{
+    if (!vm || methodIndex >= vm->module.functions.size()) return ValueType::Void;
+
+    const FunctionInfo& function = vm->module.functions[methodIndex];
+    if (parameterIndex >= function.parameterTypes.size()) return ValueType::Void;
+    return function.parameterTypes[parameterIndex];
+}
+
+u32 ClassAttributeCount(const Vm* vm, u32 classIndex)
+{
+    if (!vm || classIndex >= vm->module.classes.size()) return 0;
+    return (u32)vm->module.classes[classIndex].attributes.size();
+}
+
+const Attribute* ClassAttributeAt(const Vm* vm, u32 classIndex, u32 attributeIndex)
+{
+    if (!vm || classIndex >= vm->module.classes.size()) return nullptr;
+
+    const ClassInfo& info = vm->module.classes[classIndex];
+    if (attributeIndex >= info.attributes.size()) return nullptr;
+    return &info.attributes[attributeIndex];
+}
+
+const Attribute* FindClassAttribute(const Vm* vm, u32 classIndex, const char* name)
+{
+    if (!vm || !name || classIndex >= vm->module.classes.size()) return nullptr;
+
+    for (const Attribute& attribute : vm->module.classes[classIndex].attributes)
+    {
+        if (attribute.name == name) return &attribute;
+    }
+    return nullptr;
+}
+
+u32 ClassFieldCount(const Vm* vm, u32 classIndex)
+{
+    if (!vm || classIndex >= vm->module.classes.size()) return 0;
+    return (u32)vm->module.classes[classIndex].fields.size();
+}
+
+const FieldInfo* ClassFieldAt(const Vm* vm, u32 classIndex, u32 fieldIndex)
+{
+    if (!vm || classIndex >= vm->module.classes.size()) return nullptr;
+
+    const ClassInfo& info = vm->module.classes[classIndex];
+    if (fieldIndex >= info.fields.size()) return nullptr;
+    return &info.fields[fieldIndex];
+}
+
+const FieldInfo* FindClassField(const Vm* vm, u32 classIndex, const char* name)
+{
+    if (!vm || !name || classIndex >= vm->module.classes.size()) return nullptr;
+
+    for (const FieldInfo& field : vm->module.classes[classIndex].fields)
+    {
+        if (field.name == name) return &field;
+    }
+    return nullptr;
+}
+
+const Attribute* FindFieldAttribute(const Vm* vm, u32 classIndex, const char* fieldName, const char* attributeName)
+{
+    const FieldInfo* field = FindClassField(vm, classIndex, fieldName);
+    if (!field || !attributeName) return nullptr;
+
+    for (const Attribute& attribute : field->attributes)
+    {
+        if (attribute.name == attributeName) return &attribute;
+    }
+    return nullptr;
+}
+
 namespace
 {
 
@@ -1439,7 +1609,7 @@ HeapStats GetHeapStats(const Vm* vm)
 void CollectGarbage(Vm* vm)
 {
     if (!vm) return;
-    if (StackIsQuiet(*vm))
+    if (vm->runDepth == 0 && StackIsQuiet(*vm))
     {
         Collect(*vm);
         return;

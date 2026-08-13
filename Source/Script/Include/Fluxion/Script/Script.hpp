@@ -28,6 +28,19 @@ struct CompileOptions
     // itself. The table must outlive the call, not the module it
     // produces -- a compiled module names what it calls in text.
     const BindingTable* bindings = nullptr;
+
+    // Source the host wants compiled ahead of the caller's own, after
+    // the language's own prelude and against the same table. This is
+    // where declarations that only make sense once particular engine
+    // types are visible belong: nothing in this module names them, so
+    // whoever made those types visible is also who writes what builds on
+    // them. Empty means there is none.
+    //
+    // It is lexed under a file name of its own, so a message about it
+    // names the host's prelude rather than either of the other two
+    // sources in the same compilation.
+    std::string hostPrelude;
+    std::string hostPreludeName = "<host prelude>";
 };
 
 // What Compile produces and what CreateVm consumes. The compiler has
