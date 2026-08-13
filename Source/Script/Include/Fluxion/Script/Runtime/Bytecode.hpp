@@ -18,20 +18,28 @@ enum class OpCode : u16
     Nop,
 
     // Constant pushes. The operand is an index into the matching constant
-    // pool, except PushBool, whose operand is the literal 0 or 1.
+    // pool, except PushBool, whose operand is the literal 0 or 1, and
+    // PushNull, which has no operand.
     PushInt,
     PushFloat,
     PushBool,
     PushString,
+    PushNull,
 
     // Local variable access. The operand is a slot index relative to the
-    // current frame's base. Parameters occupy the lowest slots.
+    // current frame's base. Parameters occupy the lowest slots, preceded
+    // by the receiver in a method that has one.
     LoadLocal,
     StoreLocal,
 
     // Discards the top of the stack (an expression evaluated purely for
     // its side effects).
     Pop,
+
+    // Copies the top of the stack. Used where one produced value has to
+    // be consumed twice, such as a freshly allocated object that is both
+    // the receiver of its constructor and the result of the expression.
+    Dup,
 
     // Integer arithmetic.
     AddInt,
@@ -74,6 +82,12 @@ enum class OpCode : u16
     EqualString,
     NotEqualString,
 
+    // Reference comparison, which is identity: two references are equal
+    // when they name the same object, never when they merely hold equal
+    // field values.
+    EqualRef,
+    NotEqualRef,
+
     // Logical negation. `&&` and `||` have no opcodes of their own -- the
     // emitter expands them into conditional jumps so the right-hand side
     // is skipped when the left already decides the answer.
@@ -87,6 +101,15 @@ enum class OpCode : u16
     FloatToString,
     BoolToString,
 
+    // Object handling. NewObject's operand is a class index; its result
+    // has every field zeroed, which is already the declared default for
+    // each field type. LoadField/StoreField take a field slot within the
+    // object, counted from the base of the inheritance chain so a field
+    // sits at the same slot whichever class the reference is seen as.
+    NewObject,
+    LoadField,
+    StoreField,
+
     // Control flow. The operand is a target instruction index within the
     // enclosing function's own code range. JumpIfFalse/JumpIfTrue consume
     // the bool they test.
@@ -96,11 +119,24 @@ enum class OpCode : u16
 
     // Calls. The operand is an index into the module's function table for
     // Call, and a NativeFunctionId for CallNative. Arguments are already
-    // on the stack, leftmost pushed first.
+    // on the stack, leftmost pushed first, preceded by the receiver when
+    // the callee takes one.
+    //
+    // CallVirtual and CallInterface also name a function, but only to say
+    // which signature is being called: the function actually entered is
+    // the one the receiver's own class puts in that vtable slot, or in
+    // its table for the interface the named method belongs to.
     Call,
+    CallVirtual,
+    CallInterface,
     CallNative,
     Return,
     ReturnVoid,
+
+    // A point where the operand stack is known to be empty, so a pending
+    // collection can run without having to interpret anything the current
+    // expression left behind. Emitted between statements.
+    SafePoint,
 
     // Stops execution. Emitted only as a backstop; well-formed code
     // always leaves a function through Return/ReturnVoid.
@@ -134,36 +170,65 @@ enum class NativeFunctionId : u16
     DebugLogWarning,
     DebugLogError,
 
+    GcCollect,
+    GcLiveObjects,
+
     Count,
 };
 
 inline constexpr u32 kNativeFunctionCount = (u32)NativeFunctionId::Count;
 
 // Only what the compiler needs to resolve a call: which name it answers
-// to and what it takes. Several entries can share a name, one per
-// accepted argument type. Every built-in takes exactly one argument and
-// produces no value, so the argument's type alone picks the entry. Where
-// the output ends up is the interpreter's business, not the compiler's.
+// to, what it takes and what it gives back. Several entries can share a
+// name, one per accepted argument type; a built-in takes at most one
+// argument, so the argument's type alone picks the entry. A
+// `parameterType` of Void means the built-in takes nothing. Where the
+// output ends up is the interpreter's business, not the compiler's.
 struct NativeFunctionSignature
 {
     const char* qualifiedName;
     ValueType parameterType;
+    ValueType returnType;
 };
 
 // Points at a table of exactly kNativeFunctionCount entries, indexed by
 // NativeFunctionId.
 const NativeFunctionSignature* NativeFunctionTable();
 
+// Stand-ins for "there is none", used wherever a class, function or
+// vtable slot is optional.
+inline constexpr u32 kNoClass = 0xFFFFFFFFu;
+inline constexpr u32 kNoFunction = 0xFFFFFFFFu;
+inline constexpr u32 kNoVtableSlot = 0xFFFFFFFFu;
+
+// Reference bitmaps are packed into 32-bit words, one bit per slot, and
+// are what makes collection precise: they say exactly which frame slots
+// and which object fields hold a reference, so nothing else is ever
+// mistaken for one.
+inline bool IsReferenceBitSet(const std::vector<u32>& words, u32 index)
+{
+    const u32 word = index >> 5;
+    if (word >= words.size()) return false;
+    return ((words[word] >> (index & 31u)) & 1u) != 0u;
+}
+
+inline void SetReferenceBit(std::vector<u32>& words, u32 index)
+{
+    const u32 word = index >> 5;
+    if (words.size() <= (size_t)word) words.resize((size_t)word + 1, 0u);
+    words[word] |= (1u << (index & 31u));
+}
+
 inline constexpr u8 kModuleMagic[4] = { 'F', 'L', 'X', 'S' };
 
 // Bumped when the accepted source language changes in a way that alters
 // the meaning of already-valid code.
-inline constexpr u32 kLanguageVersion = 1;
+inline constexpr u32 kLanguageVersion = 2;
 
 // Bumped whenever the instruction set or the module layout changes. A
 // module carrying any other value is refused by the loader -- running it
 // would silently misinterpret opcodes.
-inline constexpr u32 kBytecodeVersion = 1;
+inline constexpr u32 kBytecodeVersion = 2;
 
 // Bumped when the engine-side interface reachable from a module changes
 // shape.
@@ -178,20 +243,67 @@ struct ModuleHeader
     u32 moduleVersion = 0;
 };
 
+// How a class satisfies one interface: for each slot of that interface's
+// own method numbering, the function this class runs. Built per class, so
+// a derived class that overrides an implementing method already points at
+// the override.
+struct InterfaceImplementation
+{
+    u32 interfaceClass = kNoClass;
+    std::vector<u32> methods;
+};
+
+struct ClassInfo
+{
+    std::string name;
+
+    // At most one base class; kNoClass for a root class, an interface, or
+    // a class holding only static members.
+    u32 baseClass = kNoClass;
+    bool isInterface = false;
+    bool isStatic = false;
+
+    // Fields of the whole inheritance chain: a base class's fields keep
+    // the slots they had, and a derived class's own fields follow them.
+    u32 fieldSlotCount = 0;
+    std::vector<u32> fieldReferenceBits;
+
+    // Virtual dispatch table. A slot is introduced by the class that
+    // first declares the method `virtual` and keeps its number in every
+    // derived class, where an `override` replaces the entry in place.
+    std::vector<u32> vtable;
+
+    std::vector<InterfaceImplementation> interfaces;
+
+    u32 constructorFunction = kNoFunction;
+};
+
 struct FunctionInfo
 {
     std::string qualifiedName;
     ValueType returnType = ValueType::Void;
     std::vector<ValueType> parameterTypes;
 
-    // Total frame size, parameters included: parameters occupy slots
-    // [0, parameterTypes.size()), locals follow.
+    // Total frame size, receiver and parameters included: an instance
+    // method's receiver is slot 0 and its parameters follow, a static
+    // method's parameters start at slot 0, and locals come after either.
     u32 localSlotCount = 0;
 
     // This function's instructions are BytecodeModule::code[codeOffset]
-    // through [codeOffset + codeLength).
+    // through [codeOffset + codeLength). A method declared by an
+    // interface has none: it exists only to name a signature that a call
+    // site dispatches on.
     u32 codeOffset = 0;
     u32 codeLength = 0;
+    bool hasBody = true;
+
+    u32 owningClass = kNoClass;
+    u32 vtableSlot = kNoVtableSlot;
+    bool isInstance = false;
+
+    // Which frame slots hold a reference, so a collection can find every
+    // root of an active call without inspecting anything else.
+    std::vector<u32> localReferenceBits;
 };
 
 // A loadable image: everything the interpreter needs, and nothing that
@@ -205,6 +317,7 @@ struct BytecodeModule
     std::vector<i32> intConstants;
     std::vector<f32> floatConstants;
     std::vector<std::string> stringConstants;
+    std::vector<ClassInfo> classes;
     std::vector<FunctionInfo> functions;
 };
 

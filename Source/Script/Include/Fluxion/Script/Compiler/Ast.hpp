@@ -18,6 +18,16 @@
 namespace Fluxion::Script
 {
 
+// A type as it was written down. `name` is set only when the source named
+// a declared type, in which case `type` is Object and `classIndex` is
+// filled in once the analyzer has seen every declaration in the file.
+struct TypeRef
+{
+    ValueType type = ValueType::Unknown;
+    std::string name;
+    u32 classIndex = kNoClass;
+};
+
 // --- Expressions -------------------------------------------------------
 
 enum class ExprKind
@@ -26,6 +36,9 @@ enum class ExprKind
     FloatLiteral,
     BoolLiteral,
     StringLiteral,
+    NullLiteral,
+    This,
+    New,
     Identifier,
     Member,
     Call,
@@ -39,8 +52,11 @@ struct Expr
     ExprKind kind;
     SourceLocation location;
 
-    // Filled in by semantic analysis.
+    // Filled in by semantic analysis. `resolvedClass` is meaningful only
+    // when `resolvedType` is Object, and names the class or interface the
+    // expression is statically known as.
     ValueType resolvedType = ValueType::Unknown;
+    u32 resolvedClass = kNoClass;
 
     // A widening the analyzer decided this expression needs once its own
     // value has been produced: Float means an int result must be widened,
@@ -77,6 +93,33 @@ struct StringLiteralExpr : Expr
     StringLiteralExpr() : Expr(ExprKind::StringLiteral) {}
 };
 
+// `null`. Its type is Null, which is assignable to a reference of any
+// class and comparable with one, and to nothing else.
+struct NullLiteralExpr : Expr
+{
+    NullLiteralExpr() : Expr(ExprKind::NullLiteral) {}
+};
+
+// `this`. Always frame slot zero, which is where the receiver of an
+// instance method lands.
+struct ThisExpr : Expr
+{
+    ThisExpr() : Expr(ExprKind::This) {}
+};
+
+// `new Name(args)`.
+struct NewExpr : Expr
+{
+    std::string typeName;
+    std::vector<ExprPtr> args;
+
+    // Filled in by semantic analysis.
+    u32 classIndex = kNoClass;
+    u32 constructorFunction = kNoFunction;
+
+    NewExpr() : Expr(ExprKind::New) {}
+};
+
 struct IdentifierExpr : Expr
 {
     std::string name;
@@ -84,22 +127,59 @@ struct IdentifierExpr : Expr
     // Frame slot the name resolves to, filled in by semantic analysis.
     int localSlot = -1;
 
+    // Set when the name is not a local at all but a field of the
+    // surrounding instance, in which case it reads as if `this.` had been
+    // written in front of it.
+    bool isField = false;
+    u32 fieldSlot = 0;
+
     IdentifierExpr() : Expr(ExprKind::Identifier) {}
 };
 
-// `A.B`. Only ever meaningful as the callee of a call at this point,
-// since no value in the language has members yet.
+// What `A.B` turned out to mean.
+enum class MemberBinding
+{
+    Unresolved,
+
+    // A field of the object `base` evaluates to.
+    Field,
+
+    // A name used purely to qualify something else -- a class holding the
+    // method being called, or a built-in's group. Never a value on its
+    // own, so `base` is left unanalyzed.
+    Scope,
+};
+
+// `A.B`.
 struct MemberExpr : Expr
 {
     ExprPtr base;
     std::string member;
+
+    MemberBinding binding = MemberBinding::Unresolved;
+    u32 fieldSlot = 0;
+
     MemberExpr() : Expr(ExprKind::Member) {}
 };
 
 enum class CallTarget
 {
     Unresolved,
+
+    // A method reached without a receiver.
     ScriptMethod,
+
+    // A method reached through a receiver and bound at compile time,
+    // because neither it nor anything overriding it can be reached any
+    // other way.
+    InstanceMethod,
+
+    // A method reached through a receiver and chosen at run time, from
+    // the receiver's own class: by vtable slot for Virtual, by the
+    // receiver's table for the named interface for Interface.
+    VirtualMethod,
+    InterfaceMethod,
+
     Native,
 };
 
@@ -108,8 +188,14 @@ struct CallExpr : Expr
     ExprPtr callee;
     std::vector<ExprPtr> args;
 
+    // The object the call runs on, moved here out of the callee during
+    // analysis. Null for a call that needs no receiver.
+    ExprPtr receiver;
+
     // Filled in by semantic analysis. `targetIndex` is a module function
-    // index for ScriptMethod and a NativeFunctionId for Native.
+    // index for every script call -- including the virtual and interface
+    // forms, where it names the signature being called rather than the
+    // body that will run -- and a NativeFunctionId for Native.
     CallTarget target = CallTarget::Unresolved;
     u32 targetIndex = 0;
 
@@ -140,7 +226,7 @@ struct BinaryExpr : Expr
 
     // The type both sides have been brought to, which selects the
     // opcode. Distinct from resolvedType: a comparison always resolves to
-    // bool but may operate on floats.
+    // bool but may operate on floats or on references.
     ValueType operandType = ValueType::Unknown;
 
     BinaryExpr() : Expr(ExprKind::Binary) {}
@@ -191,7 +277,7 @@ struct LocalDeclStmt : Stmt
     // which case declaredType is filled in from the initializer and an
     // initializer is mandatory.
     bool inferred = false;
-    ValueType declaredType = ValueType::Unknown;
+    TypeRef declaredType;
     std::string name;
     ExprPtr initializer; // may be null unless `inferred`
 
@@ -254,7 +340,7 @@ struct ContinueStmt : Stmt
 
 // --- Declarations ------------------------------------------------------
 
-enum class DeclKind { Class, Method };
+enum class DeclKind { Class, Method, Field };
 
 struct Decl
 {
@@ -267,23 +353,52 @@ using DeclPtr = std::unique_ptr<Decl>;
 
 struct ParamDecl
 {
-    ValueType type = ValueType::Unknown;
+    TypeRef type;
     std::string name;
     SourceLocation location;
 };
 
+struct FieldDecl : Decl
+{
+    TypeRef type;
+    std::string name;
+
+    // Slot within the object, counted across the whole inheritance chain
+    // and filled in by semantic analysis.
+    u32 fieldSlot = 0;
+
+    FieldDecl() : Decl(DeclKind::Field) {}
+};
+
 struct MethodDecl : Decl
 {
-    ValueType returnType = ValueType::Void;
+    TypeRef returnType;
     std::string name;
     std::string qualifiedName; // "Class.Method", filled in by semantic analysis
     std::vector<ParamDecl> params;
-    StmtPtr body; // a BlockStmt
+    StmtPtr body; // a BlockStmt; null for a method an interface only declares
+
+    bool isStatic = false;
+    bool isVirtual = false;
+    bool isOverride = false;
+    bool isConstructor = false;
+
+    // A constructor's `: base(args)`, and where it was written.
+    bool hasBaseCall = false;
+    std::vector<ExprPtr> baseArgs;
+    SourceLocation baseCallLocation;
 
     // Filled in by semantic analysis: the index this method will occupy
-    // in the module's function table, and the frame size its body needs.
+    // in the module's function table, the frame size its body needs,
+    // which class it belongs to, which vtable slot it answers to if it is
+    // dispatched on, the base constructor it chains to, and which frame
+    // slots hold a reference.
     u32 functionIndex = 0;
     u32 localSlotCount = 0;
+    u32 owningClass = kNoClass;
+    u32 vtableSlot = kNoVtableSlot;
+    u32 baseConstructorFunction = kNoFunction;
+    std::vector<u8> localIsReference;
 
     MethodDecl() : Decl(DeclKind::Method) {}
 };
@@ -291,7 +406,28 @@ struct MethodDecl : Decl
 struct ClassDecl : Decl
 {
     std::string name;
-    std::vector<DeclPtr> methods; // each a MethodDecl
+    bool isStatic = false;
+    bool isInterface = false;
+
+    // What followed the colon. The first entry may be a base class; the
+    // analyzer decides, since the parser cannot tell a class name from an
+    // interface name.
+    std::vector<std::string> baseNames;
+    std::vector<SourceLocation> baseLocations;
+
+    std::vector<DeclPtr> fields;  // each a FieldDecl
+    std::vector<DeclPtr> methods; // each a MethodDecl, constructors included
+
+    // Filled in by semantic analysis: everything the module's class table
+    // needs.
+    u32 classIndex = kNoClass;
+    u32 baseClass = kNoClass;
+    u32 fieldSlotCount = 0;
+    std::vector<u32> fieldReferenceBits;
+    std::vector<u32> vtable;
+    std::vector<InterfaceImplementation> interfaceTables;
+    u32 constructorFunction = kNoFunction;
+
     ClassDecl() : Decl(DeclKind::Class) {}
 };
 

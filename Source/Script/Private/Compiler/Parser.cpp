@@ -8,7 +8,7 @@ namespace Fluxion::Script
 namespace
 {
 
-bool IsTypeToken(TokenKind kind)
+bool IsBuiltInTypeToken(TokenKind kind)
 {
     switch (kind)
     {
@@ -49,9 +49,18 @@ public:
         Program program;
         while (!AtEnd())
         {
-            DeclPtr decl = ParseClassDecl();
-            if (decl) program.declarations.push_back(std::move(decl));
-            else SynchronizeToNextDecl();
+            const size_t before = m_position;
+            DeclPtr decl = ParseTypeDecl();
+            if (decl)
+            {
+                program.declarations.push_back(std::move(decl));
+                continue;
+            }
+
+            SynchronizeToNextDecl();
+            // A failed declaration that consumed nothing and landed on
+            // its own anchor would spin here forever.
+            if (m_position == before) Advance();
         }
         return program;
     }
@@ -104,13 +113,15 @@ private:
         m_diagnostics.AddError(std::move(location), std::move(message));
     }
 
-    // A class always begins with the same two tokens, so that pair is the
-    // only anchor worth trusting after an error.
+    // A type declaration always begins the same way, so those openers are
+    // the only anchors worth trusting after an error.
     void SynchronizeToNextDecl()
     {
         while (!AtEnd())
         {
-            if (Check(TokenKind::KwStatic) && PeekKind(1) == TokenKind::KwClass) return;
+            const TokenKind kind = Current().kind;
+            if (kind == TokenKind::KwClass || kind == TokenKind::KwInterface) return;
+            if (kind == TokenKind::KwStatic && PeekKind(1) == TokenKind::KwClass) return;
             Advance();
         }
     }
@@ -123,100 +134,270 @@ private:
         while (!AtEnd())
         {
             TokenKind kind = Current().kind;
-            if (depth == 0 && (kind == TokenKind::RBrace || kind == TokenKind::KwStatic)) return;
+            if (depth == 0 && IsMemberAnchor(kind)) return;
             if (kind == TokenKind::LBrace) ++depth;
             else if (kind == TokenKind::RBrace) --depth;
             Advance();
         }
     }
 
+    static bool IsMemberAnchor(TokenKind kind)
+    {
+        switch (kind)
+        {
+            case TokenKind::RBrace:
+            case TokenKind::KwStatic:
+            case TokenKind::KwVirtual:
+            case TokenKind::KwOverride:
+                return true;
+            default:
+                return IsBuiltInTypeToken(kind);
+        }
+    }
+
+    // --- Types ------------------------------------------------------------
+
+    bool ParseTypeRef(TypeRef& outType)
+    {
+        if (IsBuiltInTypeToken(Current().kind))
+        {
+            outType.type = TypeFromToken(Advance().kind);
+            outType.name.clear();
+            return true;
+        }
+        if (Check(TokenKind::Identifier))
+        {
+            outType.type = ValueType::Object;
+            outType.name = Advance().text;
+            return true;
+        }
+        return false;
+    }
+
     // --- Declarations ---------------------------------------------------
 
-    DeclPtr ParseClassDecl()
+    DeclPtr ParseTypeDecl()
     {
         SourceLocation loc = Current().location;
 
-        if (!Check(TokenKind::KwStatic))
+        bool isStatic = false;
+        bool isInterface = false;
+
+        if (Check(TokenKind::KwStatic))
         {
-            Error(loc, "expected a class declaration, found '" + Describe(Current()) + "'");
+            Advance();
+            isStatic = true;
+            if (!Expect(TokenKind::KwClass, "'class'")) return nullptr;
+        }
+        else if (Check(TokenKind::KwClass))
+        {
+            Advance();
+        }
+        else if (Check(TokenKind::KwInterface))
+        {
+            Advance();
+            isInterface = true;
+        }
+        else
+        {
+            Error(loc, "expected a class or interface declaration, found '" + Describe(Current()) + "'");
             Advance();
             return nullptr;
         }
-        Advance();
 
-        if (!Expect(TokenKind::KwClass, "'class'")) return nullptr;
-
-        const Token* nameToken = Expect(TokenKind::Identifier, "a class name");
+        const Token* nameToken = Expect(TokenKind::Identifier, isInterface ? "an interface name" : "a class name");
         if (!nameToken) return nullptr;
 
         auto decl = std::make_unique<ClassDecl>();
         decl->location = loc;
         decl->name = nameToken->text;
+        decl->isStatic = isStatic;
+        decl->isInterface = isInterface;
+
+        if (Match(TokenKind::Colon))
+        {
+            do
+            {
+                const SourceLocation baseLoc = Current().location;
+                const Token* baseName = Expect(TokenKind::Identifier, "a base type name");
+                if (!baseName) return nullptr;
+                decl->baseNames.push_back(baseName->text);
+                decl->baseLocations.push_back(baseLoc);
+            } while (Match(TokenKind::Comma));
+        }
 
         if (!Expect(TokenKind::LBrace, "'{'")) return nullptr;
 
         while (!Check(TokenKind::RBrace) && !AtEnd())
         {
-            DeclPtr method = ParseMethodDecl();
-            if (method) decl->methods.push_back(std::move(method));
-            else SynchronizeToNextMember();
+            const size_t before = m_position;
+            if (ParseMember(*decl)) continue;
+
+            SynchronizeToNextMember();
+            if (m_position == before) Advance();
         }
 
         if (!Expect(TokenKind::RBrace, "'}'")) return nullptr;
         return decl;
     }
 
-    DeclPtr ParseMethodDecl()
+    // Parses one member into `owner`, returning false when the member was
+    // malformed and the caller has to recover.
+    bool ParseMember(ClassDecl& owner)
     {
         SourceLocation loc = Current().location;
 
-        if (!Expect(TokenKind::KwStatic, "'static'")) return nullptr;
+        bool isStatic = Match(TokenKind::KwStatic);
 
-        if (!IsTypeToken(Current().kind))
+        bool isVirtual = false;
+        bool isOverride = false;
+        if (Match(TokenKind::KwVirtual)) isVirtual = true;
+        else if (Match(TokenKind::KwOverride)) isOverride = true;
+
+        // A constructor is the one member with no return type: it is
+        // named after its class and followed straight by a parameter
+        // list.
+        if (Check(TokenKind::Identifier) && Current().text == owner.name && PeekKind(1) == TokenKind::LParen)
+            return ParseConstructor(owner, loc, isStatic, isVirtual, isOverride);
+
+        TypeRef type;
+        if (!ParseTypeRef(type))
         {
-            Error(Current().location, "expected a return type, found '" + Describe(Current()) + "'");
-            return nullptr;
+            Error(Current().location, "expected a member type, found '" + Describe(Current()) + "'");
+            return false;
         }
-        ValueType returnType = TypeFromToken(Advance().kind);
 
-        const Token* nameToken = Expect(TokenKind::Identifier, "a method name");
-        if (!nameToken) return nullptr;
+        const Token* nameToken = Expect(TokenKind::Identifier, "a member name");
+        if (!nameToken) return false;
 
-        auto decl = std::make_unique<MethodDecl>();
-        decl->location = loc;
-        decl->returnType = returnType;
-        decl->name = nameToken->text;
+        if (Check(TokenKind::LParen))
+            return ParseMethod(owner, loc, std::move(type), nameToken->text, isStatic, isVirtual, isOverride);
 
-        if (!Expect(TokenKind::LParen, "'('")) return nullptr;
+        // Anything that is not a parameter list makes this a field.
+        if (isVirtual || isOverride)
+        {
+            Error(loc, "'" + nameToken->text + "' is a field, and a field cannot be declared 'virtual' or 'override'");
+            return false;
+        }
+        if (!Expect(TokenKind::Semicolon, "';'")) return false;
+
+        auto field = std::make_unique<FieldDecl>();
+        field->location = loc;
+        field->type = std::move(type);
+        field->name = nameToken->text;
+        if (isStatic)
+        {
+            Error(loc, "field '" + field->name + "' cannot be declared 'static'");
+            return false;
+        }
+        owner.fields.push_back(std::move(field));
+        return true;
+    }
+
+    bool ParseParameterList(MethodDecl& method)
+    {
+        if (!Expect(TokenKind::LParen, "'('")) return false;
         if (!Check(TokenKind::RParen))
         {
             do
             {
                 SourceLocation paramLoc = Current().location;
-                if (!IsTypeToken(Current().kind))
+                TypeRef paramType;
+                if (!ParseTypeRef(paramType))
                 {
                     Error(paramLoc, "expected a parameter type, found '" + Describe(Current()) + "'");
-                    return nullptr;
+                    return false;
                 }
-                ValueType paramType = TypeFromToken(Advance().kind);
                 const Token* paramName = Expect(TokenKind::Identifier, "a parameter name");
-                if (!paramName) return nullptr;
-                decl->params.push_back(ParamDecl{ paramType, paramName->text, paramLoc });
+                if (!paramName) return false;
+                method.params.push_back(ParamDecl{ std::move(paramType), paramName->text, paramLoc });
             } while (Match(TokenKind::Comma));
         }
-        if (!Expect(TokenKind::RParen, "')'")) return nullptr;
+        return Expect(TokenKind::RParen, "')'") != nullptr;
+    }
+
+    bool ParseMethod(ClassDecl& owner, SourceLocation loc, TypeRef returnType, const std::string& name,
+                     bool isStatic, bool isVirtual, bool isOverride)
+    {
+        auto decl = std::make_unique<MethodDecl>();
+        decl->location = loc;
+        decl->returnType = std::move(returnType);
+        decl->name = name;
+        decl->isStatic = isStatic;
+        decl->isVirtual = isVirtual;
+        decl->isOverride = isOverride;
+
+        if (!ParseParameterList(*decl)) return false;
+
+        // An interface names signatures and stops there; every other
+        // method brings a body.
+        if (owner.isInterface)
+        {
+            if (!Expect(TokenKind::Semicolon, "';'")) return false;
+            owner.methods.push_back(std::move(decl));
+            return true;
+        }
 
         StmtPtr body = ParseBlock();
-        if (!body) return nullptr;
+        if (!body) return false;
         decl->body = std::move(body);
-        return decl;
+        owner.methods.push_back(std::move(decl));
+        return true;
+    }
+
+    bool ParseConstructor(ClassDecl& owner, SourceLocation loc, bool isStatic, bool isVirtual, bool isOverride)
+    {
+        auto decl = std::make_unique<MethodDecl>();
+        decl->location = loc;
+        decl->name = Advance().text; // the class name
+        decl->isConstructor = true;
+        decl->isStatic = isStatic;
+        decl->returnType.type = ValueType::Void;
+
+        if (isVirtual || isOverride)
+        {
+            Error(loc, "a constructor cannot be declared 'virtual' or 'override'");
+            return false;
+        }
+
+        if (!ParseParameterList(*decl)) return false;
+
+        if (Match(TokenKind::Colon))
+        {
+            decl->baseCallLocation = Previous().location;
+            if (!Expect(TokenKind::KwBase, "'base'")) return false;
+            if (!Expect(TokenKind::LParen, "'('")) return false;
+            decl->hasBaseCall = true;
+
+            if (!Check(TokenKind::RParen))
+            {
+                do
+                {
+                    ExprPtr arg = ParseExpression();
+                    if (!arg) return false;
+                    decl->baseArgs.push_back(std::move(arg));
+                } while (Match(TokenKind::Comma));
+            }
+            if (!Expect(TokenKind::RParen, "')'")) return false;
+        }
+
+        StmtPtr body = ParseBlock();
+        if (!body) return false;
+        decl->body = std::move(body);
+        owner.methods.push_back(std::move(decl));
+        return true;
     }
 
     // --- Statements -------------------------------------------------------
 
     bool IsLocalDeclStart() const
     {
-        return IsTypeToken(Current().kind) || Check(TokenKind::KwVar);
+        if (IsBuiltInTypeToken(Current().kind) || Check(TokenKind::KwVar)) return true;
+
+        // A declared type is just a name, so two names in a row is what
+        // separates `Shape s` from an expression that merely starts with
+        // a name.
+        return Check(TokenKind::Identifier) && PeekKind(1) == TokenKind::Identifier;
     }
 
     StmtPtr ParseStatement()
@@ -282,9 +463,10 @@ private:
         {
             stmt->inferred = true;
         }
-        else
+        else if (!ParseTypeRef(stmt->declaredType))
         {
-            stmt->declaredType = TypeFromToken(Advance().kind);
+            Error(loc, "expected a variable type, found '" + Describe(Current()) + "'");
+            return nullptr;
         }
 
         const Token* nameToken = Expect(TokenKind::Identifier, "a variable name");
@@ -600,6 +782,19 @@ private:
             expr->value = Previous().kind == TokenKind::KwTrue;
             return expr;
         }
+        if (Match(TokenKind::KwNull))
+        {
+            auto expr = std::make_unique<NullLiteralExpr>();
+            expr->location = loc;
+            return expr;
+        }
+        if (Match(TokenKind::KwThis))
+        {
+            auto expr = std::make_unique<ThisExpr>();
+            expr->location = loc;
+            return expr;
+        }
+        if (Match(TokenKind::KwNew)) return ParseNew(loc);
         if (Match(TokenKind::Identifier))
         {
             auto expr = std::make_unique<IdentifierExpr>();
@@ -617,6 +812,29 @@ private:
 
         Error(loc, "expected an expression, found '" + Describe(Current()) + "'");
         return nullptr;
+    }
+
+    ExprPtr ParseNew(SourceLocation loc)
+    {
+        const Token* nameToken = Expect(TokenKind::Identifier, "a type name after 'new'");
+        if (!nameToken) return nullptr;
+
+        auto expr = std::make_unique<NewExpr>();
+        expr->location = loc;
+        expr->typeName = nameToken->text;
+
+        if (!Expect(TokenKind::LParen, "'('")) return nullptr;
+        if (!Check(TokenKind::RParen))
+        {
+            do
+            {
+                ExprPtr arg = ParseExpression();
+                if (!arg) return nullptr;
+                expr->args.push_back(std::move(arg));
+            } while (Match(TokenKind::Comma));
+        }
+        if (!Expect(TokenKind::RParen, "')'")) return nullptr;
+        return expr;
     }
 };
 

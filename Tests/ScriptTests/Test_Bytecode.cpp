@@ -147,6 +147,20 @@ void Test_Bytecode_Run(TestContext& ctx)
     }
 
     {
+        // A module built before the instruction set gained its object
+        // sections is refused just as firmly as one from the future:
+        // running it would misread every opcode past the ones it knew.
+        CompiledModule older = module;
+        older.header.bytecodeVersion = kBytecodeVersion - 1;
+
+        DiagnosticList loadDiagnostics;
+        Vm* vm = CreateVm(older, loadDiagnostics);
+        TEST_CHECK(ctx, vm == nullptr);
+        TEST_CHECK(ctx, loadDiagnostics.HasErrors());
+        DestroyVm(vm);
+    }
+
+    {
         CompiledModule stale = module;
         stale.header.engineAbiVersion = kEngineAbiVersion + 1;
 

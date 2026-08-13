@@ -1,5 +1,7 @@
 #include <Fluxion/Script/Runtime/Vm.hpp>
 
+#include <Runtime/ObjectHeap.hpp>
+
 #include <cmath>
 #include <cstdio>
 #include <new>
@@ -20,6 +22,12 @@ constexpr size_t kMaxCallDepth = 512;
 // An upper bound on the value stack so a mis-emitted or hand-edited
 // module cannot grow it without limit.
 constexpr size_t kMaxStackSlots = 1u << 16;
+
+// How many objects may be created between collections before one is
+// asked for. Low enough that a loop allocating in a tight cycle is kept
+// in check, high enough that a handful of short-lived objects costs
+// nothing.
+constexpr u32 kAllocationsBetweenCollections = 128;
 
 std::string FormatInt(i32 value) { return std::to_string(value); }
 
@@ -50,8 +58,9 @@ struct Frame
     // module's flat stream.
     u32 ip = 0;
 
-    // Index of this frame's slot zero in the value stack. Parameters and
-    // locals live there; the operand stack grows above them.
+    // Index of this frame's slot zero in the value stack. The receiver,
+    // parameters and locals live there; the operand stack grows above
+    // them.
     u32 localBase = 0;
 };
 
@@ -77,6 +86,17 @@ struct Vm
 
     std::vector<Slot> stack;
     std::vector<Frame> frames;
+
+    ObjectHeap heap;
+
+    // Set when something asked for a collection -- an allocation crossing
+    // the threshold, the script, or the host while a script is running.
+    // Honoured at the next point the whole value stack is quiet.
+    bool collectPending = false;
+
+    // Objects native code is holding onto. Listed one entry per pin, so
+    // two holders releasing independently do not surprise each other.
+    std::vector<ObjectHandle> pinnedRoots;
 };
 
 namespace
@@ -105,6 +125,49 @@ void Write(Vm& vm, OutputChannel channel, const std::string& text)
     else DefaultOutputHandler(nullptr, channel, text.c_str());
 }
 
+// True when no frame has anything on its operand stack, which is the case
+// exactly when every active call is sitting between two statements. Only
+// then are a frame's declared slots the whole truth about which
+// references it is holding, and only then may a collection run.
+bool StackIsQuiet(const Vm& vm)
+{
+    size_t expected = 0;
+    for (const Frame& frame : vm.frames)
+    {
+        if (frame.functionIndex >= vm.module.functions.size()) return false;
+        if ((size_t)frame.localBase != expected) return false;
+        expected = (size_t)frame.localBase + vm.module.functions[frame.functionIndex].localSlotCount;
+    }
+    return expected == vm.stack.size();
+}
+
+void Collect(Vm& vm)
+{
+    vm.heap.BeginCollection();
+
+    // The roots of an active call are the slots its function declared as
+    // references, and nothing else: the emitter recorded them, so no
+    // guessing is involved and no live value is ever mistaken for one.
+    for (const Frame& frame : vm.frames)
+    {
+        const FunctionInfo& function = vm.module.functions[frame.functionIndex];
+        for (u32 slot = 0; slot < function.localSlotCount; ++slot)
+        {
+            if (!IsReferenceBitSet(function.localReferenceBits, slot)) continue;
+
+            const size_t index = (size_t)frame.localBase + slot;
+            if (index >= vm.stack.size()) break;
+            vm.heap.Mark(SlotAsObject(vm.stack[index]), vm.module.classes);
+        }
+    }
+
+    for (ObjectHandle pinned : vm.pinnedRoots)
+        vm.heap.Mark(pinned, vm.module.classes);
+
+    vm.heap.Sweep();
+    vm.collectPending = false;
+}
+
 // Fault codes reported through the Result returned by Invoke. The
 // message that travels with them is a static string; the code is what
 // distinguishes the cases.
@@ -113,6 +176,8 @@ constexpr i32 kFaultCodeStackUnderflow = 11;
 constexpr i32 kFaultCodeStackOverflow = 12;
 constexpr i32 kFaultCodeCallDepth = 13;
 constexpr i32 kFaultCodeDivideByZero = 14;
+constexpr i32 kFaultCodeNullReference = 15;
+constexpr i32 kFaultCodeStaleReference = 16;
 
 class Interpreter
 {
@@ -172,6 +237,26 @@ private:
     void PushBool(bool value) { Push(MakeBoolSlot(value)); }
     void PushText(const std::string& text) { Push(MakeStringSlot(Intern(m_vm, text))); }
 
+    // Turns a slot into the object it names, or faults saying why it
+    // cannot: the language has no way to express an address, so the only
+    // two failures are a reference that was never given an object and one
+    // whose object has since been reclaimed.
+    bool RequireObject(Slot slot, ObjectHandle& outHandle)
+    {
+        if (SlotIsNull(slot))
+        {
+            Fault(kFaultCodeNullReference, "script reached through a reference that holds null");
+            return false;
+        }
+        outHandle = SlotAsObject(slot);
+        if (!m_vm.heap.IsAlive(outHandle))
+        {
+            Fault(kFaultCodeStaleReference, "script reached through a reference whose object no longer exists");
+            return false;
+        }
+        return true;
+    }
+
     void Step()
     {
         Frame& frame = m_vm.frames.back();
@@ -213,6 +298,8 @@ private:
                 Push(MakeStringSlot(m_vm.constantStringIds[instruction.operand]));
                 break;
 
+            case OpCode::PushNull: Push(MakeNullSlot()); break;
+
             case OpCode::LoadLocal: {
                 const size_t index = (size_t)m_vm.frames.back().localBase + instruction.operand;
                 if (index >= m_vm.stack.size()) { Fault(kFaultCodeMalformed, "script method read a local outside its frame"); break; }
@@ -229,6 +316,12 @@ private:
             }
 
             case OpCode::Pop: Pop(); break;
+
+            case OpCode::Dup: {
+                if (m_vm.stack.empty()) { Fault(kFaultCodeStackUnderflow, "script value stack underflowed"); break; }
+                Push(m_vm.stack.back());
+                break;
+            }
 
             case OpCode::AddInt: { const i32 b = SlotAsInt(Pop()); const i32 a = SlotAsInt(Pop()); PushInt((i32)((u32)a + (u32)b)); break; }
             case OpCode::SubInt: { const i32 b = SlotAsInt(Pop()); const i32 a = SlotAsInt(Pop()); PushInt((i32)((u32)a - (u32)b)); break; }
@@ -299,12 +392,47 @@ private:
                 break;
             }
 
+            // Identity, and nothing more: the whole handle is the
+            // object's name, so comparing the bits is comparing which
+            // object each side holds.
+            case OpCode::EqualRef: { const Slot b = Pop(); const Slot a = Pop(); PushBool(a.bits == b.bits); break; }
+            case OpCode::NotEqualRef: { const Slot b = Pop(); const Slot a = Pop(); PushBool(a.bits != b.bits); break; }
+
             case OpCode::NotBool: PushBool(!SlotAsBool(Pop())); break;
 
             case OpCode::IntToFloat: PushFloat((f32)SlotAsInt(Pop())); break;
             case OpCode::IntToString: PushText(FormatInt(SlotAsInt(Pop()))); break;
             case OpCode::FloatToString: PushText(FormatFloat(SlotAsFloat(Pop()))); break;
             case OpCode::BoolToString: PushText(FormatBool(SlotAsBool(Pop()))); break;
+
+            case OpCode::NewObject: ExecuteNewObject(instruction.operand); break;
+
+            case OpCode::LoadField: {
+                ObjectHandle handle;
+                if (!RequireObject(Pop(), handle)) break;
+
+                Slot value;
+                if (!m_vm.heap.ReadField(handle, instruction.operand, value))
+                {
+                    Fault(kFaultCodeMalformed, "script read a field the object does not have");
+                    break;
+                }
+                Push(value);
+                break;
+            }
+
+            case OpCode::StoreField: {
+                const Slot value = Pop();
+                ObjectHandle handle;
+                if (!RequireObject(Pop(), handle)) break;
+
+                if (!m_vm.heap.WriteField(handle, instruction.operand, value))
+                {
+                    Fault(kFaultCodeMalformed, "script wrote a field the object does not have");
+                    break;
+                }
+                break;
+            }
 
             case OpCode::Jump: m_vm.frames.back().ip = instruction.operand; break;
 
@@ -317,10 +445,16 @@ private:
                 break;
 
             case OpCode::Call: ExecuteCall(instruction.operand); break;
+            case OpCode::CallVirtual: ExecuteVirtualCall(instruction.operand); break;
+            case OpCode::CallInterface: ExecuteInterfaceCall(instruction.operand); break;
             case OpCode::CallNative: ExecuteNativeCall(instruction.operand); break;
 
             case OpCode::Return: ExecuteReturn(true); break;
             case OpCode::ReturnVoid: ExecuteReturn(false); break;
+
+            case OpCode::SafePoint:
+                if (m_vm.collectPending && StackIsQuiet(m_vm)) Collect(m_vm);
+                break;
 
             case OpCode::Halt:
                 Fault(kFaultCodeMalformed, "script execution reached a halt instruction");
@@ -332,11 +466,116 @@ private:
         }
     }
 
+    void ExecuteNewObject(u32 classIndex)
+    {
+        if (classIndex >= m_vm.module.classes.size())
+        {
+            Fault(kFaultCodeMalformed, "script allocation names a class the module does not contain");
+            return;
+        }
+
+        const ClassInfo& classInfo = m_vm.module.classes[classIndex];
+        const ObjectHandle handle = m_vm.heap.Allocate(classIndex, classInfo.fieldSlotCount);
+        if (handle.IsNull())
+        {
+            Fault(kFaultCodeMalformed, "script could not create an object");
+            return;
+        }
+
+        // Allocating never collects: this is the middle of an
+        // expression, where the stack still holds values only that
+        // expression knows the shape of. The request is recorded and the
+        // next quiet point acts on it.
+        if (m_vm.heap.AllocationsSinceCollection() >= kAllocationsBetweenCollections)
+            m_vm.collectPending = true;
+
+        Push(MakeObjectSlot(handle));
+    }
+
+    // How many stack slots a call to `function` consumes: its declared
+    // parameters, plus the receiver when it has one.
+    static size_t IncomingSlotCount(const FunctionInfo& function)
+    {
+        return function.parameterTypes.size() + (function.isInstance ? 1u : 0u);
+    }
+
+    // Reads back the receiver a call already pushed, without disturbing
+    // anything above it.
+    bool PeekReceiver(const FunctionInfo& declared, ObjectHandle& outHandle)
+    {
+        const size_t incoming = IncomingSlotCount(declared);
+        if (m_vm.stack.size() < incoming)
+        {
+            Fault(kFaultCodeStackUnderflow, "script call is missing its arguments");
+            return false;
+        }
+        return RequireObject(m_vm.stack[m_vm.stack.size() - incoming], outHandle);
+    }
+
+    void ExecuteVirtualCall(u32 declaredIndex)
+    {
+        if (declaredIndex >= m_vm.module.functions.size())
+        {
+            Fault(kFaultCodeMalformed, "script call names a method the module does not contain");
+            return;
+        }
+
+        const FunctionInfo& declared = m_vm.module.functions[declaredIndex];
+        ObjectHandle receiver;
+        if (!PeekReceiver(declared, receiver)) return;
+
+        const u32 classIndex = m_vm.heap.ClassOf(receiver);
+        if (classIndex >= m_vm.module.classes.size() || declared.vtableSlot >= m_vm.module.classes[classIndex].vtable.size())
+        {
+            Fault(kFaultCodeMalformed, "script call found no implementation for a method on the object it was made on");
+            return;
+        }
+
+        ExecuteCall(m_vm.module.classes[classIndex].vtable[declared.vtableSlot]);
+    }
+
+    void ExecuteInterfaceCall(u32 declaredIndex)
+    {
+        if (declaredIndex >= m_vm.module.functions.size())
+        {
+            Fault(kFaultCodeMalformed, "script call names a method the module does not contain");
+            return;
+        }
+
+        const FunctionInfo& declared = m_vm.module.functions[declaredIndex];
+        ObjectHandle receiver;
+        if (!PeekReceiver(declared, receiver)) return;
+
+        const u32 classIndex = m_vm.heap.ClassOf(receiver);
+        if (classIndex >= m_vm.module.classes.size())
+        {
+            Fault(kFaultCodeMalformed, "script call was made on an object of an unknown class");
+            return;
+        }
+
+        for (const InterfaceImplementation& implementation : m_vm.module.classes[classIndex].interfaces)
+        {
+            if (implementation.interfaceClass != declared.owningClass) continue;
+            if (declared.vtableSlot >= implementation.methods.size()) break;
+            ExecuteCall(implementation.methods[declared.vtableSlot]);
+            return;
+        }
+
+        Fault(kFaultCodeMalformed, "script call found no implementation for an interface method on the object it was made on");
+    }
+
     void ExecuteCall(u32 functionIndex)
     {
         if (functionIndex >= m_vm.module.functions.size())
         {
             Fault(kFaultCodeMalformed, "script call names a method the module does not contain");
+            return;
+        }
+
+        const FunctionInfo& callee = m_vm.module.functions[functionIndex];
+        if (!callee.hasBody)
+        {
+            Fault(kFaultCodeMalformed, "script call reached a method that has no body");
             return;
         }
         if (m_vm.frames.size() >= kMaxCallDepth)
@@ -345,20 +584,25 @@ private:
             return;
         }
 
-        const FunctionInfo& callee = m_vm.module.functions[functionIndex];
-        const size_t argCount = callee.parameterTypes.size();
-        if (m_vm.stack.size() < argCount)
+        const size_t incoming = IncomingSlotCount(callee);
+        if (m_vm.stack.size() < incoming)
         {
             Fault(kFaultCodeStackUnderflow, "script call is missing its arguments");
             return;
         }
 
-        // The arguments are already sitting on the stack in order, so
-        // they simply become the new frame's lowest slots.
+        if (callee.isInstance)
+        {
+            ObjectHandle receiver;
+            if (!RequireObject(m_vm.stack[m_vm.stack.size() - incoming], receiver)) return;
+        }
+
+        // The receiver and arguments are already sitting on the stack in
+        // order, so they simply become the new frame's lowest slots.
         Frame frame;
         frame.functionIndex = functionIndex;
         frame.ip = 0;
-        frame.localBase = (u32)(m_vm.stack.size() - argCount);
+        frame.localBase = (u32)(m_vm.stack.size() - incoming);
 
         const size_t frameEnd = (size_t)frame.localBase + callee.localSlotCount;
         if (frameEnd > kMaxStackSlots)
@@ -410,6 +654,11 @@ private:
             case NativeFunctionId::DebugLogWarning: Write(m_vm, OutputChannel::LogWarning, StringAt(m_vm, SlotAsStringId(Pop())) + "\n"); break;
             case NativeFunctionId::DebugLogError: Write(m_vm, OutputChannel::LogError, StringAt(m_vm, SlotAsStringId(Pop())) + "\n"); break;
 
+            // Asking is all a script can do: the collection itself waits
+            // for the next point between two statements.
+            case NativeFunctionId::GcCollect: m_vm.collectPending = true; break;
+            case NativeFunctionId::GcLiveObjects: PushInt((i32)m_vm.heap.LiveObjects()); break;
+
             default:
                 Fault(kFaultCodeMalformed, "script call names a built-in that does not exist");
                 break;
@@ -458,6 +707,7 @@ ScriptValue ValueFromSlot(const Vm& vm, ValueType type, Slot slot)
         case ValueType::Float: value.floatValue = SlotAsFloat(slot); break;
         case ValueType::Bool: value.boolValue = SlotAsBool(slot); break;
         case ValueType::String: value.stringValue = StringAt(vm, SlotAsStringId(slot)); break;
+        case ValueType::Object: value.objectValue = SlotAsObject(slot); break;
         default: break;
     }
     return value;
@@ -521,6 +771,10 @@ Fluxion::Foundation::Result<ScriptValue> Invoke(Vm* vm, const char* qualifiedNam
     const FunctionInfo& entry = vm->module.functions[functionIndex];
     if (!entry.parameterTypes.empty())
         return ResultType::Error(3, "the requested script method takes parameters and cannot be invoked this way");
+    if (entry.isInstance)
+        return ResultType::Error(4, "the requested script method belongs to an instance and cannot be invoked this way");
+    if (!entry.hasBody)
+        return ResultType::Error(5, "the requested script method has no body");
 
     vm->stack.clear();
     vm->frames.clear();
@@ -545,6 +799,51 @@ Fluxion::Foundation::Result<ScriptValue> Invoke(Vm* vm, const char* qualifiedNam
     ScriptValue value = ValueFromSlot(*vm, entry.returnType, interpreter.ReturnSlot());
     vm->stack.clear();
     return ResultType::Ok(std::move(value));
+}
+
+HeapStats GetHeapStats(const Vm* vm)
+{
+    HeapStats stats;
+    if (!vm) return stats;
+    stats.liveObjects = vm->heap.LiveObjects();
+    stats.totalAllocations = vm->heap.TotalAllocations();
+    stats.collectionCount = vm->heap.CollectionCount();
+    return stats;
+}
+
+void CollectGarbage(Vm* vm)
+{
+    if (!vm) return;
+    if (StackIsQuiet(*vm))
+    {
+        Collect(*vm);
+        return;
+    }
+    vm->collectPending = true;
+}
+
+bool IsObjectAlive(const Vm* vm, ObjectHandle handle)
+{
+    if (!vm) return false;
+    return vm->heap.IsAlive(handle);
+}
+
+bool PinObject(Vm* vm, ObjectHandle handle)
+{
+    if (!vm || !vm->heap.IsAlive(handle)) return false;
+    vm->pinnedRoots.push_back(handle);
+    return true;
+}
+
+void UnpinObject(Vm* vm, ObjectHandle handle)
+{
+    if (!vm) return;
+    for (size_t i = vm->pinnedRoots.size(); i > 0; --i)
+    {
+        if (vm->pinnedRoots[i - 1] != handle) continue;
+        vm->pinnedRoots.erase(vm->pinnedRoots.begin() + (ptrdiff_t)(i - 1));
+        return;
+    }
 }
 
 } // namespace Fluxion::Script

@@ -7,6 +7,8 @@ engine_add_test(
         Test_Semantic.cpp
         Test_Bytecode.cpp
         Test_VmExecution.cpp
+        Test_Objects.cpp
+        Test_Gc.cpp
     DEPENDENCIES
         Fluxion::Script
     NO_EXCEPTIONS

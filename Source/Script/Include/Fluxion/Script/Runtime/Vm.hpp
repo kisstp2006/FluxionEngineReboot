@@ -43,9 +43,40 @@ void DestroyVm(Vm* vm);
 void SetOutputHandler(Vm* vm, OutputHandler handler, void* user);
 
 // Runs a static method named as "Class.Method". The method must take no
-// parameters. On success the result holds the method's return value (a
-// Void value for a void method). The error message is a static string --
-// the code distinguishes the cases.
+// parameters and must not need a receiver. On success the result holds
+// the method's return value (a Void value for a void method). The error
+// message is a static string -- the code distinguishes the cases.
 Fluxion::Foundation::Result<ScriptValue> Invoke(Vm* vm, const char* qualifiedName);
+
+// What the object heap is currently holding. `totalAllocations` counts
+// every object ever created by this machine and never goes down, so the
+// gap between it and `liveObjects` is what a collection reclaimed.
+struct HeapStats
+{
+    u32 liveObjects = 0;
+    u64 totalAllocations = 0;
+    u32 collectionCount = 0;
+};
+
+HeapStats GetHeapStats(const Vm* vm);
+
+// Runs a collection now when nothing is executing. Called while a script
+// is running it instead requests one, which the next point with an empty
+// operand stack carries out -- collecting in the middle of an expression
+// would mean having to interpret the values that expression left on the
+// stack, and the whole design exists to avoid that.
+void CollectGarbage(Vm* vm);
+
+// True while `handle` still names the object it was taken from. A handle
+// to a reclaimed object reports false rather than reading whatever
+// occupies that record now.
+bool IsObjectAlive(const Vm* vm, ObjectHandle handle);
+
+// Keeps an object reachable for as long as native code holds onto it,
+// independently of anything the script can see. Pins nest: an object
+// pinned twice needs unpinning twice. Returns false if the handle does
+// not name a live object.
+bool PinObject(Vm* vm, ObjectHandle handle);
+void UnpinObject(Vm* vm, ObjectHandle handle);
 
 } // namespace Fluxion::Script

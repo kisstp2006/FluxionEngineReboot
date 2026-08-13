@@ -8,6 +8,8 @@ void Test_Semantic_Run(TestContext& ctx);
 void Test_Bytecode_Run(TestContext& ctx);
 void Test_VmExecution_Run(TestContext& ctx);
 void Test_VmExecution_Fixture_Run(TestContext& ctx);
+void Test_Objects_Run(TestContext& ctx);
+void Test_Gc_Run(TestContext& ctx);
 
 int main()
 {
@@ -21,6 +23,8 @@ int main()
     Test_Bytecode_Run(ctx);
     Test_VmExecution_Run(ctx);
     Test_VmExecution_Fixture_Run(ctx);
+    Test_Objects_Run(ctx);
+    Test_Gc_Run(ctx);
 
     if (ctx.failures == 0)
     {

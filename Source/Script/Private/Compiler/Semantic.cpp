@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Fluxion::Script
@@ -16,7 +17,7 @@ bool IsNumeric(ValueType type) { return type == ValueType::Int || type == ValueT
 // produced this type, so further complaints about it would only be noise.
 bool IsPoisoned(ValueType type) { return type == ValueType::Unknown; }
 
-std::string Quoted(ValueType type) { return std::string("'") + ValueTypeName(type) + "'"; }
+bool IsReference(ValueType type) { return type == ValueType::Object || type == ValueType::Null; }
 
 class Analyzer
 {
@@ -32,14 +33,23 @@ public:
         for (u32 i = 0; i < kNativeFunctionCount; ++i)
             m_natives[natives[i].qualifiedName].push_back((NativeFunctionId)i);
 
-        CollectDeclarations();
+        CollectClasses();
+        ResolveBaseLists();
+        CheckClassShapes();
+        if (m_diagnostics.HasErrors()) return false;
 
-        for (DeclPtr& decl : m_program.declarations)
+        SynthesizeConstructors();
+        AssignFunctionIndices();
+        ResolveMemberTypes();
+        if (m_diagnostics.HasErrors()) return false;
+
+        for (u32 i = 0; i < (u32)m_classes.size(); ++i) BuildLayout(i);
+        if (m_diagnostics.HasErrors()) return false;
+
+        for (ClassEntry& entry : m_classes)
         {
-            if (decl->kind != DeclKind::Class) continue;
-            auto* classDecl = static_cast<ClassDecl*>(decl.get());
-            m_currentClass = classDecl;
-            for (DeclPtr& method : classDecl->methods)
+            m_currentClass = &entry;
+            for (DeclPtr& method : entry.decl->methods)
                 AnalyzeMethod(*static_cast<MethodDecl*>(method.get()));
             m_currentClass = nullptr;
         }
@@ -48,23 +58,67 @@ public:
     }
 
 private:
+    struct FieldEntry
+    {
+        std::string name;
+        TypeRef type;
+        u32 slot = 0;
+    };
+
+    struct ClassEntry
+    {
+        ClassDecl* decl = nullptr;
+        u32 index = kNoClass;
+
+        u32 base = kNoClass;
+        std::vector<u32> declaredInterfaces;
+
+        // Every interface this class answers to, its base's included, so
+        // one lookup settles whether a reference can be seen as an
+        // interface.
+        std::vector<u32> allInterfaces;
+
+        // 0 = not started, 1 = being laid out, 2 = finished. The middle
+        // state is what catches a class that ends up inheriting from
+        // itself.
+        int layoutState = 0;
+
+        // Fields of the whole chain, the base's first, so a slot means
+        // the same thing whichever class a reference is seen as.
+        std::vector<FieldEntry> fields;
+
+        std::vector<u32> vtable;
+        std::vector<MethodDecl*> vtableMethods;
+
+        MethodDecl* constructor = nullptr;
+    };
+
     struct LocalSymbol
     {
-        ValueType type = ValueType::Unknown;
+        TypeRef type;
         int slot = -1;
     };
+
+    // What a frame slot has been used for. A slot is never shared between
+    // a reference and a plain value, so the bitmap that drives collection
+    // stays exact even though sibling scopes reuse slots.
+    enum class SlotUse : u8 { Free, Value, Reference };
 
     Program& m_program;
     DiagnosticList& m_diagnostics;
 
-    std::unordered_map<std::string, ClassDecl*> m_classes;
+    std::vector<ClassEntry> m_classes;
+    std::unordered_map<std::string, u32> m_classByName;
     std::unordered_map<std::string, MethodDecl*> m_methods; // keyed "Class.Method"
     std::unordered_map<std::string, std::vector<NativeFunctionId>> m_natives;
 
-    ClassDecl* m_currentClass = nullptr;
+    ClassEntry* m_currentClass = nullptr;
     MethodDecl* m_currentMethod = nullptr;
+    bool m_currentMethodIsInstance = false;
+
     std::vector<std::unordered_map<std::string, LocalSymbol>> m_scopes;
     std::vector<int> m_scopeSlotMarks;
+    std::vector<SlotUse> m_slotUses;
     int m_nextSlot = 0;
     int m_highWaterSlot = 0;
     int m_loopDepth = 0;
@@ -74,53 +128,611 @@ private:
         m_diagnostics.AddError(location, std::move(message));
     }
 
-    // Every method is numbered here, before any body is looked at, so a
-    // call can be resolved against a method declared later in the file.
-    void CollectDeclarations()
+    // --- Naming types in messages -------------------------------------------
+
+    std::string Quoted(ValueType type, u32 classIndex) const
     {
-        u32 nextFunctionIndex = 0;
+        if (type == ValueType::Object)
+        {
+            if (classIndex < m_classes.size()) return "'" + m_classes[classIndex].decl->name + "'";
+            return "a reference";
+        }
+        return std::string("'") + ValueTypeName(type) + "'";
+    }
+
+    std::string Quoted(const TypeRef& type) const { return Quoted(type.type, type.classIndex); }
+    std::string Quoted(const Expr& expr) const { return Quoted(expr.resolvedType, expr.resolvedClass); }
+
+    const std::string& ClassName(u32 index) const
+    {
+        static const std::string unknown = "<unknown>";
+        return index < m_classes.size() ? m_classes[index].decl->name : unknown;
+    }
+
+    // --- Declaration collection ---------------------------------------------
+
+    void CollectClasses()
+    {
         for (DeclPtr& decl : m_program.declarations)
         {
             if (decl->kind != DeclKind::Class) continue;
             auto* classDecl = static_cast<ClassDecl*>(decl.get());
 
-            if (!m_classes.emplace(classDecl->name, classDecl).second)
-                Error(classDecl->location, "class '" + classDecl->name + "' is declared more than once");
+            ClassEntry entry;
+            entry.decl = classDecl;
+            entry.index = (u32)m_classes.size();
+            classDecl->classIndex = entry.index;
 
-            for (DeclPtr& methodDecl : classDecl->methods)
+            if (!m_classByName.emplace(classDecl->name, entry.index).second)
+                Error(classDecl->location, "'" + classDecl->name + "' is declared more than once");
+
+            m_classes.push_back(std::move(entry));
+        }
+    }
+
+    bool FindClass(const std::string& name, u32& outIndex) const
+    {
+        auto found = m_classByName.find(name);
+        if (found == m_classByName.end()) return false;
+        outIndex = found->second;
+        return true;
+    }
+
+    void ResolveBaseLists()
+    {
+        for (ClassEntry& entry : m_classes)
+        {
+            ClassDecl& decl = *entry.decl;
+
+            if (decl.isInterface && !decl.baseNames.empty())
             {
-                auto* method = static_cast<MethodDecl*>(methodDecl.get());
-                method->qualifiedName = classDecl->name + "." + method->name;
-                method->functionIndex = nextFunctionIndex++;
+                Error(decl.baseLocations[0], "interface '" + decl.name + "' cannot declare a base list");
+                continue;
+            }
+            if (decl.isStatic && !decl.baseNames.empty())
+            {
+                Error(decl.baseLocations[0], "'" + decl.name + "' holds only static members, so it cannot declare a base list");
+                continue;
+            }
 
-                if (!m_methods.emplace(method->qualifiedName, method).second)
-                    Error(method->location, "method '" + method->qualifiedName + "' is declared more than once");
+            for (size_t i = 0; i < decl.baseNames.size(); ++i)
+            {
+                const std::string& name = decl.baseNames[i];
+                const SourceLocation& location = decl.baseLocations[i];
+
+                u32 target = kNoClass;
+                if (!FindClass(name, target))
+                {
+                    Error(location, "no type named '" + name + "' is declared");
+                    continue;
+                }
+                if (target == entry.index)
+                {
+                    Error(location, "'" + decl.name + "' cannot list itself as a base type");
+                    continue;
+                }
+
+                if (m_classes[target].decl->isInterface)
+                {
+                    bool duplicate = false;
+                    for (u32 existing : entry.declaredInterfaces) duplicate = duplicate || existing == target;
+                    if (duplicate)
+                        Error(location, "'" + decl.name + "' lists interface '" + name + "' more than once");
+                    else
+                        entry.declaredInterfaces.push_back(target);
+                    continue;
+                }
+
+                if (i != 0)
+                {
+                    Error(location, "base class '" + name + "' must come first in the base list of '" + decl.name + "'");
+                    continue;
+                }
+                if (m_classes[target].decl->isStatic)
+                {
+                    Error(location, "'" + name + "' holds only static members and cannot be used as a base class");
+                    continue;
+                }
+                entry.base = target;
             }
         }
     }
 
+    void CheckClassShapes()
+    {
+        for (ClassEntry& entry : m_classes)
+        {
+            ClassDecl& decl = *entry.decl;
+
+            for (DeclPtr& methodDecl : decl.methods)
+            {
+                auto* method = static_cast<MethodDecl*>(methodDecl.get());
+
+                if (decl.isInterface)
+                {
+                    if (method->isConstructor)
+                        Error(method->location, "interface '" + decl.name + "' cannot declare a constructor");
+                    else if (method->isStatic)
+                        Error(method->location, "'" + decl.name + "." + method->name + "' cannot be 'static': an interface declares instance methods only");
+                    else if (method->isVirtual || method->isOverride)
+                        Error(method->location, "'" + decl.name + "." + method->name + "' is already dispatched on, so it cannot be declared 'virtual' or 'override'");
+                    continue;
+                }
+
+                if (decl.isStatic)
+                {
+                    if (method->isConstructor)
+                        Error(method->location, "'" + decl.name + "' holds only static members, so it cannot declare a constructor");
+                    else if (!method->isStatic)
+                        Error(method->location, "'" + decl.name + "." + method->name + "' must be declared 'static', because '" + decl.name + "' holds only static members");
+                    continue;
+                }
+
+                if (method->isStatic && (method->isVirtual || method->isOverride))
+                    Error(method->location, "'" + decl.name + "." + method->name + "' cannot be both 'static' and dispatched on the instance");
+            }
+
+            if (decl.isInterface && !decl.fields.empty())
+                Error(decl.fields[0]->location, "interface '" + decl.name + "' cannot declare a field");
+            else if (decl.isStatic && !decl.fields.empty())
+                Error(decl.fields[0]->location, "'" + decl.name + "' holds only static members, so it cannot declare a field");
+        }
+    }
+
+    // Every class that can be instantiated ends up with a constructor,
+    // so a `new` and a base chain never have to special-case its absence.
+    void SynthesizeConstructors()
+    {
+        for (ClassEntry& entry : m_classes)
+        {
+            ClassDecl& decl = *entry.decl;
+            if (decl.isInterface || decl.isStatic) continue;
+
+            for (DeclPtr& methodDecl : decl.methods)
+            {
+                auto* method = static_cast<MethodDecl*>(methodDecl.get());
+                if (!method->isConstructor) continue;
+                if (entry.constructor)
+                {
+                    Error(method->location, "'" + decl.name + "' declares more than one constructor");
+                    continue;
+                }
+                entry.constructor = method;
+            }
+            if (entry.constructor) continue;
+
+            auto synthesized = std::make_unique<MethodDecl>();
+            synthesized->location = decl.location;
+            synthesized->name = decl.name;
+            synthesized->isConstructor = true;
+            synthesized->returnType.type = ValueType::Void;
+            synthesized->body = std::make_unique<BlockStmt>();
+            synthesized->body->location = decl.location;
+
+            entry.constructor = synthesized.get();
+            decl.methods.push_back(std::move(synthesized));
+        }
+    }
+
+    // Every method is numbered here, before any body is looked at, so a
+    // call can be resolved against a method declared later in the file.
+    void AssignFunctionIndices()
+    {
+        u32 nextFunctionIndex = 0;
+        for (ClassEntry& entry : m_classes)
+        {
+            ClassDecl& decl = *entry.decl;
+            for (DeclPtr& methodDecl : decl.methods)
+            {
+                auto* method = static_cast<MethodDecl*>(methodDecl.get());
+                method->owningClass = entry.index;
+                method->qualifiedName = decl.name + "." + method->name;
+                method->functionIndex = nextFunctionIndex++;
+
+                if (method->isConstructor) continue;
+                if (!m_methods.emplace(method->qualifiedName, method).second)
+                    Error(method->location, "method '" + method->qualifiedName + "' is declared more than once");
+            }
+            if (entry.constructor) decl.constructorFunction = entry.constructor->functionIndex;
+        }
+    }
+
+    bool ResolveTypeRef(TypeRef& type, const SourceLocation& location, const std::string& what)
+    {
+        if (type.type != ValueType::Object) return true;
+
+        u32 index = kNoClass;
+        if (!FindClass(type.name, index))
+        {
+            Error(location, "no type named '" + type.name + "' is declared, " + what);
+            type.type = ValueType::Unknown;
+            return false;
+        }
+        if (m_classes[index].decl->isStatic)
+        {
+            Error(location, "'" + type.name + "' holds only static members, so nothing can have it as a type");
+            type.type = ValueType::Unknown;
+            return false;
+        }
+        type.classIndex = index;
+        return true;
+    }
+
+    void ResolveMemberTypes()
+    {
+        for (ClassEntry& entry : m_classes)
+        {
+            ClassDecl& decl = *entry.decl;
+
+            for (DeclPtr& fieldDecl : decl.fields)
+            {
+                auto* field = static_cast<FieldDecl*>(fieldDecl.get());
+                if (field->type.type == ValueType::Void)
+                {
+                    Error(field->location, "field '" + field->name + "' cannot have type 'void'");
+                    field->type.type = ValueType::Unknown;
+                    continue;
+                }
+                ResolveTypeRef(field->type, field->location, "so field '" + field->name + "' has no type");
+            }
+
+            for (DeclPtr& methodDecl : decl.methods)
+            {
+                auto* method = static_cast<MethodDecl*>(methodDecl.get());
+                ResolveTypeRef(method->returnType, method->location,
+                    "so '" + method->qualifiedName + "' has no return type");
+
+                for (ParamDecl& param : method->params)
+                {
+                    if (param.type.type == ValueType::Void)
+                    {
+                        Error(param.location, "parameter '" + param.name + "' cannot have type 'void'");
+                        param.type.type = ValueType::Unknown;
+                        continue;
+                    }
+                    ResolveTypeRef(param.type, param.location, "so parameter '" + param.name + "' has no type");
+                }
+            }
+        }
+    }
+
+    // --- Layout --------------------------------------------------------------
+
+    void BuildLayout(u32 index)
+    {
+        ClassEntry& entry = m_classes[index];
+        if (entry.layoutState == 2) return;
+        if (entry.layoutState == 1)
+        {
+            Error(entry.decl->location, "'" + entry.decl->name + "' inherits from itself through its base list");
+            entry.layoutState = 2;
+            entry.base = kNoClass;
+            return;
+        }
+        entry.layoutState = 1;
+
+        // Everything this class builds on has to be finished first: its
+        // fields sit after the base's, and its table entries replace the
+        // base's in place.
+        if (entry.base != kNoClass) BuildLayout(entry.base);
+        for (u32 iface : entry.declaredInterfaces) BuildLayout(iface);
+
+        BuildFields(index);
+        BuildVirtualTable(index);
+        BuildInterfaceTables(index);
+
+        m_classes[index].layoutState = 2;
+        Publish(index);
+    }
+
+    void BuildFields(u32 index)
+    {
+        ClassEntry& entry = m_classes[index];
+        ClassDecl& decl = *entry.decl;
+
+        if (entry.base != kNoClass) entry.fields = m_classes[entry.base].fields;
+
+        for (DeclPtr& fieldDecl : decl.fields)
+        {
+            auto* field = static_cast<FieldDecl*>(fieldDecl.get());
+
+            bool duplicate = false;
+            for (const FieldEntry& existing : entry.fields) duplicate = duplicate || existing.name == field->name;
+            if (duplicate)
+            {
+                Error(field->location, "field '" + field->name + "' is already declared in '" + decl.name + "' or one of its base classes");
+                continue;
+            }
+
+            FieldEntry created;
+            created.name = field->name;
+            created.type = field->type;
+            created.slot = (u32)entry.fields.size();
+            field->fieldSlot = created.slot;
+            entry.fields.push_back(std::move(created));
+        }
+    }
+
+    void BuildVirtualTable(u32 index)
+    {
+        ClassEntry& entry = m_classes[index];
+        ClassDecl& decl = *entry.decl;
+
+        if (entry.base != kNoClass)
+        {
+            entry.vtable = m_classes[entry.base].vtable;
+            entry.vtableMethods = m_classes[entry.base].vtableMethods;
+        }
+
+        for (DeclPtr& methodDecl : decl.methods)
+        {
+            auto* method = static_cast<MethodDecl*>(methodDecl.get());
+            if (method->isConstructor || method->isStatic) continue;
+
+            // An interface numbers each of its own methods, which is what
+            // a call through it dispatches on.
+            if (decl.isInterface)
+            {
+                method->vtableSlot = (u32)entry.vtable.size();
+                entry.vtable.push_back(method->functionIndex);
+                entry.vtableMethods.push_back(method);
+                continue;
+            }
+
+            MethodDecl* inherited = FindMethodInChain(entry.base, method->name);
+
+            if (method->isOverride)
+            {
+                if (!inherited)
+                {
+                    Error(method->location, "'" + method->qualifiedName + "' is declared 'override', but no base class declares a method named '" + method->name + "'");
+                    continue;
+                }
+                if (inherited->vtableSlot == kNoVtableSlot)
+                {
+                    Error(method->location, "'" + method->qualifiedName + "' cannot override '" + inherited->qualifiedName + "', which is not declared 'virtual'");
+                    continue;
+                }
+                if (!SameSignature(*method, *inherited))
+                {
+                    Error(method->location, "'" + method->qualifiedName + "' does not have the same signature as '" + inherited->qualifiedName + "', which it overrides");
+                    continue;
+                }
+                method->vtableSlot = inherited->vtableSlot;
+                entry.vtable[inherited->vtableSlot] = method->functionIndex;
+                entry.vtableMethods[inherited->vtableSlot] = method;
+                continue;
+            }
+
+            if (inherited)
+            {
+                Error(method->location, "'" + method->qualifiedName + "' hides '" + inherited->qualifiedName + "'; declare it 'override' to replace it instead");
+                continue;
+            }
+
+            if (method->isVirtual)
+            {
+                method->vtableSlot = (u32)entry.vtable.size();
+                entry.vtable.push_back(method->functionIndex);
+                entry.vtableMethods.push_back(method);
+            }
+        }
+    }
+
+    void BuildInterfaceTables(u32 index)
+    {
+        ClassEntry& entry = m_classes[index];
+        ClassDecl& decl = *entry.decl;
+
+        if (entry.base != kNoClass) entry.allInterfaces = m_classes[entry.base].allInterfaces;
+        for (u32 iface : entry.declaredInterfaces)
+        {
+            bool present = false;
+            for (u32 existing : entry.allInterfaces) present = present || existing == iface;
+            if (!present) entry.allInterfaces.push_back(iface);
+        }
+
+        if (decl.isInterface || decl.isStatic) return;
+
+        decl.interfaceTables.clear();
+        for (u32 iface : entry.allInterfaces)
+        {
+            InterfaceImplementation implementation;
+            implementation.interfaceClass = iface;
+
+            const std::vector<MethodDecl*> wanted = m_classes[iface].vtableMethods;
+            for (MethodDecl* want : wanted)
+            {
+                MethodDecl* have = FindMethodInChain(index, want->name);
+                if (!have || have->isStatic || have->isConstructor || !SameSignature(*have, *want))
+                {
+                    Error(decl.location, "'" + decl.name + "' does not implement '" + want->qualifiedName + "'");
+                    implementation.methods.push_back(kNoFunction);
+                    continue;
+                }
+
+                // A method that is dispatched on may already have been
+                // replaced further down the chain, so the vtable is the
+                // authority on which body actually runs.
+                const u32 target = (have->vtableSlot != kNoVtableSlot)
+                    ? m_classes[index].vtable[have->vtableSlot]
+                    : have->functionIndex;
+                implementation.methods.push_back(target);
+            }
+
+            m_classes[index].decl->interfaceTables.push_back(std::move(implementation));
+        }
+    }
+
+    void Publish(u32 index)
+    {
+        ClassEntry& entry = m_classes[index];
+        ClassDecl& decl = *entry.decl;
+
+        decl.baseClass = entry.base;
+        decl.fieldSlotCount = (u32)entry.fields.size();
+        decl.vtable = entry.vtable;
+
+        decl.fieldReferenceBits.clear();
+        for (const FieldEntry& field : entry.fields)
+        {
+            if (field.type.type == ValueType::Object) SetReferenceBit(decl.fieldReferenceBits, field.slot);
+        }
+    }
+
+    MethodDecl* FindMethodInChain(u32 index, const std::string& name) const
+    {
+        u32 current = index;
+        while (current != kNoClass && current < m_classes.size())
+        {
+            for (const DeclPtr& methodDecl : m_classes[current].decl->methods)
+            {
+                auto* method = static_cast<MethodDecl*>(methodDecl.get());
+                if (!method->isConstructor && method->name == name) return method;
+            }
+            current = m_classes[current].base;
+        }
+        return nullptr;
+    }
+
+    const FieldEntry* FindField(u32 index, const std::string& name) const
+    {
+        if (index >= m_classes.size()) return nullptr;
+        for (const FieldEntry& field : m_classes[index].fields)
+        {
+            if (field.name == name) return &field;
+        }
+        return nullptr;
+    }
+
+    static bool SameType(const TypeRef& a, const TypeRef& b)
+    {
+        return a.type == b.type && (a.type != ValueType::Object || a.classIndex == b.classIndex);
+    }
+
+    static bool SameSignature(const MethodDecl& a, const MethodDecl& b)
+    {
+        if (!SameType(a.returnType, b.returnType)) return false;
+        if (a.params.size() != b.params.size()) return false;
+        for (size_t i = 0; i < a.params.size(); ++i)
+        {
+            if (!SameType(a.params[i].type, b.params[i].type)) return false;
+        }
+        return true;
+    }
+
+    bool IsDerivedFrom(u32 derived, u32 base) const
+    {
+        u32 current = derived;
+        while (current != kNoClass && current < m_classes.size())
+        {
+            if (current == base) return true;
+            current = m_classes[current].base;
+        }
+        return false;
+    }
+
+    bool ImplementsInterface(u32 index, u32 iface) const
+    {
+        if (index >= m_classes.size()) return false;
+        for (u32 existing : m_classes[index].allInterfaces)
+        {
+            if (existing == iface) return true;
+        }
+        return false;
+    }
+
+    // A reference travels only towards a less specific type: to a base
+    // class, or to an interface the class implements. Nothing brings it
+    // back the other way, so no check can fail at run time.
+    bool IsReferenceAssignable(const Expr& value, const TypeRef& target) const
+    {
+        if (value.resolvedType == ValueType::Null) return true;
+        if (value.resolvedType != ValueType::Object) return false;
+        if (value.resolvedClass == target.classIndex) return true;
+        if (target.classIndex >= m_classes.size()) return false;
+        if (m_classes[target.classIndex].decl->isInterface)
+            return ImplementsInterface(value.resolvedClass, target.classIndex);
+        return IsDerivedFrom(value.resolvedClass, target.classIndex);
+    }
+
+    // --- Methods -------------------------------------------------------------
+
     void AnalyzeMethod(MethodDecl& method)
     {
         m_currentMethod = &method;
+        m_currentMethodIsInstance = !method.isStatic && !m_currentClass->decl->isStatic;
+
         m_scopes.clear();
         m_scopeSlotMarks.clear();
+        m_slotUses.clear();
         m_nextSlot = 0;
         m_highWaterSlot = 0;
         m_loopDepth = 0;
 
         PushScope();
-        for (ParamDecl& param : method.params)
+
+        if (m_currentMethodIsInstance)
         {
-            if (param.type == ValueType::Void)
-                Error(param.location, "parameter '" + param.name + "' cannot have type 'void'");
-            DeclareLocal(param.name, param.type, param.location);
+            TypeRef self;
+            self.type = ValueType::Object;
+            self.classIndex = m_currentClass->index;
+            DeclareLocal("this", self, method.location);
         }
+
+        for (ParamDecl& param : method.params)
+            DeclareLocal(param.name, param.type, param.location);
+
+        if (method.isConstructor) AnalyzeBaseCall(method);
 
         if (method.body) AnalyzeStmt(*method.body);
         PopScope();
 
         method.localSlotCount = (u32)m_highWaterSlot;
+        method.localIsReference.assign((size_t)m_highWaterSlot, 0);
+        for (size_t i = 0; i < m_slotUses.size() && i < method.localIsReference.size(); ++i)
+            method.localIsReference[i] = (m_slotUses[i] == SlotUse::Reference) ? 1u : 0u;
+
         m_currentMethod = nullptr;
+    }
+
+    void AnalyzeBaseCall(MethodDecl& method)
+    {
+        const u32 base = m_currentClass->base;
+
+        if (base == kNoClass)
+        {
+            if (method.hasBaseCall)
+                Error(method.baseCallLocation, "'" + m_currentClass->decl->name + "' has no base class, so its constructor cannot chain to one");
+            return;
+        }
+
+        MethodDecl* baseConstructor = m_classes[base].constructor;
+        if (!baseConstructor) return;
+
+        method.baseConstructorFunction = baseConstructor->functionIndex;
+
+        if (!method.hasBaseCall)
+        {
+            if (!baseConstructor->params.empty())
+                Error(method.location, "the constructor of '" + m_currentClass->decl->name + "' must begin with ': base(...)', because the constructor of '" +
+                                           ClassName(base) + "' takes " + std::to_string(baseConstructor->params.size()) + " argument(s)");
+            return;
+        }
+
+        for (ExprPtr& arg : method.baseArgs) AnalyzeExpr(*arg);
+
+        if (method.baseArgs.size() != baseConstructor->params.size())
+        {
+            Error(method.baseCallLocation, "the constructor of '" + ClassName(base) + "' takes " +
+                                               std::to_string(baseConstructor->params.size()) + " argument(s) but " +
+                                               std::to_string(method.baseArgs.size()) + " were given");
+            return;
+        }
+
+        for (size_t i = 0; i < method.baseArgs.size(); ++i)
+            CheckAssignable(*method.baseArgs[i], baseConstructor->params[i].type,
+                "in argument " + std::to_string(i + 1) + " of the base constructor");
     }
 
     // --- Scopes ------------------------------------------------------------
@@ -140,7 +752,7 @@ private:
         m_scopeSlotMarks.pop_back();
     }
 
-    int DeclareLocal(const std::string& name, ValueType type, const SourceLocation& location)
+    int DeclareLocal(const std::string& name, const TypeRef& type, const SourceLocation& location)
     {
         auto& scope = m_scopes.back();
         if (scope.find(name) != scope.end())
@@ -149,8 +761,23 @@ private:
             return scope[name].slot;
         }
 
-        int slot = m_nextSlot++;
+        const SlotUse use = (type.type == ValueType::Object) ? SlotUse::Reference : SlotUse::Value;
+
+        // A slot handed back by an earlier scope is reused only for the
+        // same kind of value. Mixing the two would leave the frame's
+        // reference bitmap describing whichever declaration came last,
+        // and a collection reads that bitmap as fact.
+        while (m_nextSlot < (int)m_slotUses.size() && m_slotUses[(size_t)m_nextSlot] != SlotUse::Free &&
+               m_slotUses[(size_t)m_nextSlot] != use)
+        {
+            ++m_nextSlot;
+        }
+
+        const int slot = m_nextSlot++;
+        if ((int)m_slotUses.size() <= slot) m_slotUses.resize((size_t)slot + 1, SlotUse::Free);
+        m_slotUses[(size_t)slot] = use;
         if (m_nextSlot > m_highWaterSlot) m_highWaterSlot = m_nextSlot;
+
         scope.emplace(name, LocalSymbol{ type, slot });
         return slot;
     }
@@ -244,24 +871,34 @@ private:
             if (!stmt.initializer)
             {
                 Error(stmt.location, "'" + stmt.name + "' needs an initializer for its type to be inferred");
-                stmt.declaredType = ValueType::Unknown;
+                stmt.declaredType.type = ValueType::Unknown;
             }
             else if (stmt.initializer->resolvedType == ValueType::Void)
             {
                 Error(stmt.initializer->location, "cannot infer the type of '" + stmt.name + "' from an expression that produces no value");
-                stmt.declaredType = ValueType::Unknown;
+                stmt.declaredType.type = ValueType::Unknown;
+            }
+            else if (stmt.initializer->resolvedType == ValueType::Null)
+            {
+                Error(stmt.initializer->location, "cannot infer the type of '" + stmt.name + "' from 'null'");
+                stmt.declaredType.type = ValueType::Unknown;
             }
             else
             {
-                stmt.declaredType = stmt.initializer->resolvedType;
+                stmt.declaredType.type = stmt.initializer->resolvedType;
+                stmt.declaredType.classIndex = stmt.initializer->resolvedClass;
             }
         }
         else
         {
-            if (stmt.declaredType == ValueType::Void)
+            if (stmt.declaredType.type == ValueType::Void)
             {
                 Error(stmt.location, "variable '" + stmt.name + "' cannot have type 'void'");
-                stmt.declaredType = ValueType::Unknown;
+                stmt.declaredType.type = ValueType::Unknown;
+            }
+            else
+            {
+                ResolveTypeRef(stmt.declaredType, stmt.location, "so variable '" + stmt.name + "' has no type");
             }
             if (stmt.initializer)
                 CheckAssignable(*stmt.initializer, stmt.declaredType, "in the initializer of '" + stmt.name + "'");
@@ -272,17 +909,19 @@ private:
 
     void AnalyzeReturn(ReturnStmt& stmt)
     {
-        const ValueType returnType = m_currentMethod ? m_currentMethod->returnType : ValueType::Void;
+        TypeRef returnType;
+        returnType.type = ValueType::Void;
+        if (m_currentMethod) returnType = m_currentMethod->returnType;
 
         if (!stmt.value)
         {
-            if (returnType != ValueType::Void)
+            if (returnType.type != ValueType::Void)
                 Error(stmt.location, "a method returning " + Quoted(returnType) + " must return a value");
             return;
         }
 
         AnalyzeExpr(*stmt.value);
-        if (returnType == ValueType::Void)
+        if (returnType.type == ValueType::Void)
         {
             Error(stmt.location, "a method returning 'void' cannot return a value");
             return;
@@ -293,21 +932,30 @@ private:
     void RequireBool(Expr& expr, const char* construct)
     {
         if (expr.resolvedType == ValueType::Bool || IsPoisoned(expr.resolvedType)) return;
-        Error(expr.location, std::string("the condition of '") + construct + "' must be 'bool', found " + Quoted(expr.resolvedType));
+        Error(expr.location, std::string("the condition of '") + construct + "' must be 'bool', found " + Quoted(expr));
     }
 
-    // The one implicit conversion in the language, applied wherever a
-    // value flows into a declared type.
-    bool CheckAssignable(Expr& value, ValueType target, const std::string& context)
+    // The conversions a value may go through on its way into a declared
+    // type: an int widening to a float, and a reference being seen as
+    // something less specific.
+    bool CheckAssignable(Expr& value, const TypeRef& target, const std::string& context)
     {
-        if (IsPoisoned(target) || IsPoisoned(value.resolvedType)) return true;
-        if (value.resolvedType == target) return true;
-        if (target == ValueType::Float && value.resolvedType == ValueType::Int)
+        if (IsPoisoned(target.type) || IsPoisoned(value.resolvedType)) return true;
+
+        if (IsReference(target.type) || IsReference(value.resolvedType))
+        {
+            if (target.type == ValueType::Object && IsReferenceAssignable(value, target)) return true;
+            Error(value.location, "cannot convert " + Quoted(value) + " to " + Quoted(target) + " " + context);
+            return false;
+        }
+
+        if (value.resolvedType == target.type) return true;
+        if (target.type == ValueType::Float && value.resolvedType == ValueType::Int)
         {
             value.conversion = ValueType::Float;
             return true;
         }
-        Error(value.location, "cannot convert " + Quoted(value.resolvedType) + " to " + Quoted(target) + " " + context);
+        Error(value.location, "cannot convert " + Quoted(value) + " to " + Quoted(target) + " " + context);
         return false;
     }
 
@@ -321,28 +969,23 @@ private:
             case ExprKind::FloatLiteral: expr.resolvedType = ValueType::Float; break;
             case ExprKind::BoolLiteral: expr.resolvedType = ValueType::Bool; break;
             case ExprKind::StringLiteral: expr.resolvedType = ValueType::String; break;
+            case ExprKind::NullLiteral: expr.resolvedType = ValueType::Null; break;
 
-            case ExprKind::Identifier: {
-                auto& node = static_cast<IdentifierExpr&>(expr);
-                LocalSymbol symbol;
-                if (!Lookup(node.name, symbol))
+            case ExprKind::This: {
+                if (!m_currentMethodIsInstance)
                 {
-                    Error(node.location, "use of undeclared identifier '" + node.name + "'");
-                    node.resolvedType = ValueType::Unknown;
+                    Error(expr.location, "'this' is only available inside an instance method");
+                    expr.resolvedType = ValueType::Unknown;
                     break;
                 }
-                node.localSlot = symbol.slot;
-                node.resolvedType = symbol.type;
+                expr.resolvedType = ValueType::Object;
+                expr.resolvedClass = m_currentClass->index;
                 break;
             }
 
-            case ExprKind::Member: {
-                auto& node = static_cast<MemberExpr&>(expr);
-                Error(node.location, "'" + DescribeCallee(node) + "' is not a value; only a method can be named this way");
-                node.resolvedType = ValueType::Unknown;
-                break;
-            }
-
+            case ExprKind::New: AnalyzeNew(static_cast<NewExpr&>(expr)); break;
+            case ExprKind::Identifier: AnalyzeIdentifier(static_cast<IdentifierExpr&>(expr)); break;
+            case ExprKind::Member: AnalyzeMemberValue(static_cast<MemberExpr&>(expr)); break;
             case ExprKind::Call: AnalyzeCall(static_cast<CallExpr&>(expr)); break;
             case ExprKind::Unary: AnalyzeUnary(static_cast<UnaryExpr&>(expr)); break;
             case ExprKind::Binary: AnalyzeBinary(static_cast<BinaryExpr&>(expr)); break;
@@ -350,6 +993,131 @@ private:
 
             default: expr.resolvedType = ValueType::Unknown; break;
         }
+    }
+
+    void AnalyzeNew(NewExpr& expr)
+    {
+        expr.resolvedType = ValueType::Unknown;
+
+        u32 index = kNoClass;
+        if (!FindClass(expr.typeName, index))
+        {
+            Error(expr.location, "no type named '" + expr.typeName + "' is declared");
+            return;
+        }
+
+        ClassDecl& decl = *m_classes[index].decl;
+        if (decl.isInterface)
+        {
+            Error(expr.location, "interface '" + expr.typeName + "' cannot be created with 'new', only a class implementing it can");
+            return;
+        }
+        if (decl.isStatic)
+        {
+            Error(expr.location, "'" + expr.typeName + "' holds only static members and cannot be created with 'new'");
+            return;
+        }
+
+        MethodDecl* constructor = m_classes[index].constructor;
+        if (!constructor) return;
+
+        expr.classIndex = index;
+        expr.constructorFunction = constructor->functionIndex;
+        expr.resolvedType = ValueType::Object;
+        expr.resolvedClass = index;
+
+        for (ExprPtr& arg : expr.args) AnalyzeExpr(*arg);
+
+        if (expr.args.size() != constructor->params.size())
+        {
+            Error(expr.location, "the constructor of '" + expr.typeName + "' takes " + std::to_string(constructor->params.size()) +
+                                     " argument(s) but " + std::to_string(expr.args.size()) + " were given");
+            return;
+        }
+        for (size_t i = 0; i < expr.args.size(); ++i)
+            CheckAssignable(*expr.args[i], constructor->params[i].type,
+                "in argument " + std::to_string(i + 1) + " of the constructor of '" + expr.typeName + "'");
+    }
+
+    void AnalyzeIdentifier(IdentifierExpr& expr)
+    {
+        LocalSymbol symbol;
+        if (Lookup(expr.name, symbol))
+        {
+            expr.localSlot = symbol.slot;
+            expr.resolvedType = symbol.type.type;
+            expr.resolvedClass = symbol.type.classIndex;
+            return;
+        }
+
+        const FieldEntry* field = m_currentClass ? FindField(m_currentClass->index, expr.name) : nullptr;
+        if (field)
+        {
+            if (!m_currentMethodIsInstance)
+            {
+                Error(expr.location, "field '" + expr.name + "' belongs to an instance and cannot be reached from a static method");
+                expr.resolvedType = ValueType::Unknown;
+                return;
+            }
+            expr.isField = true;
+            expr.fieldSlot = field->slot;
+            expr.resolvedType = field->type.type;
+            expr.resolvedClass = field->type.classIndex;
+            return;
+        }
+
+        Error(expr.location, "use of undeclared identifier '" + expr.name + "'");
+        expr.resolvedType = ValueType::Unknown;
+    }
+
+    // Whether `expr` is a name that stands for a type rather than a
+    // value, which is how a static call is written.
+    bool NamesAClass(const Expr& expr, u32& outIndex) const
+    {
+        if (expr.kind != ExprKind::Identifier) return false;
+        const auto& identifier = static_cast<const IdentifierExpr&>(expr);
+
+        LocalSymbol symbol;
+        if (Lookup(identifier.name, symbol)) return false;
+        if (m_currentClass && FindField(m_currentClass->index, identifier.name)) return false;
+        return FindClass(identifier.name, outIndex);
+    }
+
+    void AnalyzeMemberValue(MemberExpr& expr)
+    {
+        u32 classIndex = kNoClass;
+        if (NamesAClass(*expr.base, classIndex))
+        {
+            Error(expr.location, "'" + ClassName(classIndex) + "." + expr.member + "' is not a value; only a method can be named this way");
+            expr.resolvedType = ValueType::Unknown;
+            return;
+        }
+
+        AnalyzeExpr(*expr.base);
+        if (IsPoisoned(expr.base->resolvedType))
+        {
+            expr.resolvedType = ValueType::Unknown;
+            return;
+        }
+        if (expr.base->resolvedType != ValueType::Object)
+        {
+            Error(expr.location, Quoted(*expr.base) + " has no member named '" + expr.member + "'");
+            expr.resolvedType = ValueType::Unknown;
+            return;
+        }
+
+        const FieldEntry* field = FindField(expr.base->resolvedClass, expr.member);
+        if (!field)
+        {
+            Error(expr.location, "'" + ClassName(expr.base->resolvedClass) + "' has no field named '" + expr.member + "'");
+            expr.resolvedType = ValueType::Unknown;
+            return;
+        }
+
+        expr.binding = MemberBinding::Field;
+        expr.fieldSlot = field->slot;
+        expr.resolvedType = field->type.type;
+        expr.resolvedClass = field->type.classIndex;
     }
 
     void AnalyzeUnary(UnaryExpr& expr)
@@ -360,7 +1128,7 @@ private:
         if (expr.op == UnaryOp::Not)
         {
             if (operandType != ValueType::Bool && !IsPoisoned(operandType))
-                Error(expr.location, "'!' needs a 'bool' operand, found " + Quoted(operandType));
+                Error(expr.location, "'!' needs a 'bool' operand, found " + Quoted(*expr.operand));
             expr.resolvedType = ValueType::Bool;
             return;
         }
@@ -368,7 +1136,7 @@ private:
         if (!IsNumeric(operandType))
         {
             if (!IsPoisoned(operandType))
-                Error(expr.location, "unary '-' needs an 'int' or a 'float' operand, found " + Quoted(operandType));
+                Error(expr.location, "unary '-' needs an 'int' or a 'float' operand, found " + Quoted(*expr.operand));
             expr.resolvedType = ValueType::Unknown;
             return;
         }
@@ -390,6 +1158,25 @@ private:
         return ValueType::Int;
     }
 
+    // Two references may be compared when one of them could have been
+    // stored in the other, which is exactly when they can name the same
+    // object. `null` compares with any of them.
+    bool CanCompareReferences(Expr& lhs, Expr& rhs) const
+    {
+        if (lhs.resolvedType == ValueType::Null || rhs.resolvedType == ValueType::Null) return true;
+        if (lhs.resolvedType != ValueType::Object || rhs.resolvedType != ValueType::Object) return false;
+
+        TypeRef lhsType;
+        lhsType.type = ValueType::Object;
+        lhsType.classIndex = lhs.resolvedClass;
+
+        TypeRef rhsType;
+        rhsType.type = ValueType::Object;
+        rhsType.classIndex = rhs.resolvedClass;
+
+        return IsReferenceAssignable(lhs, rhsType) || IsReferenceAssignable(rhs, lhsType);
+    }
+
     void AnalyzeBinary(BinaryExpr& expr)
     {
         AnalyzeExpr(*expr.lhs);
@@ -405,7 +1192,7 @@ private:
             case BinaryOp::LogicalOr: {
                 if (!poisoned && (lhsType != ValueType::Bool || rhsType != ValueType::Bool))
                     Error(expr.location, std::string("'") + OperatorText(expr.op) + "' needs 'bool' operands, found " +
-                                             Quoted(lhsType) + " and " + Quoted(rhsType));
+                                             Quoted(*expr.lhs) + " and " + Quoted(*expr.rhs));
                 expr.operandType = ValueType::Bool;
                 expr.resolvedType = ValueType::Bool;
                 return;
@@ -413,13 +1200,18 @@ private:
 
             case BinaryOp::Equal:
             case BinaryOp::NotEqual: {
-                if (lhsType == ValueType::Bool && rhsType == ValueType::Bool) expr.operandType = ValueType::Bool;
+                if (IsReference(lhsType) || IsReference(rhsType))
+                {
+                    if (CanCompareReferences(*expr.lhs, *expr.rhs)) expr.operandType = ValueType::Object;
+                    else expr.operandType = ValueType::Unknown;
+                }
+                else if (lhsType == ValueType::Bool && rhsType == ValueType::Bool) expr.operandType = ValueType::Bool;
                 else if (lhsType == ValueType::String && rhsType == ValueType::String) expr.operandType = ValueType::String;
                 else expr.operandType = UnifyNumeric(*expr.lhs, *expr.rhs);
 
                 if (IsPoisoned(expr.operandType) && !poisoned)
                     Error(expr.location, std::string("'") + OperatorText(expr.op) + "' cannot compare " +
-                                             Quoted(lhsType) + " with " + Quoted(rhsType));
+                                             Quoted(*expr.lhs) + " with " + Quoted(*expr.rhs));
                 expr.resolvedType = ValueType::Bool;
                 return;
             }
@@ -431,7 +1223,7 @@ private:
                 expr.operandType = UnifyNumeric(*expr.lhs, *expr.rhs);
                 if (IsPoisoned(expr.operandType) && !poisoned)
                     Error(expr.location, std::string("'") + OperatorText(expr.op) + "' needs numeric operands, found " +
-                                             Quoted(lhsType) + " and " + Quoted(rhsType));
+                                             Quoted(*expr.lhs) + " and " + Quoted(*expr.rhs));
                 expr.resolvedType = ValueType::Bool;
                 return;
             }
@@ -444,7 +1236,7 @@ private:
                     if (rhsType != ValueType::String && !CanStringify(rhsType))
                     {
                         if (!poisoned)
-                            Error(expr.location, "'+' cannot join a 'string' with " + Quoted(rhsType));
+                            Error(expr.location, "'+' cannot join a 'string' with " + Quoted(*expr.rhs));
                     }
                     else if (rhsType != ValueType::String)
                     {
@@ -478,7 +1270,7 @@ private:
         {
             if (!poisoned)
                 Error(expr.location, std::string("'") + OperatorText(expr.op) + "' needs numeric operands, found " +
-                                         Quoted(expr.lhs->resolvedType) + " and " + Quoted(expr.rhs->resolvedType));
+                                         Quoted(*expr.lhs) + " and " + Quoted(*expr.rhs));
             expr.resolvedType = ValueType::Unknown;
             return;
         }
@@ -513,20 +1305,37 @@ private:
 
     void AnalyzeAssign(AssignExpr& expr)
     {
-        if (expr.target->kind != ExprKind::Identifier)
+        const bool targetIsName = expr.target->kind == ExprKind::Identifier;
+        const bool targetIsMember = expr.target->kind == ExprKind::Member;
+
+        if (!targetIsName && !targetIsMember)
         {
-            Error(expr.location, "the left-hand side of an assignment must be a variable");
+            Error(expr.location, "the left-hand side of an assignment must be a variable or a field");
             AnalyzeExpr(*expr.value);
             expr.resolvedType = ValueType::Unknown;
             return;
         }
 
         AnalyzeExpr(*expr.target);
+
+        if (targetIsMember && static_cast<MemberExpr&>(*expr.target).binding != MemberBinding::Field &&
+            !IsPoisoned(expr.target->resolvedType))
+        {
+            Error(expr.location, "the left-hand side of an assignment must be a variable or a field");
+            AnalyzeExpr(*expr.value);
+            expr.resolvedType = ValueType::Unknown;
+            return;
+        }
+
         AnalyzeExpr(*expr.value);
 
-        const ValueType targetType = expr.target->resolvedType;
+        TypeRef targetType;
+        targetType.type = expr.target->resolvedType;
+        targetType.classIndex = expr.target->resolvedClass;
+
         const ValueType valueType = expr.value->resolvedType;
-        expr.resolvedType = targetType;
+        expr.resolvedType = targetType.type;
+        expr.resolvedClass = targetType.classIndex;
 
         if (expr.op == AssignOp::Assign)
         {
@@ -534,14 +1343,14 @@ private:
             return;
         }
 
-        const bool poisoned = IsPoisoned(targetType) || IsPoisoned(valueType);
+        const bool poisoned = IsPoisoned(targetType.type) || IsPoisoned(valueType);
 
         // `s += x` appends text; every other compound form is arithmetic.
-        if (expr.op == AssignOp::AddAssign && targetType == ValueType::String)
+        if (expr.op == AssignOp::AddAssign && targetType.type == ValueType::String)
         {
             if (valueType != ValueType::String && !CanStringify(valueType))
             {
-                if (!poisoned) Error(expr.location, "'+=' cannot append " + Quoted(valueType) + " to a 'string'");
+                if (!poisoned) Error(expr.location, "'+=' cannot append " + Quoted(*expr.value) + " to a 'string'");
             }
             else if (valueType != ValueType::String)
             {
@@ -551,16 +1360,16 @@ private:
             return;
         }
 
-        if (!IsNumeric(targetType) || !IsNumeric(valueType))
+        if (!IsNumeric(targetType.type) || !IsNumeric(valueType))
         {
             if (!poisoned)
                 Error(expr.location, std::string("'") + CompoundOperatorText(expr.op) + "' needs numeric operands, found " +
-                                         Quoted(targetType) + " and " + Quoted(valueType));
+                                         Quoted(targetType) + " and " + Quoted(*expr.value));
             expr.operandType = ValueType::Unknown;
             return;
         }
 
-        if (targetType == ValueType::Float)
+        if (targetType.type == ValueType::Float)
         {
             if (valueType == ValueType::Int) expr.value->conversion = ValueType::Float;
             expr.operandType = ValueType::Float;
@@ -595,6 +1404,8 @@ private:
     {
         if (member.base && member.base->kind == ExprKind::Identifier)
             return static_cast<const IdentifierExpr*>(member.base.get())->name + "." + member.member;
+        if (member.base && member.base->kind == ExprKind::This)
+            return "this." + member.member;
         return "." + member.member;
     }
 
@@ -610,41 +1421,13 @@ private:
 
         if (call.callee->kind == ExprKind::Identifier)
         {
-            const auto* callee = static_cast<const IdentifierExpr*>(call.callee.get());
-            const std::string qualified = (m_currentClass ? m_currentClass->name : std::string()) + "." + callee->name;
-
-            auto found = m_methods.find(qualified);
-            if (found == m_methods.end())
-            {
-                Error(call.location, "no method named '" + callee->name + "' exists here");
-                call.resolvedType = ValueType::Unknown;
-                return;
-            }
-            BindScriptMethod(call, *found->second, callee->name);
+            AnalyzeUnqualifiedCall(call);
             return;
         }
 
         if (call.callee->kind == ExprKind::Member)
         {
-            const auto* member = static_cast<const MemberExpr*>(call.callee.get());
-            const std::string qualified = DescribeCallee(*member);
-
-            auto native = m_natives.find(qualified);
-            if (native != m_natives.end())
-            {
-                BindNative(call, native->second, qualified);
-                return;
-            }
-
-            auto found = m_methods.find(qualified);
-            if (found != m_methods.end())
-            {
-                BindScriptMethod(call, *found->second, qualified);
-                return;
-            }
-
-            Error(call.location, "no method named '" + qualified + "' exists");
-            call.resolvedType = ValueType::Unknown;
+            AnalyzeQualifiedCall(call, static_cast<MemberExpr&>(*call.callee));
             return;
         }
 
@@ -652,11 +1435,151 @@ private:
         call.resolvedType = ValueType::Unknown;
     }
 
-    void BindScriptMethod(CallExpr& call, MethodDecl& method, const std::string& displayName)
+    // `Name(args)`: a method of the class the call is written in, reached
+    // through the surrounding instance when it needs one.
+    void AnalyzeUnqualifiedCall(CallExpr& call)
+    {
+        const auto& callee = static_cast<const IdentifierExpr&>(*call.callee);
+
+        MethodDecl* method = m_currentClass ? FindMethodInChain(m_currentClass->index, callee.name) : nullptr;
+        if (!method)
+        {
+            Error(call.location, "no method named '" + callee.name + "' exists here");
+            call.resolvedType = ValueType::Unknown;
+            return;
+        }
+
+        if (method->isStatic)
+        {
+            BindStaticCall(call, *method, callee.name);
+            return;
+        }
+
+        if (!m_currentMethodIsInstance)
+        {
+            Error(call.location, "'" + method->qualifiedName + "' belongs to an instance and cannot be called from a static method without one");
+            call.resolvedType = ValueType::Unknown;
+            return;
+        }
+
+        auto self = std::make_unique<ThisExpr>();
+        self->location = call.location;
+        self->resolvedType = ValueType::Object;
+        self->resolvedClass = m_currentClass->index;
+        call.receiver = std::move(self);
+
+        BindInstanceCall(call, *method, m_currentClass->index, callee.name);
+    }
+
+    // `A.Name(args)`: a built-in, a static method named through its
+    // class, or an instance method reached through a value.
+    void AnalyzeQualifiedCall(CallExpr& call, MemberExpr& callee)
+    {
+        const std::string qualified = DescribeCallee(callee);
+
+        u32 scopeClass = kNoClass;
+        if (NamesAClass(*callee.base, scopeClass))
+        {
+            callee.binding = MemberBinding::Scope;
+
+            MethodDecl* method = FindMethodInChain(scopeClass, callee.member);
+            if (!method)
+            {
+                Error(call.location, "'" + ClassName(scopeClass) + "' has no method named '" + callee.member + "'");
+                call.resolvedType = ValueType::Unknown;
+                return;
+            }
+            if (!method->isStatic)
+            {
+                Error(call.location, "'" + method->qualifiedName + "' belongs to an instance, so it cannot be called through the type name");
+                call.resolvedType = ValueType::Unknown;
+                return;
+            }
+            BindStaticCall(call, *method, qualified);
+            return;
+        }
+
+        // A built-in is named the same way but belongs to no declared
+        // class, so it is what remains once the base is known not to be
+        // a value either.
+        if (callee.base->kind == ExprKind::Identifier && !IsKnownValueName(*callee.base))
+        {
+            auto native = m_natives.find(qualified);
+            if (native != m_natives.end())
+            {
+                callee.binding = MemberBinding::Scope;
+                BindNative(call, native->second, qualified);
+                return;
+            }
+        }
+
+        AnalyzeExpr(*callee.base);
+        if (IsPoisoned(callee.base->resolvedType))
+        {
+            call.resolvedType = ValueType::Unknown;
+            return;
+        }
+        if (callee.base->resolvedType != ValueType::Object)
+        {
+            Error(call.location, Quoted(*callee.base) + " has no method named '" + callee.member + "'");
+            call.resolvedType = ValueType::Unknown;
+            return;
+        }
+
+        const u32 receiverClass = callee.base->resolvedClass;
+        MethodDecl* method = FindMethodInChain(receiverClass, callee.member);
+        if (!method)
+        {
+            Error(call.location, "'" + ClassName(receiverClass) + "' has no method named '" + callee.member + "'");
+            call.resolvedType = ValueType::Unknown;
+            return;
+        }
+        if (method->isStatic)
+        {
+            Error(call.location, "'" + method->qualifiedName + "' is static, so it cannot be called through an instance");
+            call.resolvedType = ValueType::Unknown;
+            return;
+        }
+
+        call.receiver = std::move(callee.base);
+        BindInstanceCall(call, *method, receiverClass, qualified);
+    }
+
+    bool IsKnownValueName(const Expr& expr) const
+    {
+        if (expr.kind != ExprKind::Identifier) return true;
+        const auto& identifier = static_cast<const IdentifierExpr&>(expr);
+
+        LocalSymbol symbol;
+        if (Lookup(identifier.name, symbol)) return true;
+        return m_currentClass && FindField(m_currentClass->index, identifier.name) != nullptr;
+    }
+
+    void BindStaticCall(CallExpr& call, MethodDecl& method, const std::string& displayName)
     {
         call.target = CallTarget::ScriptMethod;
         call.targetIndex = method.functionIndex;
-        call.resolvedType = method.returnType;
+        CompleteScriptCall(call, method, displayName);
+    }
+
+    void BindInstanceCall(CallExpr& call, MethodDecl& method, u32 receiverClass, const std::string& displayName)
+    {
+        call.targetIndex = method.functionIndex;
+
+        if (receiverClass < m_classes.size() && m_classes[receiverClass].decl->isInterface)
+            call.target = CallTarget::InterfaceMethod;
+        else if (method.vtableSlot != kNoVtableSlot)
+            call.target = CallTarget::VirtualMethod;
+        else
+            call.target = CallTarget::InstanceMethod;
+
+        CompleteScriptCall(call, method, displayName);
+    }
+
+    void CompleteScriptCall(CallExpr& call, MethodDecl& method, const std::string& displayName)
+    {
+        call.resolvedType = method.returnType.type;
+        call.resolvedClass = method.returnType.classIndex;
 
         if (call.args.size() != method.params.size())
         {
@@ -671,11 +1594,26 @@ private:
 
     void BindNative(CallExpr& call, const std::vector<NativeFunctionId>& candidates, const std::string& displayName)
     {
-        // Every built-in takes exactly one argument and produces no
-        // value, so selecting one is purely a question of the argument's
+        // A built-in takes at most one argument, so choosing between the
+        // entries sharing a name is purely a question of that argument's
         // type.
         call.target = CallTarget::Native;
-        call.resolvedType = ValueType::Void;
+        call.resolvedType = ValueType::Unknown;
+
+        const NativeFunctionSignature* natives = NativeFunctionTable();
+
+        if (call.args.empty())
+        {
+            for (NativeFunctionId candidate : candidates)
+            {
+                if (natives[(u32)candidate].parameterType != ValueType::Void) continue;
+                call.targetIndex = (u32)candidate;
+                call.resolvedType = natives[(u32)candidate].returnType;
+                return;
+            }
+            Error(call.location, "'" + displayName + "' takes 1 argument but none were given");
+            return;
+        }
 
         if (call.args.size() != 1)
         {
@@ -683,16 +1621,14 @@ private:
             return;
         }
 
-        const NativeFunctionSignature* natives = NativeFunctionTable();
         const ValueType argType = call.args[0]->resolvedType;
 
         for (NativeFunctionId candidate : candidates)
         {
-            if (natives[(u32)candidate].parameterType == argType)
-            {
-                call.targetIndex = (u32)candidate;
-                return;
-            }
+            if (natives[(u32)candidate].parameterType != argType) continue;
+            call.targetIndex = (u32)candidate;
+            call.resolvedType = natives[(u32)candidate].returnType;
+            return;
         }
 
         // No exact form; fall back to the single implicit widening.
@@ -700,17 +1636,16 @@ private:
         {
             for (NativeFunctionId candidate : candidates)
             {
-                if (natives[(u32)candidate].parameterType == ValueType::Float)
-                {
-                    call.targetIndex = (u32)candidate;
-                    call.args[0]->conversion = ValueType::Float;
-                    return;
-                }
+                if (natives[(u32)candidate].parameterType != ValueType::Float) continue;
+                call.targetIndex = (u32)candidate;
+                call.resolvedType = natives[(u32)candidate].returnType;
+                call.args[0]->conversion = ValueType::Float;
+                return;
             }
         }
 
         if (!IsPoisoned(argType))
-            Error(call.args[0]->location, "'" + displayName + "' does not accept an argument of type " + Quoted(argType));
+            Error(call.args[0]->location, "'" + displayName + "' does not accept an argument of type " + Quoted(*call.args[0]));
     }
 };
 

@@ -70,12 +70,12 @@ void Test_Parser_Run(TestContext& ctx)
 
         const MethodDecl* add = MethodAt(programClass, 0);
         TEST_CHECK(ctx, add && add->name == "Add");
-        TEST_CHECK(ctx, add && add->returnType == ValueType::Int);
+        TEST_CHECK(ctx, add && add->returnType.type == ValueType::Int);
         TEST_CHECK(ctx, add && add->params.size() == 2);
-        TEST_CHECK(ctx, add && add->params[0].type == ValueType::Int && add->params[0].name == "a");
+        TEST_CHECK(ctx, add && add->params[0].type.type == ValueType::Int && add->params[0].name == "a");
 
         const MethodDecl* main = MethodAt(programClass, 1);
-        TEST_CHECK(ctx, main && main->returnType == ValueType::Void);
+        TEST_CHECK(ctx, main && main->returnType.type == ValueType::Void);
         const Stmt* decl = StatementAt(main, 0);
         TEST_CHECK(ctx, decl && decl->kind == StmtKind::LocalDecl);
     }

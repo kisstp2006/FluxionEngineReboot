@@ -45,6 +45,9 @@ OpCode ComparisonOpcode(BinaryOp op, ValueType operandType)
             return op == BinaryOp::Equal ? OpCode::EqualBool : OpCode::NotEqualBool;
         case ValueType::String:
             return op == BinaryOp::Equal ? OpCode::EqualString : OpCode::NotEqualString;
+        case ValueType::Object:
+        case ValueType::Null:
+            return op == BinaryOp::Equal ? OpCode::EqualRef : OpCode::NotEqualRef;
         default:
             switch (op)
             {
@@ -84,17 +87,21 @@ public:
         m_module.sourceName = m_sourceName;
         m_module.header.moduleVersion = m_moduleVersion;
 
-        std::vector<MethodDecl*> methods;
+        std::vector<const ClassDecl*> classes;
+        std::vector<const MethodDecl*> methods;
         for (const DeclPtr& decl : m_program.declarations)
         {
             if (decl->kind != DeclKind::Class) continue;
             auto* classDecl = static_cast<ClassDecl*>(decl.get());
+            classes.push_back(classDecl);
             for (const DeclPtr& methodDecl : classDecl->methods)
                 methods.push_back(static_cast<MethodDecl*>(methodDecl.get()));
         }
 
+        EmitClassTable(classes);
+
         m_module.functions.resize(methods.size());
-        for (MethodDecl* method : methods)
+        for (const MethodDecl* method : methods)
         {
             if (method->functionIndex >= m_module.functions.size())
             {
@@ -131,34 +138,105 @@ private:
     std::unordered_map<u32, u32> m_floatConstantIndices; // keyed by bit pattern, so -0 and 0 stay distinct
     std::unordered_map<std::string, u32> m_stringConstantIndices;
 
+    void EmitClassTable(const std::vector<const ClassDecl*>& classes)
+    {
+        u32 count = 0;
+        for (const ClassDecl* classDecl : classes)
+        {
+            if (classDecl->classIndex == kNoClass) continue;
+            if (classDecl->classIndex + 1 > count) count = classDecl->classIndex + 1;
+        }
+        m_module.classes.resize(count);
+
+        for (const ClassDecl* classDecl : classes)
+        {
+            if (classDecl->classIndex >= m_module.classes.size())
+            {
+                m_diagnostics.AddError(classDecl->location, "'" + classDecl->name + "' was not assigned a valid slot in the module");
+                continue;
+            }
+
+            ClassInfo& info = m_module.classes[classDecl->classIndex];
+            info.name = classDecl->name;
+            info.baseClass = classDecl->baseClass;
+            info.isInterface = classDecl->isInterface;
+            info.isStatic = classDecl->isStatic;
+            info.fieldSlotCount = classDecl->fieldSlotCount;
+            info.fieldReferenceBits = classDecl->fieldReferenceBits;
+            info.vtable = classDecl->vtable;
+            info.interfaces = classDecl->interfaceTables;
+            info.constructorFunction = classDecl->constructorFunction;
+        }
+    }
+
     void EmitMethod(const MethodDecl& method, FunctionInfo& outInfo)
     {
         m_code.clear();
         m_loops.clear();
 
-        if (method.body) EmitStmt(*method.body);
+        outInfo.qualifiedName = method.qualifiedName;
+        outInfo.returnType = method.returnType.type;
+        outInfo.parameterTypes.clear();
+        for (const ParamDecl& param : method.params) outInfo.parameterTypes.push_back(param.type.type);
+
+        outInfo.owningClass = method.owningClass;
+        outInfo.vtableSlot = method.vtableSlot;
+        outInfo.isInstance = IsInstanceMethod(method);
+
+        outInfo.localReferenceBits.clear();
+        for (u32 slot = 0; slot < (u32)method.localIsReference.size(); ++slot)
+        {
+            if (method.localIsReference[slot] != 0) SetReferenceBit(outInfo.localReferenceBits, slot);
+        }
+
+        // A frame is at least large enough for the receiver and the
+        // parameters, whatever the body turned out to need.
+        const u32 fixedSlots = (u32)method.params.size() + (outInfo.isInstance ? 1u : 0u);
+        outInfo.localSlotCount = method.localSlotCount < fixedSlots ? fixedSlots : method.localSlotCount;
+
+        // A method an interface only declares carries a signature and no
+        // instructions: a call site names it to say what it is calling,
+        // and the receiver's own class supplies the body.
+        if (!method.body)
+        {
+            outInfo.hasBody = false;
+            outInfo.codeOffset = (u32)m_module.code.size();
+            outInfo.codeLength = 0;
+            return;
+        }
+
+        if (method.isConstructor) EmitBaseConstructorCall(method);
+
+        EmitStmt(*method.body);
 
         // Every function ends with an explicit return instruction, even
         // when the body already returned on every path. A construct that
         // sits last in a body patches its exit jump to "one past the last
         // instruction emitted so far", and this trailing return is what
         // guarantees that landing site exists.
-        EmitDefaultReturn(method.returnType);
+        EmitDefaultReturn(method.returnType.type);
 
-        outInfo.qualifiedName = method.qualifiedName;
-        outInfo.returnType = method.returnType;
-        outInfo.parameterTypes.clear();
-        for (const ParamDecl& param : method.params) outInfo.parameterTypes.push_back(param.type);
-
-        // A frame is at least large enough for the parameters, whatever
-        // the body turned out to need.
-        outInfo.localSlotCount = method.localSlotCount;
-        if (outInfo.localSlotCount < (u32)method.params.size())
-            outInfo.localSlotCount = (u32)method.params.size();
-
+        outInfo.hasBody = true;
         outInfo.codeOffset = (u32)m_module.code.size();
         outInfo.codeLength = (u32)m_code.size();
         m_module.code.insert(m_module.code.end(), m_code.begin(), m_code.end());
+    }
+
+    static bool IsInstanceMethod(const MethodDecl& method)
+    {
+        return !method.isStatic && method.owningClass != kNoClass;
+    }
+
+    // A constructor's first act is to finish building the part of the
+    // object its base class owns, so a base method called from here
+    // already sees the values it expects.
+    void EmitBaseConstructorCall(const MethodDecl& method)
+    {
+        if (method.baseConstructorFunction == kNoFunction) return;
+
+        Emit(OpCode::LoadLocal, 0);
+        for (const ExprPtr& arg : method.baseArgs) EmitExpr(*arg);
+        Emit(OpCode::Call, method.baseConstructorFunction);
     }
 
     void EmitDefaultReturn(ValueType returnType)
@@ -169,6 +247,7 @@ private:
             case ValueType::Float: Emit(OpCode::PushFloat, FloatConstant(0.0f)); Emit(OpCode::Return); break;
             case ValueType::Bool: Emit(OpCode::PushBool, 0); Emit(OpCode::Return); break;
             case ValueType::String: Emit(OpCode::PushString, StringConstant(std::string())); Emit(OpCode::Return); break;
+            case ValueType::Object: Emit(OpCode::PushNull); Emit(OpCode::Return); break;
             default: Emit(OpCode::ReturnVoid); break;
         }
     }
@@ -252,7 +331,14 @@ private:
 
             case StmtKind::Block: {
                 const auto& node = static_cast<const BlockStmt&>(stmt);
-                for (const StmtPtr& child : node.statements) EmitStmt(*child);
+                for (size_t i = 0; i < node.statements.size(); ++i)
+                {
+                    // The gap between two statements is a place where
+                    // nothing is half-computed, which is the only kind of
+                    // place a collection is allowed to happen.
+                    if (i != 0) Emit(OpCode::SafePoint);
+                    EmitStmt(*node.statements[i]);
+                }
                 break;
             }
 
@@ -306,7 +392,11 @@ private:
 
     void EmitWhile(const WhileStmt& stmt)
     {
+        // The top of a loop is reached once per iteration with nothing
+        // pending, so a loop that allocates always passes somewhere a
+        // collection can run even when its body is a single statement.
         const u32 conditionLabel = Here();
+        Emit(OpCode::SafePoint);
         EmitExpr(*stmt.condition);
         const u32 exitJump = EmitJump(OpCode::JumpIfFalse);
 
@@ -324,6 +414,7 @@ private:
         if (stmt.init) EmitStmt(*stmt.init);
 
         const u32 conditionLabel = Here();
+        Emit(OpCode::SafePoint);
         u32 exitJump = 0;
         bool hasExitJump = false;
         if (stmt.condition)
@@ -380,9 +471,39 @@ private:
                 Emit(OpCode::PushString, StringConstant(static_cast<const StringLiteralExpr&>(expr).value));
                 break;
 
-            case ExprKind::Identifier:
+            case ExprKind::NullLiteral:
+                Emit(OpCode::PushNull);
+                break;
+
+            case ExprKind::This:
+                Emit(OpCode::LoadLocal, 0);
+                break;
+
+            case ExprKind::New: EmitNew(static_cast<const NewExpr&>(expr)); break;
+
+            case ExprKind::Identifier: {
+                const auto& identifier = static_cast<const IdentifierExpr&>(expr);
+                if (identifier.isField)
+                {
+                    Emit(OpCode::LoadLocal, 0);
+                    Emit(OpCode::LoadField, identifier.fieldSlot);
+                    break;
+                }
                 Emit(OpCode::LoadLocal, SlotOf(expr, "a variable reference"));
                 break;
+            }
+
+            case ExprKind::Member: {
+                const auto& member = static_cast<const MemberExpr&>(expr);
+                if (member.binding != MemberBinding::Field || !member.base)
+                {
+                    m_diagnostics.AddError(expr.location, "this member reference was never bound to a field");
+                    break;
+                }
+                EmitExpr(*member.base);
+                Emit(OpCode::LoadField, member.fieldSlot);
+                break;
+            }
 
             case ExprKind::Unary: EmitUnary(static_cast<const UnaryExpr&>(expr)); break;
             case ExprKind::Binary: EmitBinary(static_cast<const BinaryExpr&>(expr)); break;
@@ -413,6 +534,23 @@ private:
             case ValueType::Bool: Emit(OpCode::BoolToString); break;
             default: break; // already text
         }
+    }
+
+    // The new object is its own constructor's receiver and the value the
+    // expression produces, so it is duplicated once and the copy is what
+    // the constructor consumes.
+    void EmitNew(const NewExpr& expr)
+    {
+        if (expr.classIndex == kNoClass || expr.constructorFunction == kNoFunction)
+        {
+            m_diagnostics.AddError(expr.location, "this allocation was never bound to a class");
+            return;
+        }
+
+        Emit(OpCode::NewObject, expr.classIndex);
+        Emit(OpCode::Dup);
+        for (const ExprPtr& arg : expr.args) EmitExpr(*arg);
+        Emit(OpCode::Call, expr.constructorFunction);
     }
 
     void EmitUnary(const UnaryExpr& expr)
@@ -462,8 +600,51 @@ private:
         }
     }
 
+    // Where an assignment stores. A field needs its object evaluated
+    // first, and that object is needed again to read the stored value
+    // back out, since an assignment is an expression.
+    struct FieldTarget
+    {
+        const Expr* object = nullptr; // null when the receiver is the enclosing instance
+        u32 slot = 0;
+    };
+
+    static bool AsFieldTarget(const Expr& target, FieldTarget& outTarget)
+    {
+        if (target.kind == ExprKind::Identifier)
+        {
+            const auto& identifier = static_cast<const IdentifierExpr&>(target);
+            if (!identifier.isField) return false;
+            outTarget.object = nullptr;
+            outTarget.slot = identifier.fieldSlot;
+            return true;
+        }
+        if (target.kind == ExprKind::Member)
+        {
+            const auto& member = static_cast<const MemberExpr&>(target);
+            if (member.binding != MemberBinding::Field) return false;
+            outTarget.object = member.base.get();
+            outTarget.slot = member.fieldSlot;
+            return true;
+        }
+        return false;
+    }
+
+    void EmitReceiver(const FieldTarget& target)
+    {
+        if (target.object) EmitExpr(*target.object);
+        else Emit(OpCode::LoadLocal, 0);
+    }
+
     void EmitAssign(const AssignExpr& expr)
     {
+        FieldTarget field;
+        if (AsFieldTarget(*expr.target, field))
+        {
+            EmitFieldAssign(expr, field);
+            return;
+        }
+
         const u32 slot = SlotOf(*expr.target, "an assignment target");
 
         if (expr.op == AssignOp::Assign)
@@ -483,21 +664,62 @@ private:
         Emit(OpCode::LoadLocal, slot);
     }
 
+    void EmitFieldAssign(const AssignExpr& expr, const FieldTarget& field)
+    {
+        if (expr.op == AssignOp::Assign)
+        {
+            // One copy of the object is consumed by the store, the other
+            // reads the field back as the expression's value.
+            EmitReceiver(field);
+            Emit(OpCode::Dup);
+            EmitExpr(*expr.value);
+            Emit(OpCode::StoreField, field.slot);
+            Emit(OpCode::LoadField, field.slot);
+            return;
+        }
+
+        // A compound form needs the object a third time, to read the
+        // value it is combining with.
+        EmitReceiver(field);
+        Emit(OpCode::Dup);
+        Emit(OpCode::Dup);
+        Emit(OpCode::LoadField, field.slot);
+        EmitExpr(*expr.value);
+        Emit(ArithmeticOpcode(BinaryOpForCompound(expr.op), expr.operandType));
+        Emit(OpCode::StoreField, field.slot);
+        Emit(OpCode::LoadField, field.slot);
+    }
+
     void EmitCall(const CallExpr& expr)
     {
-        for (const ExprPtr& arg : expr.args) EmitExpr(*arg);
-
         if (expr.target == CallTarget::Native)
         {
+            for (const ExprPtr& arg : expr.args) EmitExpr(*arg);
             Emit(OpCode::CallNative, expr.targetIndex);
             return;
         }
-        if (expr.target == CallTarget::ScriptMethod)
+
+        // The receiver becomes the callee's slot zero, so it goes on the
+        // stack ahead of everything the callee was written to take.
+        if (expr.receiver) EmitExpr(*expr.receiver);
+        for (const ExprPtr& arg : expr.args) EmitExpr(*arg);
+
+        switch (expr.target)
         {
-            Emit(OpCode::Call, expr.targetIndex);
-            return;
+            case CallTarget::ScriptMethod:
+            case CallTarget::InstanceMethod:
+                Emit(OpCode::Call, expr.targetIndex);
+                return;
+            case CallTarget::VirtualMethod:
+                Emit(OpCode::CallVirtual, expr.targetIndex);
+                return;
+            case CallTarget::InterfaceMethod:
+                Emit(OpCode::CallInterface, expr.targetIndex);
+                return;
+            default:
+                m_diagnostics.AddError(expr.location, "this call was never bound to a method");
+                return;
         }
-        m_diagnostics.AddError(expr.location, "this call was never bound to a method");
     }
 };
 

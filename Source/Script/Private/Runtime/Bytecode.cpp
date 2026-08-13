@@ -13,10 +13,12 @@ const char* OpCodeName(OpCode op)
         case OpCode::PushFloat: return "PushFloat";
         case OpCode::PushBool: return "PushBool";
         case OpCode::PushString: return "PushString";
+        case OpCode::PushNull: return "PushNull";
 
         case OpCode::LoadLocal: return "LoadLocal";
         case OpCode::StoreLocal: return "StoreLocal";
         case OpCode::Pop: return "Pop";
+        case OpCode::Dup: return "Dup";
 
         case OpCode::AddInt: return "AddInt";
         case OpCode::SubInt: return "SubInt";
@@ -52,6 +54,8 @@ const char* OpCodeName(OpCode op)
         case OpCode::NotEqualBool: return "NotEqualBool";
         case OpCode::EqualString: return "EqualString";
         case OpCode::NotEqualString: return "NotEqualString";
+        case OpCode::EqualRef: return "EqualRef";
+        case OpCode::NotEqualRef: return "NotEqualRef";
 
         case OpCode::NotBool: return "NotBool";
 
@@ -60,14 +64,22 @@ const char* OpCodeName(OpCode op)
         case OpCode::FloatToString: return "FloatToString";
         case OpCode::BoolToString: return "BoolToString";
 
+        case OpCode::NewObject: return "NewObject";
+        case OpCode::LoadField: return "LoadField";
+        case OpCode::StoreField: return "StoreField";
+
         case OpCode::Jump: return "Jump";
         case OpCode::JumpIfFalse: return "JumpIfFalse";
         case OpCode::JumpIfTrue: return "JumpIfTrue";
 
         case OpCode::Call: return "Call";
+        case OpCode::CallVirtual: return "CallVirtual";
+        case OpCode::CallInterface: return "CallInterface";
         case OpCode::CallNative: return "CallNative";
         case OpCode::Return: return "Return";
         case OpCode::ReturnVoid: return "ReturnVoid";
+
+        case OpCode::SafePoint: return "SafePoint";
 
         case OpCode::Halt: return "Halt";
         default: return "<unknown opcode>";
@@ -78,21 +90,25 @@ const NativeFunctionSignature* NativeFunctionTable()
 {
     // Ordered to match NativeFunctionId exactly -- the index is the
     // identity, both for the compiler binding a call and for the
-    // interpreter dispatching one.
+    // interpreter dispatching one. A parameter type of Void means the
+    // built-in takes nothing at all.
     static const NativeFunctionSignature table[kNativeFunctionCount] = {
-        { "Console.WriteLine", ValueType::String },
-        { "Console.WriteLine", ValueType::Int },
-        { "Console.WriteLine", ValueType::Float },
-        { "Console.WriteLine", ValueType::Bool },
+        { "Console.WriteLine", ValueType::String, ValueType::Void },
+        { "Console.WriteLine", ValueType::Int, ValueType::Void },
+        { "Console.WriteLine", ValueType::Float, ValueType::Void },
+        { "Console.WriteLine", ValueType::Bool, ValueType::Void },
 
-        { "Console.Write", ValueType::String },
-        { "Console.Write", ValueType::Int },
-        { "Console.Write", ValueType::Float },
-        { "Console.Write", ValueType::Bool },
+        { "Console.Write", ValueType::String, ValueType::Void },
+        { "Console.Write", ValueType::Int, ValueType::Void },
+        { "Console.Write", ValueType::Float, ValueType::Void },
+        { "Console.Write", ValueType::Bool, ValueType::Void },
 
-        { "Debug.Log", ValueType::String },
-        { "Debug.LogWarning", ValueType::String },
-        { "Debug.LogError", ValueType::String },
+        { "Debug.Log", ValueType::String, ValueType::Void },
+        { "Debug.LogWarning", ValueType::String, ValueType::Void },
+        { "Debug.LogError", ValueType::String, ValueType::Void },
+
+        { "Gc.Collect", ValueType::Void, ValueType::Void },
+        { "Gc.LiveObjects", ValueType::Void, ValueType::Int },
     };
     return table;
 }

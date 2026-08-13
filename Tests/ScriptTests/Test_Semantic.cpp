@@ -222,6 +222,244 @@ void Test_Semantic_Run(TestContext& ctx)
         "    static void M() { int x = 1; int x = 2; }\n"
         "}\n");
 
+    ExpectRejected(ctx, "override without a virtual base",
+        "class Base\n"
+        "{\n"
+        "    float Area() { return 1.0f; }\n"
+        "}\n"
+        "class Derived : Base\n"
+        "{\n"
+        "    override float Area() { return 2.0f; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "override of a method no base class declares",
+        "class Base { }\n"
+        "class Derived : Base\n"
+        "{\n"
+        "    override float Area() { return 2.0f; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "override whose signature does not match",
+        "class Base\n"
+        "{\n"
+        "    virtual float Area(int n) { return 1.0f; }\n"
+        "}\n"
+        "class Derived : Base\n"
+        "{\n"
+        "    override float Area(float n) { return 2.0f; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "method hiding a virtual base method",
+        "class Base\n"
+        "{\n"
+        "    virtual float Area() { return 1.0f; }\n"
+        "}\n"
+        "class Derived : Base\n"
+        "{\n"
+        "    float Area() { return 2.0f; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "class missing a member its interface declares",
+        "interface IShape { float Area(); }\n"
+        "class Blob : IShape\n"
+        "{\n"
+        "    float Size() { return 1.0f; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "interface member implemented with the wrong signature",
+        "interface IShape { float Area(); }\n"
+        "class Blob : IShape\n"
+        "{\n"
+        "    int Area() { return 1; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "static class created with new",
+        "static class Helper { static int One() { return 1; } }\n"
+        "static class P\n"
+        "{\n"
+        "    static void M() { var h = new Helper(); }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "interface created with new",
+        "interface IShape { float Area(); }\n"
+        "static class P\n"
+        "{\n"
+        "    static void M() { var s = new IShape(); }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "base reference assigned to a derived variable",
+        "class Base { }\n"
+        "class Derived : Base { }\n"
+        "static class P\n"
+        "{\n"
+        "    static void M() { Base b = new Base(); Derived d = b; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "unrelated reference assigned across the hierarchy",
+        "class Left { }\n"
+        "class Right { }\n"
+        "static class P\n"
+        "{\n"
+        "    static void M() { Left l = new Left(); Right r = l; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "base constructor arguments left out",
+        "class Base\n"
+        "{\n"
+        "    float scale;\n"
+        "    Base(float s) { this.scale = s; }\n"
+        "}\n"
+        "class Derived : Base\n"
+        "{\n"
+        "    Derived() { }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "base constructor left out entirely",
+        "class Base\n"
+        "{\n"
+        "    float scale;\n"
+        "    Base(float s) { this.scale = s; }\n"
+        "}\n"
+        "class Derived : Base\n"
+        "{\n"
+        "    float extra;\n"
+        "}\n");
+
+    ExpectRejected(ctx, "base constructor given the wrong argument type",
+        "class Base\n"
+        "{\n"
+        "    float scale;\n"
+        "    Base(float s) { this.scale = s; }\n"
+        "}\n"
+        "class Derived : Base\n"
+        "{\n"
+        "    Derived() : base(\"text\") { }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "instance method called from a static method without an instance",
+        "class Thing\n"
+        "{\n"
+        "    float Value() { return 1.0f; }\n"
+        "    static float M() { return Value(); }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "instance field used from a static method",
+        "class Thing\n"
+        "{\n"
+        "    float value;\n"
+        "    static float M() { return value; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "'this' used in a static method",
+        "class Thing\n"
+        "{\n"
+        "    float value;\n"
+        "    static float M() { return this.value; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "static class used as a base class",
+        "static class Helper { static int One() { return 1; } }\n"
+        "class Derived : Helper { }\n");
+
+    ExpectRejected(ctx, "class inheriting from itself through its base list",
+        "class Loop : Loop { }\n");
+
+    ExpectRejected(ctx, "field declared by an interface",
+        "interface IShape { float Area(); }\n"
+        "static class P { static void M() { } }\n"
+        "interface IBad { float size; }\n");
+
+    ExpectRejected(ctx, "field of a type that is not declared",
+        "class Holder { Missing thing; }\n");
+
+    ExpectRejected(ctx, "reference compared with a number",
+        "class Thing { }\n"
+        "static class P\n"
+        "{\n"
+        "    static void M() { Thing t = new Thing(); bool b = t == 1; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "field read on something that is not a reference",
+        "static class P\n"
+        "{\n"
+        "    static void M() { int x = 1; int y = x.field; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "field that does not exist on the class",
+        "class Thing { float value; }\n"
+        "static class P\n"
+        "{\n"
+        "    static void M() { Thing t = new Thing(); float f = t.missing; }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "constructor arguments that do not match",
+        "class Thing { float value; Thing(float v) { this.value = v; } }\n"
+        "static class P\n"
+        "{\n"
+        "    static void M() { Thing t = new Thing(); }\n"
+        "}\n");
+
+    ExpectRejected(ctx, "inferred declaration from null",
+        "static class P\n"
+        "{\n"
+        "    static void M() { var x = null; }\n"
+        "}\n");
+
+    {
+        // The whole object surface, accepted: a base list mixing a class
+        // and an interface, a chained constructor, dispatch through both
+        // a base-typed and an interface-typed reference, and null.
+        DiagnosticList diagnostics;
+        const bool accepted = AnalyzeSource(
+            "interface IShape\n"
+            "{\n"
+            "    float Area();\n"
+            "}\n"
+            "class Shape : IShape\n"
+            "{\n"
+            "    float scale;\n"
+            "    Shape(float s) { this.scale = s; }\n"
+            "    virtual float Area() { return this.scale; }\n"
+            "    float Scaled(float k) { return this.Area() * k; }\n"
+            "}\n"
+            "class Circle : Shape\n"
+            "{\n"
+            "    float radius;\n"
+            "    Circle(float r) : base(2.0f) { this.radius = r; }\n"
+            "    override float Area() { return this.radius * this.radius * this.scale; }\n"
+            "}\n"
+            "static class Program\n"
+            "{\n"
+            "    static float Main()\n"
+            "    {\n"
+            "        Shape s = new Circle(2.0f);\n"
+            "        IShape viewed = s;\n"
+            "        if (s == null) { return 0.0f; }\n"
+            "        return s.Area() + s.Scaled(2.0f) + viewed.Area();\n"
+            "    }\n"
+            "}\n",
+            diagnostics);
+        if (!accepted)
+        {
+            for (const Diagnostic& entry : diagnostics.entries)
+                std::fprintf(stderr, "  %s:%u:%u: %s\n", entry.location.file.c_str(), entry.location.line, entry.location.column, entry.message.c_str());
+        }
+        TEST_CHECK(ctx, accepted);
+    }
+    {
+        // A class with no constructor of its own gets one, and chaining
+        // to a base that needs nothing is implicit.
+        DiagnosticList diagnostics;
+        const bool accepted = AnalyzeSource(
+            "class Base { int count; }\n"
+            "class Derived : Base { float extra; }\n"
+            "static class P\n"
+            "{\n"
+            "    static int M() { Derived d = new Derived(); return d.count; }\n"
+            "}\n",
+            diagnostics);
+        TEST_CHECK(ctx, accepted);
+    }
     {
         // Widening flows in one direction only: an int reaches a float
         // parameter, a float never reaches an int one.

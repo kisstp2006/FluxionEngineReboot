@@ -1,7 +1,7 @@
-// A program exercising the whole language surface in one file: two
-// classes, cross-class calls, both loop forms, `continue`, inferred and
-// declared locals, mixed int/float arithmetic, string building and each
-// output channel.
+// A program exercising the procedural surface of the language in one
+// file: two classes, cross-class calls, both loop forms, `continue`,
+// inferred and declared locals, mixed int/float arithmetic, string
+// building and each output channel.
 
 static class MathUtil
 {

@@ -20,15 +20,15 @@ enum class TokenKind
     KwVoid, KwBool, KwInt, KwFloat, KwString,
 
     // Declaration keywords.
-    KwClass, KwStatic, KwVar,
+    KwClass, KwInterface, KwStatic, KwVar, KwVirtual, KwOverride,
 
     // Value and control-flow keywords.
-    KwTrue, KwFalse,
+    KwTrue, KwFalse, KwNull, KwThis, KwBase, KwNew,
     KwIf, KwElse, KwWhile, KwFor, KwReturn, KwBreak, KwContinue,
 
     // Punctuation and operators.
     LParen, RParen, LBrace, RBrace,
-    Comma, Semicolon, Dot,
+    Comma, Semicolon, Colon, Dot,
     Plus, Minus, Star, Slash, Percent,
     Assign, PlusAssign, MinusAssign, StarAssign, SlashAssign,
     Equal, NotEqual, Less, Greater, LessEqual, GreaterEqual,

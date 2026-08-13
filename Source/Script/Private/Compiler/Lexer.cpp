@@ -19,10 +19,17 @@ const std::unordered_map<std::string, TokenKind>& Keywords()
         { "float", TokenKind::KwFloat },
         { "string", TokenKind::KwString },
         { "class", TokenKind::KwClass },
+        { "interface", TokenKind::KwInterface },
         { "static", TokenKind::KwStatic },
         { "var", TokenKind::KwVar },
+        { "virtual", TokenKind::KwVirtual },
+        { "override", TokenKind::KwOverride },
         { "true", TokenKind::KwTrue },
         { "false", TokenKind::KwFalse },
+        { "null", TokenKind::KwNull },
+        { "this", TokenKind::KwThis },
+        { "base", TokenKind::KwBase },
+        { "new", TokenKind::KwNew },
         { "if", TokenKind::KwIf },
         { "else", TokenKind::KwElse },
         { "while", TokenKind::KwWhile },
@@ -287,6 +294,7 @@ private:
             case '}': return one(TokenKind::RBrace, "}");
             case ',': return one(TokenKind::Comma, ",");
             case ';': return one(TokenKind::Semicolon, ";");
+            case ':': return one(TokenKind::Colon, ":");
             case '.': return one(TokenKind::Dot, ".");
             case '+': if (two('=', TokenKind::PlusAssign, "+=")) return true; return one(TokenKind::Plus, "+");
             case '-': if (two('=', TokenKind::MinusAssign, "-=")) return true; return one(TokenKind::Minus, "-");
