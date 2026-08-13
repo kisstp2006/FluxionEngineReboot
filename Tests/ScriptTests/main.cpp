@@ -1,0 +1,33 @@
+#include "TestFramework.h"
+
+#include <cstdio>
+
+void Test_Lexer_Run(TestContext& ctx);
+void Test_Parser_Run(TestContext& ctx);
+void Test_Semantic_Run(TestContext& ctx);
+void Test_Bytecode_Run(TestContext& ctx);
+void Test_VmExecution_Run(TestContext& ctx);
+void Test_VmExecution_Fixture_Run(TestContext& ctx);
+
+int main()
+{
+    TestContext ctx;
+
+    std::fprintf(stderr, "Running ScriptTests...\n");
+
+    Test_Lexer_Run(ctx);
+    Test_Parser_Run(ctx);
+    Test_Semantic_Run(ctx);
+    Test_Bytecode_Run(ctx);
+    Test_VmExecution_Run(ctx);
+    Test_VmExecution_Fixture_Run(ctx);
+
+    if (ctx.failures == 0)
+    {
+        std::fprintf(stderr, "All ScriptTests passed.\n");
+        return 0;
+    }
+
+    std::fprintf(stderr, "%d ScriptTests check(s) failed.\n", ctx.failures);
+    return 1;
+}

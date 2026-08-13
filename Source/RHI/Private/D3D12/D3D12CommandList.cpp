@@ -2,7 +2,7 @@
 // submission, fence/semaphore/query-pool, and the swapchain. Every
 // FluxionRHICommandListHandle owns its own ID3D12CommandAllocator +
 // ID3D12GraphicsCommandList (mirrors the Vulkan backend's one-
-// VkCommandPool-per-command-list design, M19). Resource state tracking
+// VkCommandPool-per-command-list design). Resource state tracking
 // is explicit -- the caller's FluxionRHIBarrier calls map straight onto
 // D3D12_RESOURCE_BARRIER transitions, the same "no automatic tracking"
 // choice the Vulkan backend already makes (see D3D12Common.h's own

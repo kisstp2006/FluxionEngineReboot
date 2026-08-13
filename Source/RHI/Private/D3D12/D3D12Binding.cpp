@@ -184,9 +184,9 @@ FluxionRHIBindGroupHandle Fluxion_RHID3D12_CreateBindGroup(FluxionRHIDeviceHandl
                 // D3D12's structured-buffer views require a
                 // StructureByteStride matching the shader's own struct
                 // size -- a concept the portable FluxionRHIBindGroupEntry
-                // deliberately doesn't carry (Rule 26/28: no
-                // backend-native detail leaks into the portable binding
-                // entry). This backend assumes a 4-byte (float/uint)
+                // deliberately doesn't carry, since no backend-native
+                // detail may leak into the portable binding entry. This
+                // backend assumes a 4-byte (float/uint)
                 // element, matching every StructuredBuffer<float>/<uint>
                 // this engine's ShaderCompiler currently emits.
                 D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};

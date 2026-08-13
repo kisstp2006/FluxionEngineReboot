@@ -31,7 +31,7 @@ void Test_HLSLBackend_Run(TestContext& ctx)
     TEST_CHECK(ctx, hlsl.find("float3") != std::string::npos); // Vector3 -> float3
 }
 
-void Test_HLSLBackend_CSharpStyleReturn_Run(TestContext& ctx)
+void Test_HLSLBackend_EntryReturn_Run(TestContext& ctx)
 {
     // A real `return expr;` inside the entry function must route to the
     // designated [Target(N)] -- not emit `return value;` inside what

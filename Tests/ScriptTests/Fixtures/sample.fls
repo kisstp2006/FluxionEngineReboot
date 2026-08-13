@@ -1,0 +1,55 @@
+// A program exercising the whole language surface in one file: two
+// classes, cross-class calls, both loop forms, `continue`, inferred and
+// declared locals, mixed int/float arithmetic, string building and each
+// output channel.
+
+static class MathUtil
+{
+    static int Square(int value)
+    {
+        return value * value;
+    }
+
+    /* The divisor is written as a whole number and widens on its own. */
+    static float Average(float a, float b)
+    {
+        return (a + b) / 2;
+    }
+}
+
+static class Program
+{
+    static int SumOdd(int limit)
+    {
+        int total = 0;
+        for (int i = 1; i <= limit; i += 1)
+        {
+            if (i % 2 == 0)
+            {
+                continue;
+            }
+            total += i;
+        }
+        return total;
+    }
+
+    static int Main()
+    {
+        int squares = 0;
+        int i = 1;
+        while (i <= 4)
+        {
+            squares += MathUtil.Square(i);
+            i += 1;
+        }
+
+        var mean = MathUtil.Average(1.5f, 2);
+        string label = "squares=" + squares;
+
+        Console.WriteLine(label);
+        Console.WriteLine(mean);
+        Debug.Log("done");
+
+        return squares + SumOdd(5);
+    }
+}

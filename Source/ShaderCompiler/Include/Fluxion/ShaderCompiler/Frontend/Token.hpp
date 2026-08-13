@@ -14,9 +14,9 @@ enum class TokenKind
     IntLiteral,
     FloatLiteral,
 
-    // Type keywords -- .NET/C#-flavored spelling only (Vector2/3/4,
-    // Matrix3x3/4x4, Texture2D/Cube); float/int/uint/bool already match
-    // C#'s own spelling verbatim.
+    // Type keywords -- the spelled-out forms (Vector2/3/4, Matrix3x3/4x4,
+    // Texture2D/Cube) are the only accepted names; there is no `vec3`/
+    // `mat4` alias.
     KwVoid, KwBool, KwInt, KwUint, KwFloat,
     KwVector2, KwVector3, KwVector4, KwMatrix3x3, KwMatrix4x4,
     KwTexture2D, KwTextureCube,

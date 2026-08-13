@@ -44,7 +44,7 @@ void Test_Parser_Run(TestContext& ctx)
         TEST_CHECK(ctx, program.declarations.size() == 1);
     }
     {
-        // The attribute declarations + .NET-style type spelling this
+        // The attribute declarations + spelled-out type names this
         // language exclusively uses.
         DiagnosticList diagnostics;
         Program program = ParseSource(

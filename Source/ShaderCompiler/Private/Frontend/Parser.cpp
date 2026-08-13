@@ -142,7 +142,7 @@ private:
         return nullptr;
     }
 
-    // C#-flavored declaration attributes: `[Input] T name;`,
+    // Bracketed declaration attributes: `[Input] T name;`,
     // `[Output] T name;`, `[Target(N)] T name;`,
     // `[Uniform] T name;`/`[Uniform(Group)] T name;`,
     // `[Texture] T name;`/`[Texture(Group)] T name;`,

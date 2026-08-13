@@ -27,11 +27,11 @@ engine_add_module(
         Fluxion::Platform
 )
 
-# Vulkan::Vulkan/vma/OpenGL::GL/glheaders are all PRIVATE: the public RHI
-# headers never mention a Vulkan, VMA, or OpenGL type (Rule 26/28 in
-# ARCHITECTURE_RULES.md -- backend-native graphics types never leak into
-# the portable API), so nothing outside Private/Vulkan or Private/OpenGL
-# needs these include paths or link inputs.
+# Vulkan::Vulkan/vma/OpenGL::GL/glheaders are all PRIVATE: backend-native
+# graphics types never leak into the portable API, so the public RHI
+# headers never mention a Vulkan, VMA, or OpenGL type, and nothing outside
+# Private/Vulkan or Private/OpenGL needs these include paths or link
+# inputs.
 target_link_libraries(RHI PRIVATE Vulkan::Vulkan vma OpenGL::GL glheaders)
 
 if(UNIX AND NOT APPLE)
