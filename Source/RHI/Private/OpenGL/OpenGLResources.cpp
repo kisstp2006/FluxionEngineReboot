@@ -44,7 +44,19 @@ FluxionRHIBufferHandle Fluxion_RHIOpenGL_CreateBuffer(FluxionRHIDeviceHandle dev
         case FLUXION_RHI_MEMORY_CLASS_GPU_ONLY:
         case FLUXION_RHI_MEMORY_CLASS_TRANSIENT:
         default:
-            storageFlags = GL_DYNAMIC_STORAGE_BIT;
+            // No flags at all: storage the device owns outright.
+            //
+            // GL_DYNAMIC_STORAGE_BIT would say the client may write into
+            // this buffer directly, and it is the one thing that must not
+            // be said here. Nothing does -- everything reaching a buffer
+            // of this class arrives through a server-side copy from a
+            // staging buffer, and the call that would need the flag is
+            // never made anywhere in this backend. Saying it anyway is
+            // not free: a driver told a vertex or index buffer might be
+            // written from the client keeps it where the client can be
+            // served quickly, which means host memory, which means every
+            // draw reads its geometry across the bus.
+            storageFlags = 0;
             bufferState->cpuVisible = false;
             break;
     }

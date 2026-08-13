@@ -53,10 +53,35 @@ static void APIENTRY Fluxion_RHIOpenGL_DebugCallback(GLenum source, GLenum type,
     GLsizei length, const GLchar* message, const void* userParam)
 {
     FLUXION_UNUSED(source);
-    FLUXION_UNUSED(type);
     FLUXION_UNUSED(id);
     FLUXION_UNUSED(length);
     FLUXION_UNUSED(userParam);
+
+    // What kind of message it is decides the level, and only then how
+    // severe the driver called it. Severity alone is not enough: drivers
+    // rate a performance note as medium, and reporting that as an error
+    // says something went wrong when nothing did. Nothing is silenced --
+    // every message still comes out, at a level that matches what it is.
+    // The point of "the debug output is clean" is that an error line
+    // means an error; a log full of errors that are not errors is a log
+    // nobody reads.
+    if (type == GL_DEBUG_TYPE_ERROR || type == GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR)
+    {
+        FLUXION_LOG_ERROR("RHI.OpenGL", "GL debug: %s", message);
+        return;
+    }
+    if (type == GL_DEBUG_TYPE_PERFORMANCE || type == GL_DEBUG_TYPE_PORTABILITY || type == GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR)
+    {
+        // Never an error however the driver rated it: none of these says
+        // the wrong thing was drawn, only that it could have been done
+        // better or will stop working one day.
+        FLUXION_LOG_WARN("RHI.OpenGL", "GL debug: %s", message);
+        return;
+    }
+
+    // Anything else -- markers, group push/pop, whatever a driver invents
+    // -- has no meaning of its own here, so the driver's own rating is
+    // all there is to go on.
     if (severity == GL_DEBUG_SEVERITY_HIGH || severity == GL_DEBUG_SEVERITY_MEDIUM)
     {
         FLUXION_LOG_ERROR("RHI.OpenGL", "GL debug: %s", message);
