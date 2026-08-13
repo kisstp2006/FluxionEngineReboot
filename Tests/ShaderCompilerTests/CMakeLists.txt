@@ -9,6 +9,7 @@ engine_add_test(
         Test_GLSLBackend.cpp
         Test_DXCAdapter.cpp
         Test_Compatibility.cpp
+        Test_ShaderCache.cpp
         Test_BindingGroups.cpp
         Test_ComputeStorageBuffer.cpp
     DEPENDENCIES

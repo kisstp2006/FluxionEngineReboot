@@ -41,6 +41,15 @@ struct DXILOptions
 // of an in-process SPIR-V backend.
 bool IsDXCAvailable();
 
+// How the external tool identifies itself, verbatim. Anything that keeps
+// a result so it need not be produced again has to include this: the tool
+// lives outside this build entirely, and a different one turns the same
+// text into different bytes without one line here changing. Asked once
+// per process and remembered. Empty when it could not be asked, which is
+// a distinct answer and has to be treated as one rather than as "the same
+// as last time".
+const std::string& DXCIdentity();
+
 Fluxion::Foundation::Result<std::vector<uint8_t>> CompileToSpirv(
     const std::string& hlslSource,
     ShaderStage stage,

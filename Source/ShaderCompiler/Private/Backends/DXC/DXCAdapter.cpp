@@ -214,4 +214,23 @@ Fluxion::Foundation::Result<std::vector<uint8_t>> CompileToDxil(
     return Fluxion::Foundation::Result<std::vector<uint8_t>>::Ok(std::move(dxil));
 }
 
+const std::string& DXCIdentity()
+{
+    // Asked once. Deliberately not remembered beyond this process: the
+    // tool can be replaced while nothing is running, and the next run has
+    // to notice that it was.
+    static const std::string identity = []
+    {
+        std::string log;
+        if (RunCaptured(ResolveDXCCommand() + " --version", log) != 0) return std::string();
+
+        // Everything it said is kept; only trailing whitespace goes,
+        // because that differs between platforms for no reason worth
+        // treating as a different tool.
+        while (!log.empty() && (log.back() == '\n' || log.back() == '\r' || log.back() == ' ')) log.pop_back();
+        return log;
+    }();
+    return identity;
+}
+
 } // namespace Fluxion::ShaderCompiler
