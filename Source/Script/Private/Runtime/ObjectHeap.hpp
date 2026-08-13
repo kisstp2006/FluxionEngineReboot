@@ -38,6 +38,11 @@ public:
     bool ReadField(ObjectHandle handle, u32 slot, Slot& outValue) const;
     bool WriteField(ObjectHandle handle, u32 slot, Slot value);
 
+    // How many slots the object was created with. For a sequence that is
+    // its element count, which is per-object rather than per-class and so
+    // has nowhere else to live. False when the handle names nothing live.
+    bool TrySlotCount(ObjectHandle handle, u32& outCount) const;
+
     // A collection is three steps: clear every mark, mark from each root,
     // then reclaim whatever stayed unmarked.
     void BeginCollection();

@@ -94,6 +94,15 @@ bool ObjectHeap::WriteField(ObjectHandle handle, u32 slot, Slot value)
     return true;
 }
 
+bool ObjectHeap::TrySlotCount(ObjectHandle handle, u32& outCount) const
+{
+    const u32 index = Resolve(handle);
+    if (index == 0) return false;
+
+    outCount = m_records[index].fieldCount;
+    return true;
+}
+
 void ObjectHeap::BeginCollection()
 {
     for (Record& record : m_records) record.marked = false;
@@ -117,11 +126,15 @@ void ObjectHeap::Mark(ObjectHandle handle, const std::vector<ClassInfo>& classes
         if (record.classIndex >= classes.size()) continue;
 
         // The class says which of its field slots hold a reference, so
-        // nothing else in the object is ever mistaken for one.
+        // nothing else in the object is ever mistaken for one. A sequence
+        // has no named slots to describe: every one of its elements is
+        // the same type, so either all of them are followed or none are.
         const ClassInfo& classInfo = classes[record.classIndex];
+        if (classInfo.isArray && !classInfo.elementIsReference) continue;
+
         for (u32 slot = 0; slot < record.fieldCount; ++slot)
         {
-            if (!IsReferenceBitSet(classInfo.fieldReferenceBits, slot)) continue;
+            if (!classInfo.isArray && !IsReferenceBitSet(classInfo.fieldReferenceBits, slot)) continue;
 
             const ObjectHandle field = SlotAsObject(m_fieldStorage[(size_t)record.fieldOffset + slot]);
             const u32 target = Resolve(field);

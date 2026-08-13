@@ -41,6 +41,12 @@ enum class OpCode : u16
     // the receiver of its constructor and the result of the expression.
     Dup,
 
+    // Copies the top two slots as a pair, leaving `a b` as `a b a b`. An
+    // element access names its container and its position together, so a
+    // store that also has to produce the stored value needs both of them
+    // twice.
+    Dup2,
+
     // Integer arithmetic.
     AddInt,
     SubInt,
@@ -109,6 +115,22 @@ enum class OpCode : u16
     NewObject,
     LoadField,
     StoreField,
+
+    // Element storage. NewArray's operand is the class index of the
+    // sequence type being created; the element count is popped off the
+    // stack, and a negative one is a reported fault rather than a
+    // wrapped-around allocation. Elements start out holding the zero of
+    // the element type, exactly as fields do.
+    //
+    // LoadElement and StoreElement take their position from the stack
+    // rather than from the instruction, since it is a computed value.
+    // Both check it against the length that was allocated: a position
+    // outside the sequence stops execution with a fault, and never reads
+    // or writes anything.
+    NewArray,
+    ArrayLength,
+    LoadElement,
+    StoreElement,
 
     // Control flow. The operand is a target instruction index within the
     // enclosing function's own code range. JumpIfFalse/JumpIfTrue consume
@@ -223,12 +245,12 @@ inline constexpr u8 kModuleMagic[4] = { 'F', 'L', 'X', 'S' };
 
 // Bumped when the accepted source language changes in a way that alters
 // the meaning of already-valid code.
-inline constexpr u32 kLanguageVersion = 2;
+inline constexpr u32 kLanguageVersion = 3;
 
 // Bumped whenever the instruction set or the module layout changes. A
 // module carrying any other value is refused by the loader -- running it
 // would silently misinterpret opcodes.
-inline constexpr u32 kBytecodeVersion = 2;
+inline constexpr u32 kBytecodeVersion = 3;
 
 // Bumped when the engine-side interface reachable from a module changes
 // shape.
@@ -262,6 +284,14 @@ struct ClassInfo
     u32 baseClass = kNoClass;
     bool isInterface = false;
     bool isStatic = false;
+
+    // An indexable sequence of one element type rather than a set of
+    // named fields. Its objects each carry their own element count, so
+    // `fieldSlotCount` says nothing about them; `elementIsReference` is
+    // what a collection reads to decide whether the whole length has to
+    // be followed or none of it does.
+    bool isArray = false;
+    bool elementIsReference = false;
 
     // Fields of the whole inheritance chain: a base class's fields keep
     // the slots they had, and a derived class's own fields follow them.

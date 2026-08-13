@@ -157,21 +157,70 @@ private:
 
     // --- Types ------------------------------------------------------------
 
+    // Never reports anything and never leaves the cursor moved when it
+    // fails, so a caller may also use it to decide whether what follows
+    // is a type at all. The caller reports the failure it cares about.
     bool ParseTypeRef(TypeRef& outType)
     {
+        const size_t start = m_position;
+        TypeRef parsed;
+
         if (IsBuiltInTypeToken(Current().kind))
         {
-            outType.type = TypeFromToken(Advance().kind);
-            outType.name.clear();
-            return true;
+            parsed.type = TypeFromToken(Advance().kind);
         }
-        if (Check(TokenKind::Identifier))
+        else if (Check(TokenKind::Identifier))
         {
-            outType.type = ValueType::Object;
-            outType.name = Advance().text;
-            return true;
+            parsed.type = ValueType::Object;
+            parsed.name = Advance().text;
+
+            if (Check(TokenKind::Less) && !ParseTypeArguments(parsed.typeArgs))
+            {
+                m_position = start;
+                return false;
+            }
         }
-        return false;
+        else
+        {
+            return false;
+        }
+
+        parsed.arrayDepth = ParseArraySuffix();
+        outType = std::move(parsed);
+        return true;
+    }
+
+    // Consumes the `<A, B>` after a type name. The cursor is left wherever
+    // it got to on failure; every caller rolls back for itself.
+    bool ParseTypeArguments(std::vector<TypeRef>& outArgs)
+    {
+        Advance(); // '<'
+        do
+        {
+            TypeRef argument;
+            if (!ParseTypeRef(argument)) return false;
+            outArgs.push_back(std::move(argument));
+        } while (Match(TokenKind::Comma));
+
+        // A nested argument list ends in two adjacent '>' characters,
+        // which arrive as two separate tokens -- there is no shift
+        // operator for them to have been lexed as instead.
+        return Match(TokenKind::Greater);
+    }
+
+    // Counts the trailing `[]` pairs. A '[' that something other than ']'
+    // follows belongs to an index expression, not to a type, and is left
+    // alone.
+    u32 ParseArraySuffix()
+    {
+        u32 depth = 0;
+        while (Check(TokenKind::LBracket) && PeekKind(1) == TokenKind::RBracket)
+        {
+            Advance();
+            Advance();
+            ++depth;
+        }
+        return depth;
     }
 
     // --- Declarations ---------------------------------------------------
@@ -214,14 +263,32 @@ private:
         decl->isStatic = isStatic;
         decl->isInterface = isInterface;
 
+        if (Check(TokenKind::Less))
+        {
+            Advance();
+            do
+            {
+                const SourceLocation paramLoc = Current().location;
+                const Token* paramName = Expect(TokenKind::Identifier, "a type parameter name");
+                if (!paramName) return nullptr;
+                decl->typeParams.push_back(paramName->text);
+                decl->typeParamLocations.push_back(paramLoc);
+            } while (Match(TokenKind::Comma));
+            if (!Expect(TokenKind::Greater, "'>'")) return nullptr;
+        }
+
         if (Match(TokenKind::Colon))
         {
             do
             {
                 const SourceLocation baseLoc = Current().location;
-                const Token* baseName = Expect(TokenKind::Identifier, "a base type name");
-                if (!baseName) return nullptr;
-                decl->baseNames.push_back(baseName->text);
+                TypeRef baseType;
+                if (!ParseTypeRef(baseType))
+                {
+                    Error(baseLoc, "expected a base type name, found '" + Describe(Current()) + "'");
+                    return nullptr;
+                }
+                decl->baseTypes.push_back(std::move(baseType));
                 decl->baseLocations.push_back(baseLoc);
             } while (Match(TokenKind::Comma));
         }
@@ -390,14 +457,19 @@ private:
 
     // --- Statements -------------------------------------------------------
 
-    bool IsLocalDeclStart() const
+    // A declared type is spelled the same way an expression can start, so
+    // the only reliable test is to read a whole type and see whether a
+    // variable name follows it. The attempt is rolled back either way.
+    bool IsLocalDeclStart()
     {
-        if (IsBuiltInTypeToken(Current().kind) || Check(TokenKind::KwVar)) return true;
+        if (Check(TokenKind::KwVar)) return true;
+        if (!IsBuiltInTypeToken(Current().kind) && !Check(TokenKind::Identifier)) return false;
 
-        // A declared type is just a name, so two names in a row is what
-        // separates `Shape s` from an expression that merely starts with
-        // a name.
-        return Check(TokenKind::Identifier) && PeekKind(1) == TokenKind::Identifier;
+        const size_t start = m_position;
+        TypeRef probe;
+        const bool looksLikeDecl = ParseTypeRef(probe) && Check(TokenKind::Identifier);
+        m_position = start;
+        return looksLikeDecl;
     }
 
     StmtPtr ParseStatement()
@@ -408,6 +480,7 @@ private:
         if (Match(TokenKind::KwIf)) return ParseIf(loc);
         if (Match(TokenKind::KwWhile)) return ParseWhile(loc);
         if (Match(TokenKind::KwFor)) return ParseFor(loc);
+        if (Match(TokenKind::KwForeach)) return ParseForEach(loc);
         if (Match(TokenKind::KwReturn)) return ParseReturn(loc);
 
         if (Match(TokenKind::KwBreak))
@@ -557,6 +630,34 @@ private:
             stmt->step = ParseExpression();
             if (!stmt->step) return nullptr;
         }
+        if (!Expect(TokenKind::RParen, "')'")) return nullptr;
+
+        stmt->body = ParseStatement();
+        if (!stmt->body) return nullptr;
+        return stmt;
+    }
+
+    StmtPtr ParseForEach(SourceLocation loc)
+    {
+        if (!Expect(TokenKind::LParen, "'('")) return nullptr;
+
+        auto stmt = std::make_unique<ForEachStmt>();
+        stmt->location = loc;
+
+        if (!ParseTypeRef(stmt->declaredType))
+        {
+            Error(Current().location, "expected a loop variable type, found '" + Describe(Current()) + "'");
+            return nullptr;
+        }
+
+        const Token* nameToken = Expect(TokenKind::Identifier, "a loop variable name");
+        if (!nameToken) return nullptr;
+        stmt->name = nameToken->text;
+
+        if (!Expect(TokenKind::KwIn, "'in'")) return nullptr;
+
+        stmt->sequence = ParseExpression();
+        if (!stmt->sequence) return nullptr;
         if (!Expect(TokenKind::RParen, "')'")) return nullptr;
 
         stmt->body = ParseStatement();
@@ -726,6 +827,17 @@ private:
                 expr = std::move(memberExpr);
                 continue;
             }
+            if (Match(TokenKind::LBracket))
+            {
+                auto indexExpr = std::make_unique<IndexExpr>();
+                indexExpr->location = expr->location;
+                indexExpr->base = std::move(expr);
+                indexExpr->index = ParseExpression();
+                if (!indexExpr->index) return nullptr;
+                if (!Expect(TokenKind::RBracket, "']'")) return nullptr;
+                expr = std::move(indexExpr);
+                continue;
+            }
             if (Match(TokenKind::LParen))
             {
                 auto call = std::make_unique<CallExpr>();
@@ -816,12 +928,45 @@ private:
 
     ExprPtr ParseNew(SourceLocation loc)
     {
-        const Token* nameToken = Expect(TokenKind::Identifier, "a type name after 'new'");
-        if (!nameToken) return nullptr;
+        // The type name is read without its `[]` suffixes, because the
+        // first bracket pair after `new` is where the element count goes
+        // and only the pairs after that belong to the element type.
+        TypeRef type;
+        if (IsBuiltInTypeToken(Current().kind))
+        {
+            type.type = TypeFromToken(Advance().kind);
+        }
+        else if (Check(TokenKind::Identifier))
+        {
+            type.type = ValueType::Object;
+            type.name = Advance().text;
+            if (Check(TokenKind::Less) && !ParseTypeArguments(type.typeArgs)) return nullptr;
+        }
+        else
+        {
+            Error(Current().location, "expected a type name after 'new', found '" + Describe(Current()) + "'");
+            return nullptr;
+        }
+
+        if (Match(TokenKind::LBracket))
+        {
+            auto expr = std::make_unique<NewArrayExpr>();
+            expr->location = loc;
+
+            expr->length = ParseExpression();
+            if (!expr->length) return nullptr;
+            if (!Expect(TokenKind::RBracket, "']'")) return nullptr;
+
+            // `new int[4][]` makes four empty `int[]`, so every pair after
+            // the count deepens the element type rather than the result.
+            type.arrayDepth = ParseArraySuffix();
+            expr->elementType = std::move(type);
+            return expr;
+        }
 
         auto expr = std::make_unique<NewExpr>();
         expr->location = loc;
-        expr->typeName = nameToken->text;
+        expr->type = std::move(type);
 
         if (!Expect(TokenKind::LParen, "'('")) return nullptr;
         if (!Check(TokenKind::RParen))

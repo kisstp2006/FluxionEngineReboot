@@ -19,6 +19,7 @@ const char* OpCodeName(OpCode op)
         case OpCode::StoreLocal: return "StoreLocal";
         case OpCode::Pop: return "Pop";
         case OpCode::Dup: return "Dup";
+        case OpCode::Dup2: return "Dup2";
 
         case OpCode::AddInt: return "AddInt";
         case OpCode::SubInt: return "SubInt";
@@ -67,6 +68,11 @@ const char* OpCodeName(OpCode op)
         case OpCode::NewObject: return "NewObject";
         case OpCode::LoadField: return "LoadField";
         case OpCode::StoreField: return "StoreField";
+
+        case OpCode::NewArray: return "NewArray";
+        case OpCode::ArrayLength: return "ArrayLength";
+        case OpCode::LoadElement: return "LoadElement";
+        case OpCode::StoreElement: return "StoreElement";
 
         case OpCode::Jump: return "Jump";
         case OpCode::JumpIfFalse: return "JumpIfFalse";

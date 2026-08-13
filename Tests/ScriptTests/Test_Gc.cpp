@@ -103,10 +103,101 @@ const char* const kNode =
     "    }\n"
     "}\n";
 
+// One declaration with a type parameter, so the same shape can be built
+// once around a value and once around a reference. Which of the two a
+// collection has to follow is the whole question below.
+const char* const kBox =
+    "class Box<T>\n"
+    "{\n"
+    "    T value;\n"
+    "\n"
+    "    Box(T v) { this.value = v; }\n"
+    "\n"
+    "    T Get() { return this.value; }\n"
+    "    void Set(T v) { this.value = v; }\n"
+    "}\n";
+
 } // namespace
 
 void Test_Gc_Run(TestContext& ctx)
 {
+    {
+        // An object reachable only through a chain that runs array ->
+        // object -> array must survive. If element scanning stopped at the
+        // first level, the tail would be freed while still reachable.
+        ScriptRun run(ctx, "nested-array-object-chain-survives",
+            std::string(kNode) +
+            "class Holder { Node[] slots; Holder(int n) { this.slots = new Node[n]; } }\n"
+            "static class Program\n"
+            "{\n"
+            "    static float Main()\n"
+            "    {\n"
+            "        Holder[] holders = new Holder[2];\n"
+            "        holders[0] = new Holder(2);\n"
+            "        holders[1] = new Holder(2);\n"
+            "        holders[0].slots[1] = new Node(6.0f);\n"
+            "        holders[1].slots[0] = new Node(7.0f);\n"
+            "        Junk.Churn(400);\n"
+            "        Gc.Collect();\n"
+            "        return holders[0].slots[1].Read() + holders[1].slots[0].Read();\n"
+            "    }\n"
+            "}\n");
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            TEST_CHECK(ctx, value.floatValue == 13.0f);
+        }
+    }
+    {
+        // Integers that look exactly like live handles must never be
+        // followed. These ints are small indices with plausible
+        // generations, which is the shape a reference slot has.
+        ScriptRun run(ctx, "int-payloads-are-not-followed",
+            std::string(kNode) +
+            "class IntBox { int v; IntBox(int x) { this.v = x; } int Get() { return this.v; } }\n"
+            "static class Program\n"
+            "{\n"
+            "    static int Main()\n"
+            "    {\n"
+            "        IntBox keep = new IntBox(3);\n"
+            "        for (int i = 0; i < 500; i += 1) { IntBox t = new IntBox(i); }\n"
+            "        Gc.Collect();\n"
+            "        return keep.Get() + Gc.LiveObjects();\n"
+            "    }\n"
+            "}\n");
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            // The kept box reads back as 3, and only a handful of objects
+            // stay live -- if the ints were traced, hundreds would.
+            TEST_CHECK(ctx, value.intValue >= 3);
+            TEST_CHECK(ctx, value.intValue < 60);
+            const HeapStats stats = GetHeapStats(run.Machine());
+            TEST_CHECK(ctx, stats.totalAllocations >= 500);
+        }
+    }
+    {
+        // Replacing an array element drops the old object: overwriting is
+        // as much a release as going out of scope.
+        ScriptRun run(ctx, "overwritten-element-is-released",
+            std::string(kNode) +
+            "static class Program\n"
+            "{\n"
+            "    static int Main()\n"
+            "    {\n"
+            "        Node[] a = new Node[1];\n"
+            "        for (int i = 0; i < 400; i += 1) { a[0] = new Node(1.0f); }\n"
+            "        Gc.Collect();\n"
+            "        return Gc.LiveObjects();\n"
+            "    }\n"
+            "}\n");
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            // The array plus its single surviving element, not 400 nodes.
+            TEST_CHECK(ctx, value.intValue < 30);
+        }
+    }
     {
         // Garbage produced underneath a call that sits in the middle of an
         // enclosing expression still has to be reclaimed eventually. If
@@ -460,6 +551,294 @@ void Test_Gc_Run(TestContext& ctx)
             CollectGarbage(run.Machine());
             TEST_CHECK(ctx, !IsObjectAlive(run.Machine(), head.objectValue));
             TEST_CHECK(ctx, GetHeapStats(run.Machine()).liveObjects == 0);
+        }
+    }
+    {
+        // An element is a root just as a field is: an object nothing else
+        // names survives because one position of one sequence holds it,
+        // and reads back as itself afterwards.
+        ScriptRun run(ctx, "object-held-only-by-an-element",
+            std::string(kNode) +
+            "static class Program\n"
+            "{\n"
+            "    static float Main()\n"
+            "    {\n"
+            "        Node[] slots = new Node[4];\n"
+            "        slots[1] = new Node(7.0f);\n"
+            "        slots[3] = new Node(2.0f);\n"
+            "        Junk.Churn(400);\n"
+            "        Gc.Collect();\n"
+            "        return slots[1].Read() + slots[3].Read();\n"
+            "    }\n"
+            "}\n");
+
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            TEST_CHECK(ctx, value.type == ValueType::Float);
+            TEST_CHECK(ctx, value.floatValue == 9.0f);
+            TEST_CHECK(ctx, GetHeapStats(run.Machine()).collectionCount > 0);
+        }
+    }
+    {
+        // The whole length is followed, not only the part something
+        // happens to have looked at: an object in the last position of a
+        // long sequence is as reachable as one in the first.
+        ScriptRun run(ctx, "the-whole-length-is-followed",
+            std::string(kNode) +
+            "static class Program\n"
+            "{\n"
+            "    static int Main()\n"
+            "    {\n"
+            "        Node[] slots = new Node[64];\n"
+            "        for (int i = 0; i < 64; i += 1) { slots[i] = new Node(i * 1.0f); }\n"
+            "        Junk.Churn(500);\n"
+            "        Gc.Collect();\n"
+            "        float total = 0.0f;\n"
+            "        for (int i = 0; i < 64; i += 1) { total += slots[i].Read(); }\n"
+            "        if (total != 2016.0f) { return 0 - 1; }\n"
+            "        return Gc.LiveObjects();\n"
+            "    }\n"
+            "}\n");
+
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            // The sequence itself plus everything it holds, and nothing
+            // the churn left behind.
+            TEST_CHECK(ctx, value.intValue == 65);
+        }
+    }
+    {
+        // A sequence of a value type must not be walked as though its
+        // elements named objects. The numbers written here are exactly
+        // the small values a record index takes, so a collector that
+        // guessed would keep the wrong things alive.
+        ScriptRun run(ctx, "value-elements-are-not-followed",
+            std::string(kNode) +
+            "static class Program\n"
+            "{\n"
+            "    static int Main()\n"
+            "    {\n"
+            "        int[] numbers = new int[16];\n"
+            "        for (int i = 0; i < 16; i += 1) { numbers[i] = i + 1; }\n"
+            "        Node keep = new Node(1.0f);\n"
+            "        Junk.Churn(400);\n"
+            "        Gc.Collect();\n"
+            "        if (numbers[15] != 16) { return 0 - 1; }\n"
+            "        return Gc.LiveObjects();\n"
+            "    }\n"
+            "}\n");
+
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            // The sequence and the one object a local still names.
+            TEST_CHECK(ctx, value.intValue == 2);
+        }
+    }
+    {
+        // A sequence is an object like any other, and goes away when
+        // nothing names it.
+        ScriptRun run(ctx, "sequences-are-reclaimed",
+            "static class Waste\n"
+            "{\n"
+            "    static int Sequences(int n)\n"
+            "    {\n"
+            "        for (int i = 0; i < n; i += 1)\n"
+            "        {\n"
+            "            int[] temporary = new int[8];\n"
+            "            temporary[0] = i;\n"
+            "        }\n"
+            "        return n;\n"
+            "    }\n"
+            "}\n"
+            "static class Program\n"
+            "{\n"
+            "    static int Main()\n"
+            "    {\n"
+            "        int[] kept = new int[4];\n"
+            "        Waste.Sequences(300);\n"
+            "        Gc.Collect();\n"
+            "        if (kept.Length != 4) { return 0 - 1; }\n"
+            "        return Gc.LiveObjects();\n"
+            "    }\n"
+            "}\n");
+
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            TEST_CHECK(ctx, value.intValue == 1);
+
+            const HeapStats stats = GetHeapStats(run.Machine());
+            TEST_CHECK(ctx, stats.totalAllocations == 301);
+            TEST_CHECK(ctx, stats.collectionCount > 0);
+
+            CollectGarbage(run.Machine());
+            TEST_CHECK(ctx, GetHeapStats(run.Machine()).liveObjects == 0);
+        }
+    }
+    {
+        // The same shape built around a reference has a field a
+        // collection must follow, and built around a value has one it
+        // must not. This is the reference half: the only thing naming the
+        // object is the field, and it survives -- then the field is
+        // emptied and it does not.
+        ScriptRun run(ctx, "reference-field-of-a-built-type",
+            std::string(kNode) + kBox +
+            "static class Program\n"
+            "{\n"
+            "    static int Main()\n"
+            "    {\n"
+            "        Box<Node> held = new Box<Node>(new Node(5.0f));\n"
+            "        Junk.Churn(400);\n"
+            "        Gc.Collect();\n"
+            "        if (held.Get().Read() != 5.0f) { return 0 - 1; }\n"
+            "\n"
+            "        int whileHeld = Gc.LiveObjects();\n"
+            "        held.Set(null);\n"
+            "        Gc.Collect();\n"
+            "        int afterDropped = Gc.LiveObjects();\n"
+            "        return whileHeld * 10 + afterDropped;\n"
+            "    }\n"
+            "}\n");
+
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            // Two while the field holds it, then only the holder itself.
+            TEST_CHECK(ctx, value.intValue == 21);
+        }
+    }
+    {
+        // The value half: the field holds a number, and a number that
+        // looks exactly like a record index at that. Nothing here may be
+        // followed, so the heap must come back empty and no read may
+        // fault.
+        ScriptRun run(ctx, "value-field-of-a-built-type-is-not-followed",
+            std::string(kNode) + kBox +
+            "static class Waste\n"
+            "{\n"
+            "    static int Boxes(int n)\n"
+            "    {\n"
+            "        for (int i = 0; i < n; i += 1)\n"
+            "        {\n"
+            "            Box<int> temporary = new Box<int>(i + 1);\n"
+            "            if (temporary.Get() != i + 1) { return 0 - 1; }\n"
+            "        }\n"
+            "        return n;\n"
+            "    }\n"
+            "}\n"
+            "static class Program\n"
+            "{\n"
+            "    static int Main()\n"
+            "    {\n"
+            "        Box<int> kept = new Box<int>(123456789);\n"
+            "        if (Waste.Boxes(400) != 400) { return 0 - 1; }\n"
+            "        Gc.Collect();\n"
+            "        if (kept.Get() != 123456789) { return 0 - 2; }\n"
+            "        return Gc.LiveObjects();\n"
+            "    }\n"
+            "}\n");
+
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            TEST_CHECK(ctx, value.intValue == 1);
+
+            const HeapStats stats = GetHeapStats(run.Machine());
+            TEST_CHECK(ctx, stats.totalAllocations == 401);
+
+            CollectGarbage(run.Machine());
+            TEST_CHECK(ctx, GetHeapStats(run.Machine()).liveObjects == 0);
+        }
+    }
+    {
+        // A list of references keeps every one of them, across the
+        // reallocation its growth performs; emptying it lets them all go.
+        ScriptRun run(ctx, "a-list-holds-and-then-releases",
+            std::string(kNode) +
+            "static class Program\n"
+            "{\n"
+            "    static int Main()\n"
+            "    {\n"
+            "        List<Node> nodes = new List<Node>();\n"
+            "        for (int i = 0; i < 50; i += 1) { nodes.Add(new Node(i * 1.0f)); }\n"
+            "        Junk.Churn(400);\n"
+            "        Gc.Collect();\n"
+            "\n"
+            "        float total = 0.0f;\n"
+            "        for (int i = 0; i < 50; i += 1) { total += nodes.Get(i).Read(); }\n"
+            "        if (total != 1225.0f) { return 0 - 1; }\n"
+            "\n"
+            "        int whileHeld = Gc.LiveObjects();\n"
+            "        nodes.Clear();\n"
+            "        Gc.Collect();\n"
+            "        int afterCleared = Gc.LiveObjects();\n"
+            "        return whileHeld * 100 + afterCleared;\n"
+            "    }\n"
+            "}\n");
+
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            // Fifty objects, the list, and the sequence behind it; then
+            // the list and the empty sequence it starts over with.
+            TEST_CHECK(ctx, value.intValue == 5202);
+        }
+    }
+    {
+        // The bitmap a built type carries is its own: the same
+        // declaration around a value and around a reference produce two
+        // layouts, and only one of them has a reference in it.
+        DiagnosticList diagnostics;
+        CompileOptions options;
+        options.fileName = "built-types-carry-their-own-bitmaps";
+
+        auto compiled = Compile(
+            std::string(kNode) + kBox +
+            "static class Program\n"
+            "{\n"
+            "    static int Main()\n"
+            "    {\n"
+            "        Box<int> counted = new Box<int>(1);\n"
+            "        Box<Node> held = new Box<Node>(new Node(1.0f));\n"
+            "        Node[] slots = new Node[2];\n"
+            "        int[] numbers = new int[2];\n"
+            "        return counted.Get() + slots.Length + numbers.Length;\n"
+            "    }\n"
+            "}\n",
+            options, diagnostics);
+        TEST_CHECK(ctx, compiled.IsOk());
+        if (compiled.IsOk())
+        {
+            const ClassInfo* counted = nullptr;
+            const ClassInfo* held = nullptr;
+            const ClassInfo* references = nullptr;
+            const ClassInfo* values = nullptr;
+            for (const ClassInfo& info : compiled.Value().classes)
+            {
+                if (info.name == "Box<int>") counted = &info;
+                if (info.name == "Box<Node>") held = &info;
+                if (info.name == "Node[]") references = &info;
+                if (info.name == "int[]") values = &info;
+            }
+
+            TEST_CHECK(ctx, counted != nullptr && held != nullptr);
+            if (counted && held)
+            {
+                TEST_CHECK(ctx, !IsReferenceBitSet(counted->fieldReferenceBits, 0));
+                TEST_CHECK(ctx, IsReferenceBitSet(held->fieldReferenceBits, 0));
+                TEST_CHECK(ctx, !counted->isArray && !held->isArray);
+            }
+
+            TEST_CHECK(ctx, references != nullptr && values != nullptr);
+            if (references && values)
+            {
+                TEST_CHECK(ctx, references->isArray && values->isArray);
+                TEST_CHECK(ctx, references->elementIsReference);
+                TEST_CHECK(ctx, !values->elementIsReference);
+            }
         }
     }
 }

@@ -29,6 +29,11 @@ constexpr size_t kMaxStackSlots = 1u << 16;
 // nothing.
 constexpr u32 kAllocationsBetweenCollections = 128;
 
+// An upper bound on how many elements one sequence may hold, so a length
+// computed from bad arithmetic is reported rather than turned into an
+// allocation that exhausts the host.
+constexpr u32 kMaxArrayElements = 1u << 24;
+
 std::string FormatInt(i32 value) { return std::to_string(value); }
 
 std::string FormatFloat(f32 value)
@@ -178,6 +183,8 @@ constexpr i32 kFaultCodeCallDepth = 13;
 constexpr i32 kFaultCodeDivideByZero = 14;
 constexpr i32 kFaultCodeNullReference = 15;
 constexpr i32 kFaultCodeStaleReference = 16;
+constexpr i32 kFaultCodeArrayLength = 17;
+constexpr i32 kFaultCodeElementRange = 18;
 
 class Interpreter
 {
@@ -323,6 +330,17 @@ private:
                 break;
             }
 
+            case OpCode::Dup2: {
+                if (m_vm.stack.size() < 2) { Fault(kFaultCodeStackUnderflow, "script value stack underflowed"); break; }
+                // Read both out before pushing: a push may move the stack
+                // out from under a reference into it.
+                const Slot lower = m_vm.stack[m_vm.stack.size() - 2];
+                const Slot upper = m_vm.stack[m_vm.stack.size() - 1];
+                Push(lower);
+                Push(upper);
+                break;
+            }
+
             case OpCode::AddInt: { const i32 b = SlotAsInt(Pop()); const i32 a = SlotAsInt(Pop()); PushInt((i32)((u32)a + (u32)b)); break; }
             case OpCode::SubInt: { const i32 b = SlotAsInt(Pop()); const i32 a = SlotAsInt(Pop()); PushInt((i32)((u32)a - (u32)b)); break; }
             case OpCode::MulInt: { const i32 b = SlotAsInt(Pop()); const i32 a = SlotAsInt(Pop()); PushInt((i32)((u32)a * (u32)b)); break; }
@@ -434,6 +452,55 @@ private:
                 break;
             }
 
+            case OpCode::NewArray: ExecuteNewArray(instruction.operand); break;
+
+            case OpCode::ArrayLength: {
+                ObjectHandle handle;
+                if (!RequireObject(Pop(), handle)) break;
+
+                u32 count = 0;
+                if (!RequireSequence(handle, count)) break;
+                PushInt((i32)count);
+                break;
+            }
+
+            case OpCode::LoadElement: {
+                const i32 position = SlotAsInt(Pop());
+                ObjectHandle handle;
+                if (!RequireObject(Pop(), handle)) break;
+
+                u32 count = 0;
+                if (!RequireSequence(handle, count)) break;
+                if (!RequireInRange(position, count)) break;
+
+                Slot value;
+                if (!m_vm.heap.ReadField(handle, (u32)position, value))
+                {
+                    Fault(kFaultCodeMalformed, "script read a sequence element that does not exist");
+                    break;
+                }
+                Push(value);
+                break;
+            }
+
+            case OpCode::StoreElement: {
+                const Slot value = Pop();
+                const i32 position = SlotAsInt(Pop());
+                ObjectHandle handle;
+                if (!RequireObject(Pop(), handle)) break;
+
+                u32 count = 0;
+                if (!RequireSequence(handle, count)) break;
+                if (!RequireInRange(position, count)) break;
+
+                if (!m_vm.heap.WriteField(handle, (u32)position, value))
+                {
+                    Fault(kFaultCodeMalformed, "script wrote a sequence element that does not exist");
+                    break;
+                }
+                break;
+            }
+
             case OpCode::Jump: m_vm.frames.back().ip = instruction.operand; break;
 
             case OpCode::JumpIfFalse:
@@ -490,6 +557,68 @@ private:
             m_vm.collectPending = true;
 
         Push(MakeObjectSlot(handle));
+    }
+
+    void ExecuteNewArray(u32 classIndex)
+    {
+        const i32 requested = SlotAsInt(Pop());
+
+        if (classIndex >= m_vm.module.classes.size() || !m_vm.module.classes[classIndex].isArray)
+        {
+            Fault(kFaultCodeMalformed, "script allocation names a sequence type the module does not contain");
+            return;
+        }
+
+        // A count that came out negative is a mistake in the script, not
+        // a request for a very large sequence: it is reported here rather
+        // than wrapped around into one.
+        if (requested < 0)
+        {
+            Fault(kFaultCodeArrayLength, "script asked for a sequence with a negative number of elements");
+            return;
+        }
+        if ((u32)requested > kMaxArrayElements)
+        {
+            Fault(kFaultCodeArrayLength, "script asked for a sequence with more elements than one may hold");
+            return;
+        }
+
+        const ObjectHandle handle = m_vm.heap.Allocate(classIndex, (u32)requested);
+        if (handle.IsNull())
+        {
+            Fault(kFaultCodeMalformed, "script could not create a sequence");
+            return;
+        }
+
+        if (m_vm.heap.AllocationsSinceCollection() >= kAllocationsBetweenCollections)
+            m_vm.collectPending = true;
+
+        Push(MakeObjectSlot(handle));
+    }
+
+    // The object is known to be live by the time this runs; what is left
+    // to establish is that it is a sequence at all, and how long it is.
+    bool RequireSequence(ObjectHandle handle, u32& outCount)
+    {
+        const u32 classIndex = m_vm.heap.ClassOf(handle);
+        if (classIndex >= m_vm.module.classes.size() || !m_vm.module.classes[classIndex].isArray)
+        {
+            Fault(kFaultCodeMalformed, "script used something that is not a sequence as one");
+            return false;
+        }
+        if (!m_vm.heap.TrySlotCount(handle, outCount))
+        {
+            Fault(kFaultCodeStaleReference, "script reached through a reference whose object no longer exists");
+            return false;
+        }
+        return true;
+    }
+
+    bool RequireInRange(i32 position, u32 count)
+    {
+        if (position >= 0 && (u32)position < count) return true;
+        Fault(kFaultCodeElementRange, "script reached a sequence element outside the range the sequence was created with");
+        return false;
     }
 
     // How many stack slots a call to `function` consumes: its declared

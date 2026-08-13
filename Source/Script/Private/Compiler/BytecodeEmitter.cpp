@@ -93,6 +93,12 @@ public:
         {
             if (decl->kind != DeclKind::Class) continue;
             auto* classDecl = static_cast<ClassDecl*>(decl.get());
+
+            // A declaration written with type parameters was never given
+            // an index, because it is a pattern rather than a type: what
+            // reaches the module is each concrete copy made from it.
+            if (classDecl->classIndex == kNoClass) continue;
+
             classes.push_back(classDecl);
             for (const DeclPtr& methodDecl : classDecl->methods)
                 methods.push_back(static_cast<MethodDecl*>(methodDecl.get()));
@@ -161,6 +167,8 @@ private:
             info.baseClass = classDecl->baseClass;
             info.isInterface = classDecl->isInterface;
             info.isStatic = classDecl->isStatic;
+            info.isArray = classDecl->isArray;
+            info.elementIsReference = classDecl->arrayElementIsReference;
             info.fieldSlotCount = classDecl->fieldSlotCount;
             info.fieldReferenceBits = classDecl->fieldReferenceBits;
             info.vtable = classDecl->vtable;
@@ -345,6 +353,7 @@ private:
             case StmtKind::If: EmitIf(static_cast<const IfStmt&>(stmt)); break;
             case StmtKind::While: EmitWhile(static_cast<const WhileStmt&>(stmt)); break;
             case StmtKind::For: EmitFor(static_cast<const ForStmt&>(stmt)); break;
+            case StmtKind::ForEach: EmitForEach(static_cast<const ForEachStmt&>(stmt)); break;
 
             case StmtKind::Return: {
                 const auto& node = static_cast<const ReturnStmt&>(stmt);
@@ -441,6 +450,91 @@ private:
         CloseLoop(stepLabel, endLabel);
     }
 
+    // Walking a sequence is a counted loop over its positions, written
+    // out here rather than represented at run time: there is no iterator
+    // to create, and the loop variable is simply the slot each turn
+    // writes the element it reached into.
+    void EmitForEach(const ForEachStmt& stmt)
+    {
+        const u32 sequenceSlot = stmt.sequenceSlot >= 0 ? (u32)stmt.sequenceSlot : 0;
+        const u32 positionSlot = stmt.indexSlot >= 0 ? (u32)stmt.indexSlot : 0;
+        const u32 elementSlot = stmt.loopSlot >= 0 ? (u32)stmt.loopSlot : 0;
+
+        EmitExpr(*stmt.sequence);
+        Emit(OpCode::StoreLocal, sequenceSlot);
+        Emit(OpCode::PushInt, IntConstant(0));
+        Emit(OpCode::StoreLocal, positionSlot);
+
+        const u32 conditionLabel = Here();
+        Emit(OpCode::SafePoint);
+        Emit(OpCode::LoadLocal, positionSlot);
+        Emit(OpCode::LoadLocal, sequenceSlot);
+        EmitSequenceCount(stmt);
+        Emit(OpCode::LessInt);
+        const u32 exitJump = EmitJump(OpCode::JumpIfFalse);
+
+        Emit(OpCode::LoadLocal, sequenceSlot);
+        Emit(OpCode::LoadLocal, positionSlot);
+        EmitSequenceElement(stmt);
+        Emit(OpCode::StoreLocal, elementSlot);
+
+        m_loops.emplace_back();
+        EmitStmt(*stmt.body);
+
+        // `continue` skips the rest of the body but still advances, or
+        // the loop would never end.
+        const u32 stepLabel = Here();
+        Emit(OpCode::LoadLocal, positionSlot);
+        Emit(OpCode::PushInt, IntConstant(1));
+        Emit(OpCode::AddInt);
+        Emit(OpCode::StoreLocal, positionSlot);
+        Emit(OpCode::Jump, conditionLabel);
+
+        const u32 endLabel = Here();
+        PatchJump(exitJump, endLabel);
+        CloseLoop(stepLabel, endLabel);
+    }
+
+    void EmitSequenceCount(const ForEachStmt& stmt)
+    {
+        if (stmt.overArray)
+        {
+            Emit(OpCode::ArrayLength);
+            return;
+        }
+        EmitBoundCall(stmt.countTarget, stmt.countFunction, stmt.location);
+    }
+
+    void EmitSequenceElement(const ForEachStmt& stmt)
+    {
+        if (stmt.overArray)
+        {
+            Emit(OpCode::LoadElement);
+            return;
+        }
+        EmitBoundCall(stmt.elementTarget, stmt.elementFunction, stmt.location);
+    }
+
+    void EmitBoundCall(CallTarget target, u32 functionIndex, const SourceLocation& location)
+    {
+        switch (target)
+        {
+            case CallTarget::ScriptMethod:
+            case CallTarget::InstanceMethod:
+                Emit(OpCode::Call, functionIndex);
+                return;
+            case CallTarget::VirtualMethod:
+                Emit(OpCode::CallVirtual, functionIndex);
+                return;
+            case CallTarget::InterfaceMethod:
+                Emit(OpCode::CallInterface, functionIndex);
+                return;
+            default:
+                m_diagnostics.AddError(location, "this call was never bound to a method");
+                return;
+        }
+    }
+
     void CloseLoop(u32 continueTarget, u32 breakTarget)
     {
         LoopContext context = std::move(m_loops.back());
@@ -481,6 +575,26 @@ private:
 
             case ExprKind::New: EmitNew(static_cast<const NewExpr&>(expr)); break;
 
+            case ExprKind::NewArray: {
+                const auto& node = static_cast<const NewArrayExpr&>(expr);
+                if (node.arrayClass == kNoClass)
+                {
+                    m_diagnostics.AddError(expr.location, "this allocation was never bound to a sequence type");
+                    break;
+                }
+                EmitExpr(*node.length);
+                Emit(OpCode::NewArray, node.arrayClass);
+                break;
+            }
+
+            case ExprKind::Index: {
+                const auto& node = static_cast<const IndexExpr&>(expr);
+                EmitExpr(*node.base);
+                EmitExpr(*node.index);
+                Emit(OpCode::LoadElement);
+                break;
+            }
+
             case ExprKind::Identifier: {
                 const auto& identifier = static_cast<const IdentifierExpr&>(expr);
                 if (identifier.isField)
@@ -495,6 +609,12 @@ private:
 
             case ExprKind::Member: {
                 const auto& member = static_cast<const MemberExpr&>(expr);
+                if (member.binding == MemberBinding::ArrayLength && member.base)
+                {
+                    EmitExpr(*member.base);
+                    Emit(OpCode::ArrayLength);
+                    break;
+                }
                 if (member.binding != MemberBinding::Field || !member.base)
                 {
                     m_diagnostics.AddError(expr.location, "this member reference was never bound to a field");
@@ -638,6 +758,12 @@ private:
 
     void EmitAssign(const AssignExpr& expr)
     {
+        if (expr.target->kind == ExprKind::Index)
+        {
+            EmitElementAssign(expr, static_cast<const IndexExpr&>(*expr.target));
+            return;
+        }
+
         FieldTarget field;
         if (AsFieldTarget(*expr.target, field))
         {
@@ -688,6 +814,35 @@ private:
         Emit(ArithmeticOpcode(BinaryOpForCompound(expr.op), expr.operandType));
         Emit(OpCode::StoreField, field.slot);
         Emit(OpCode::LoadField, field.slot);
+    }
+
+    // An element is named by two values rather than one, so a store that
+    // also has to produce what it stored keeps both of them: the pair is
+    // copied, the store consumes one copy, and the read that follows uses
+    // the other.
+    void EmitElementAssign(const AssignExpr& expr, const IndexExpr& target)
+    {
+        EmitExpr(*target.base);
+        EmitExpr(*target.index);
+
+        if (expr.op == AssignOp::Assign)
+        {
+            Emit(OpCode::Dup2);
+            EmitExpr(*expr.value);
+            Emit(OpCode::StoreElement);
+            Emit(OpCode::LoadElement);
+            return;
+        }
+
+        // A compound form needs the pair a third time, to read the value
+        // it is combining with.
+        Emit(OpCode::Dup2);
+        Emit(OpCode::Dup2);
+        Emit(OpCode::LoadElement);
+        EmitExpr(*expr.value);
+        Emit(ArithmeticOpcode(BinaryOpForCompound(expr.op), expr.operandType));
+        Emit(OpCode::StoreElement);
+        Emit(OpCode::LoadElement);
     }
 
     void EmitCall(const CallExpr& expr)

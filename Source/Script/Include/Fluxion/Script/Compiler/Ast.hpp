@@ -21,10 +21,19 @@ namespace Fluxion::Script
 // A type as it was written down. `name` is set only when the source named
 // a declared type, in which case `type` is Object and `classIndex` is
 // filled in once the analyzer has seen every declaration in the file.
+//
+// `typeArgs` holds what was written between angle brackets and
+// `arrayDepth` counts the trailing `[]` pairs, so `Box<int>[][]` arrives
+// here whole. Resolution replaces all three with a single concrete class:
+// afterwards `type` is Object, `classIndex` names the concrete type, and
+// both `typeArgs` and `arrayDepth` are empty -- there is no such thing as
+// an unresolved type once the analyzer is done with it.
 struct TypeRef
 {
     ValueType type = ValueType::Unknown;
     std::string name;
+    std::vector<TypeRef> typeArgs;
+    u32 arrayDepth = 0;
     u32 classIndex = kNoClass;
 };
 
@@ -39,8 +48,10 @@ enum class ExprKind
     NullLiteral,
     This,
     New,
+    NewArray,
     Identifier,
     Member,
+    Index,
     Call,
     Unary,
     Binary,
@@ -107,10 +118,10 @@ struct ThisExpr : Expr
     ThisExpr() : Expr(ExprKind::This) {}
 };
 
-// `new Name(args)`.
+// `new Name(args)`, `Name` possibly carrying type arguments.
 struct NewExpr : Expr
 {
-    std::string typeName;
+    TypeRef type;
     std::vector<ExprPtr> args;
 
     // Filled in by semantic analysis.
@@ -118,6 +129,19 @@ struct NewExpr : Expr
     u32 constructorFunction = kNoFunction;
 
     NewExpr() : Expr(ExprKind::New) {}
+};
+
+// `new T[count]`. The element type is what was written before the
+// brackets, so `new int[4][]` creates four empty `int[]` slots.
+struct NewArrayExpr : Expr
+{
+    TypeRef elementType;
+    ExprPtr length;
+
+    // The sequence type this produces, filled in by semantic analysis.
+    u32 arrayClass = kNoClass;
+
+    NewArrayExpr() : Expr(ExprKind::NewArray) {}
 };
 
 struct IdentifierExpr : Expr
@@ -132,6 +156,11 @@ struct IdentifierExpr : Expr
     // written in front of it.
     bool isField = false;
     u32 fieldSlot = 0;
+
+    // Set for a name the surrounding construct owns rather than the body:
+    // a loop's own variable is handed a fresh value each turn, so nothing
+    // inside the body may store into it.
+    bool isReadOnly = false;
 
     IdentifierExpr() : Expr(ExprKind::Identifier) {}
 };
@@ -148,6 +177,10 @@ enum class MemberBinding
     // method being called, or a built-in's group. Never a value on its
     // own, so `base` is left unanalyzed.
     Scope,
+
+    // How many elements the sequence `base` evaluates to was created
+    // with. Read-only, and the one member a sequence has.
+    ArrayLength,
 };
 
 // `A.B`.
@@ -160,6 +193,16 @@ struct MemberExpr : Expr
     u32 fieldSlot = 0;
 
     MemberExpr() : Expr(ExprKind::Member) {}
+};
+
+// `base[index]`, both to read an element and, as an assignment target, to
+// write one.
+struct IndexExpr : Expr
+{
+    ExprPtr base;
+    ExprPtr index;
+
+    IndexExpr() : Expr(ExprKind::Index) {}
 };
 
 enum class CallTarget
@@ -257,6 +300,7 @@ enum class StmtKind
     If,
     While,
     For,
+    ForEach,
     Return,
     Break,
     Continue,
@@ -320,6 +364,33 @@ struct ForStmt : Stmt
     ExprPtr step;      // may be null
     StmtPtr body;
     ForStmt() : Stmt(StmtKind::For) {}
+};
+
+// `foreach (T name in sequence) body`. Lowered to a counted loop: the
+// sequence and the position are held in frame slots of their own, and the
+// loop variable is written from the sequence at the top of every turn.
+struct ForEachStmt : Stmt
+{
+    TypeRef declaredType;
+    std::string name;
+    ExprPtr sequence;
+    StmtPtr body;
+
+    // Filled in by semantic analysis.
+    int loopSlot = -1;
+    int indexSlot = -1;
+    int sequenceSlot = -1;
+
+    // How each turn reaches the sequence. An array answers both questions
+    // with an instruction; anything else answers them with the two
+    // methods it declared, and those are bound here like any other call.
+    bool overArray = true;
+    CallTarget countTarget = CallTarget::Unresolved;
+    u32 countFunction = kNoFunction;
+    CallTarget elementTarget = CallTarget::Unresolved;
+    u32 elementFunction = kNoFunction;
+
+    ForEachStmt() : Stmt(StmtKind::ForEach) {}
 };
 
 struct ReturnStmt : Stmt
@@ -409,14 +480,28 @@ struct ClassDecl : Decl
     bool isStatic = false;
     bool isInterface = false;
 
+    // The names written between angle brackets after the declared name.
+    // A declaration that has any is a pattern rather than a type: it is
+    // never laid out, numbered or emitted, and each distinct set of
+    // arguments it is used with produces a separate declaration that is.
+    std::vector<std::string> typeParams;
+    std::vector<SourceLocation> typeParamLocations;
+
     // What followed the colon. The first entry may be a base class; the
     // analyzer decides, since the parser cannot tell a class name from an
     // interface name.
-    std::vector<std::string> baseNames;
+    std::vector<TypeRef> baseTypes;
     std::vector<SourceLocation> baseLocations;
 
     std::vector<DeclPtr> fields;  // each a FieldDecl
     std::vector<DeclPtr> methods; // each a MethodDecl, constructors included
+
+    // A declaration the analyzer created rather than one the source
+    // wrote: an indexable sequence of `arrayElementType`, which has no
+    // members of its own and whose length belongs to each object.
+    bool isArray = false;
+    TypeRef arrayElementType;
+    bool arrayElementIsReference = false;
 
     // Filled in by semantic analysis: everything the module's class table
     // needs.

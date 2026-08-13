@@ -1,5 +1,8 @@
 #include <Fluxion/Script/Compiler/Semantic.hpp>
 
+#include <Compiler/AstClone.hpp>
+
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -10,6 +13,16 @@ namespace Fluxion::Script
 
 namespace
 {
+
+// How deeply one set of type arguments may nest inside another. A
+// declaration that names itself with a type argument built out of its own
+// parameter grows this by one every time, so a cap is what turns an
+// endless expansion into a message.
+constexpr u32 kMaxTypeArgumentDepth = 8;
+
+// A backstop on how many declarations the analyzer may create for itself,
+// so a program that expands widely rather than deeply is also stopped.
+constexpr u32 kMaxGeneratedClasses = 1024;
 
 bool IsNumeric(ValueType type) { return type == ValueType::Int || type == ValueType::Float; }
 
@@ -34,23 +47,27 @@ public:
             m_natives[natives[i].qualifiedName].push_back((NativeFunctionId)i);
 
         CollectClasses();
-        ResolveBaseLists();
-        CheckClassShapes();
+        CheckTypeParameterNames();
         if (m_diagnostics.HasErrors()) return false;
 
-        SynthesizeConstructors();
-        AssignFunctionIndices();
-        ResolveMemberTypes();
+        // The walks below are all by index over a container that grows
+        // while they run: naming a type that does not exist yet appends
+        // the declaration for it, and the walk reaches that declaration
+        // on a later turn without anything having to schedule it.
+        for (u32 i = 0; i < (u32)m_classes.size(); ++i) PrepareClass(i);
         if (m_diagnostics.HasErrors()) return false;
 
         for (u32 i = 0; i < (u32)m_classes.size(); ++i) BuildLayout(i);
         if (m_diagnostics.HasErrors()) return false;
 
-        for (ClassEntry& entry : m_classes)
+        for (u32 i = 0; i < (u32)m_classes.size(); ++i)
         {
-            m_currentClass = &entry;
-            for (DeclPtr& method : entry.decl->methods)
-                AnalyzeMethod(*static_cast<MethodDecl*>(method.get()));
+            if (m_classes[i].isArray) continue;
+
+            m_currentClass = &m_classes[i];
+            ClassDecl* decl = m_classes[i].decl;
+            for (size_t m = 0; m < decl->methods.size(); ++m)
+                AnalyzeMethod(*static_cast<MethodDecl*>(decl->methods[m].get()));
             m_currentClass = nullptr;
         }
 
@@ -69,6 +86,21 @@ private:
     {
         ClassDecl* decl = nullptr;
         u32 index = kNoClass;
+
+        // An indexable sequence rather than a declaration the source
+        // wrote: it has no members, no layout to build and no bodies to
+        // analyze, only the type of the elements it holds.
+        bool isArray = false;
+        TypeRef elementType;
+
+        // How deeply type arguments nest inside this type's own name.
+        // Zero for anything the source wrote out.
+        u32 typeArgumentDepth = 0;
+
+        // Set once the declaration has a base list, function numbers and
+        // resolved member types, so a type that names itself part-way
+        // through does not start over.
+        bool prepared = false;
 
         u32 base = kNoClass;
         std::vector<u32> declaredInterfaces;
@@ -97,6 +129,10 @@ private:
     {
         TypeRef type;
         int slot = -1;
+
+        // Names a construct writes for itself each time round, which the
+        // body it encloses may read but never store into.
+        bool readOnly = false;
     };
 
     // What a frame slot has been used for. A slot is never shared between
@@ -107,10 +143,21 @@ private:
     Program& m_program;
     DiagnosticList& m_diagnostics;
 
-    std::vector<ClassEntry> m_classes;
+    // A deque rather than a vector: naming a type appends a declaration
+    // in the middle of walking an existing one, and every reference and
+    // pointer taken into this container has to keep meaning what it did.
+    std::deque<ClassEntry> m_classes;
     std::unordered_map<std::string, u32> m_classByName;
     std::unordered_map<std::string, MethodDecl*> m_methods; // keyed "Class.Method"
     std::unordered_map<std::string, std::vector<NativeFunctionId>> m_natives;
+
+    // Declarations written with type parameters, kept apart from the
+    // classes: a pattern has no index, no layout and no instructions --
+    // only the concrete copies made from it do.
+    std::unordered_map<std::string, ClassDecl*> m_templates;
+
+    u32 m_nextFunctionIndex = 0;
+    u32 m_generatedClasses = 0;
 
     ClassEntry* m_currentClass = nullptr;
     MethodDecl* m_currentMethod = nullptr;
@@ -158,15 +205,46 @@ private:
             if (decl->kind != DeclKind::Class) continue;
             auto* classDecl = static_cast<ClassDecl*>(decl.get());
 
-            ClassEntry entry;
-            entry.decl = classDecl;
-            entry.index = (u32)m_classes.size();
-            classDecl->classIndex = entry.index;
-
-            if (!m_classByName.emplace(classDecl->name, entry.index).second)
+            const bool alreadyTaken = m_classByName.find(classDecl->name) != m_classByName.end() ||
+                                      m_templates.find(classDecl->name) != m_templates.end();
+            if (alreadyTaken)
                 Error(classDecl->location, "'" + classDecl->name + "' is declared more than once");
 
-            m_classes.push_back(std::move(entry));
+            if (!classDecl->typeParams.empty())
+            {
+                m_templates.emplace(classDecl->name, classDecl);
+                continue;
+            }
+
+            RegisterClass(classDecl, classDecl->name, 0);
+        }
+    }
+
+    // A parameter name that also names a declared type would silently
+    // take that type's place everywhere inside the declaration, so it is
+    // refused rather than resolved one way or the other.
+    void CheckTypeParameterNames()
+    {
+        for (const auto& entry : m_templates)
+        {
+            ClassDecl& decl = *entry.second;
+            for (size_t i = 0; i < decl.typeParams.size(); ++i)
+            {
+                const std::string& name = decl.typeParams[i];
+                const SourceLocation& location = decl.typeParamLocations[i];
+
+                u32 ignored = kNoClass;
+                if (FindClass(name, ignored) || m_templates.find(name) != m_templates.end())
+                {
+                    Error(location, "type parameter '" + name + "' has the same name as a declared type");
+                    continue;
+                }
+
+                bool duplicate = false;
+                for (size_t j = 0; j < i; ++j) duplicate = duplicate || decl.typeParams[j] == name;
+                if (duplicate)
+                    Error(location, "'" + decl.name + "' declares the type parameter '" + name + "' more than once");
+            }
         }
     }
 
@@ -178,222 +256,462 @@ private:
         return true;
     }
 
-    void ResolveBaseLists()
+    u32 RegisterClass(ClassDecl* decl, const std::string& name, u32 typeArgumentDepth)
     {
-        for (ClassEntry& entry : m_classes)
+        const u32 index = (u32)m_classes.size();
+        decl->classIndex = index;
+
+        ClassEntry entry;
+        entry.decl = decl;
+        entry.index = index;
+        entry.typeArgumentDepth = typeArgumentDepth;
+        m_classes.push_back(std::move(entry));
+
+        // A repeated name keeps naming whichever declaration came first;
+        // the duplicate was already reported where it was found.
+        m_classByName.emplace(name, index);
+        return index;
+    }
+
+    // Everything a declaration needs before anything may be laid out on
+    // top of it or written against it. Runs once per declaration, whether
+    // the source wrote it or a set of type arguments produced it.
+    void PrepareClass(u32 index)
+    {
+        if (m_classes[index].prepared) return;
+        m_classes[index].prepared = true;
+        if (m_classes[index].isArray) return;
+
+        ResolveBaseList(index);
+        CheckClassShape(index);
+        SynthesizeConstructor(index);
+        AssignFunctionIndices(index);
+        ResolveMemberTypes(index);
+    }
+
+    void ResolveBaseList(u32 index)
+    {
+        ClassDecl& decl = *m_classes[index].decl;
+
+        if (decl.isInterface && !decl.baseTypes.empty())
         {
-            ClassDecl& decl = *entry.decl;
+            Error(decl.baseLocations[0], "interface '" + decl.name + "' cannot declare a base list");
+            return;
+        }
+        if (decl.isStatic && !decl.baseTypes.empty())
+        {
+            Error(decl.baseLocations[0], "'" + decl.name + "' holds only static members, so it cannot declare a base list");
+            return;
+        }
 
-            if (decl.isInterface && !decl.baseNames.empty())
+        for (size_t i = 0; i < decl.baseTypes.size(); ++i)
+        {
+            const SourceLocation location = decl.baseLocations[i];
+            const std::string written = DescribeWrittenType(decl.baseTypes[i]);
+
+            if (decl.baseTypes[i].arrayDepth != 0)
             {
-                Error(decl.baseLocations[0], "interface '" + decl.name + "' cannot declare a base list");
+                Error(location, "'" + written + "' is a sequence, and nothing can be built on one");
                 continue;
             }
-            if (decl.isStatic && !decl.baseNames.empty())
+            if (!ResolveTypeRef(decl.baseTypes[i], location, "so '" + decl.name + "' has no such base type")) continue;
+
+            const u32 target = decl.baseTypes[i].classIndex;
+            if (target == kNoClass) continue;
+            if (target == index)
             {
-                Error(decl.baseLocations[0], "'" + decl.name + "' holds only static members, so it cannot declare a base list");
+                Error(location, "'" + decl.name + "' cannot list itself as a base type");
+                continue;
+            }
+            if (m_classes[target].isArray)
+            {
+                Error(location, "'" + ClassName(target) + "' is a sequence, and nothing can be built on one");
                 continue;
             }
 
-            for (size_t i = 0; i < decl.baseNames.size(); ++i)
+            if (m_classes[target].decl->isInterface)
             {
-                const std::string& name = decl.baseNames[i];
-                const SourceLocation& location = decl.baseLocations[i];
-
-                u32 target = kNoClass;
-                if (!FindClass(name, target))
-                {
-                    Error(location, "no type named '" + name + "' is declared");
-                    continue;
-                }
-                if (target == entry.index)
-                {
-                    Error(location, "'" + decl.name + "' cannot list itself as a base type");
-                    continue;
-                }
-
-                if (m_classes[target].decl->isInterface)
-                {
-                    bool duplicate = false;
-                    for (u32 existing : entry.declaredInterfaces) duplicate = duplicate || existing == target;
-                    if (duplicate)
-                        Error(location, "'" + decl.name + "' lists interface '" + name + "' more than once");
-                    else
-                        entry.declaredInterfaces.push_back(target);
-                    continue;
-                }
-
-                if (i != 0)
-                {
-                    Error(location, "base class '" + name + "' must come first in the base list of '" + decl.name + "'");
-                    continue;
-                }
-                if (m_classes[target].decl->isStatic)
-                {
-                    Error(location, "'" + name + "' holds only static members and cannot be used as a base class");
-                    continue;
-                }
-                entry.base = target;
+                bool duplicate = false;
+                for (u32 existing : m_classes[index].declaredInterfaces) duplicate = duplicate || existing == target;
+                if (duplicate)
+                    Error(location, "'" + decl.name + "' lists interface '" + ClassName(target) + "' more than once");
+                else
+                    m_classes[index].declaredInterfaces.push_back(target);
+                continue;
             }
+
+            if (i != 0)
+            {
+                Error(location, "base class '" + ClassName(target) + "' must come first in the base list of '" + decl.name + "'");
+                continue;
+            }
+            m_classes[index].base = target;
         }
     }
 
-    void CheckClassShapes()
+    void CheckClassShape(u32 index)
     {
-        for (ClassEntry& entry : m_classes)
+        ClassDecl& decl = *m_classes[index].decl;
+
+        for (DeclPtr& methodDecl : decl.methods)
         {
-            ClassDecl& decl = *entry.decl;
+            auto* method = static_cast<MethodDecl*>(methodDecl.get());
 
-            for (DeclPtr& methodDecl : decl.methods)
+            if (decl.isInterface)
             {
-                auto* method = static_cast<MethodDecl*>(methodDecl.get());
-
-                if (decl.isInterface)
-                {
-                    if (method->isConstructor)
-                        Error(method->location, "interface '" + decl.name + "' cannot declare a constructor");
-                    else if (method->isStatic)
-                        Error(method->location, "'" + decl.name + "." + method->name + "' cannot be 'static': an interface declares instance methods only");
-                    else if (method->isVirtual || method->isOverride)
-                        Error(method->location, "'" + decl.name + "." + method->name + "' is already dispatched on, so it cannot be declared 'virtual' or 'override'");
-                    continue;
-                }
-
-                if (decl.isStatic)
-                {
-                    if (method->isConstructor)
-                        Error(method->location, "'" + decl.name + "' holds only static members, so it cannot declare a constructor");
-                    else if (!method->isStatic)
-                        Error(method->location, "'" + decl.name + "." + method->name + "' must be declared 'static', because '" + decl.name + "' holds only static members");
-                    continue;
-                }
-
-                if (method->isStatic && (method->isVirtual || method->isOverride))
-                    Error(method->location, "'" + decl.name + "." + method->name + "' cannot be both 'static' and dispatched on the instance");
+                if (method->isConstructor)
+                    Error(method->location, "interface '" + decl.name + "' cannot declare a constructor");
+                else if (method->isStatic)
+                    Error(method->location, "'" + decl.name + "." + method->name + "' cannot be 'static': an interface declares instance methods only");
+                else if (method->isVirtual || method->isOverride)
+                    Error(method->location, "'" + decl.name + "." + method->name + "' is already dispatched on, so it cannot be declared 'virtual' or 'override'");
+                continue;
             }
 
-            if (decl.isInterface && !decl.fields.empty())
-                Error(decl.fields[0]->location, "interface '" + decl.name + "' cannot declare a field");
-            else if (decl.isStatic && !decl.fields.empty())
-                Error(decl.fields[0]->location, "'" + decl.name + "' holds only static members, so it cannot declare a field");
+            if (decl.isStatic)
+            {
+                if (method->isConstructor)
+                    Error(method->location, "'" + decl.name + "' holds only static members, so it cannot declare a constructor");
+                else if (!method->isStatic)
+                    Error(method->location, "'" + decl.name + "." + method->name + "' must be declared 'static', because '" + decl.name + "' holds only static members");
+                continue;
+            }
+
+            if (method->isStatic && (method->isVirtual || method->isOverride))
+                Error(method->location, "'" + decl.name + "." + method->name + "' cannot be both 'static' and dispatched on the instance");
         }
+
+        if (decl.isInterface && !decl.fields.empty())
+            Error(decl.fields[0]->location, "interface '" + decl.name + "' cannot declare a field");
+        else if (decl.isStatic && !decl.fields.empty())
+            Error(decl.fields[0]->location, "'" + decl.name + "' holds only static members, so it cannot declare a field");
     }
 
     // Every class that can be instantiated ends up with a constructor,
     // so a `new` and a base chain never have to special-case its absence.
-    void SynthesizeConstructors()
+    void SynthesizeConstructor(u32 index)
     {
-        for (ClassEntry& entry : m_classes)
-        {
-            ClassDecl& decl = *entry.decl;
-            if (decl.isInterface || decl.isStatic) continue;
+        ClassDecl& decl = *m_classes[index].decl;
+        if (decl.isInterface || decl.isStatic) return;
 
-            for (DeclPtr& methodDecl : decl.methods)
+        for (DeclPtr& methodDecl : decl.methods)
+        {
+            auto* method = static_cast<MethodDecl*>(methodDecl.get());
+            if (!method->isConstructor) continue;
+            if (m_classes[index].constructor)
             {
-                auto* method = static_cast<MethodDecl*>(methodDecl.get());
-                if (!method->isConstructor) continue;
-                if (entry.constructor)
+                Error(method->location, "'" + decl.name + "' declares more than one constructor");
+                continue;
+            }
+            m_classes[index].constructor = method;
+        }
+        if (m_classes[index].constructor) return;
+
+        auto synthesized = std::make_unique<MethodDecl>();
+        synthesized->location = decl.location;
+        synthesized->name = decl.name;
+        synthesized->isConstructor = true;
+        synthesized->returnType.type = ValueType::Void;
+        synthesized->body = std::make_unique<BlockStmt>();
+        synthesized->body->location = decl.location;
+
+        m_classes[index].constructor = synthesized.get();
+        decl.methods.push_back(std::move(synthesized));
+    }
+
+    // Every method is numbered before any body is looked at, so a call
+    // can be resolved against a method declared later in the file.
+    void AssignFunctionIndices(u32 index)
+    {
+        ClassDecl& decl = *m_classes[index].decl;
+
+        for (DeclPtr& methodDecl : decl.methods)
+        {
+            auto* method = static_cast<MethodDecl*>(methodDecl.get());
+            method->owningClass = index;
+            method->qualifiedName = decl.name + "." + method->name;
+            method->functionIndex = m_nextFunctionIndex++;
+
+            if (method->isConstructor) continue;
+            if (!m_methods.emplace(method->qualifiedName, method).second)
+                Error(method->location, "method '" + method->qualifiedName + "' is declared more than once");
+        }
+        if (m_classes[index].constructor) decl.constructorFunction = m_classes[index].constructor->functionIndex;
+    }
+
+    void ResolveMemberTypes(u32 index)
+    {
+        ClassDecl& decl = *m_classes[index].decl;
+
+        for (DeclPtr& fieldDecl : decl.fields)
+        {
+            auto* field = static_cast<FieldDecl*>(fieldDecl.get());
+            if (field->type.type == ValueType::Void && field->type.arrayDepth == 0)
+            {
+                Error(field->location, "field '" + field->name + "' cannot have type 'void'");
+                field->type.type = ValueType::Unknown;
+                continue;
+            }
+            ResolveTypeRef(field->type, field->location, "so field '" + field->name + "' has no type");
+        }
+
+        for (DeclPtr& methodDecl : decl.methods)
+        {
+            auto* method = static_cast<MethodDecl*>(methodDecl.get());
+            ResolveTypeRef(method->returnType, method->location,
+                "so '" + method->qualifiedName + "' has no return type");
+
+            for (ParamDecl& param : method->params)
+            {
+                if (param.type.type == ValueType::Void && param.type.arrayDepth == 0)
                 {
-                    Error(method->location, "'" + decl.name + "' declares more than one constructor");
+                    Error(param.location, "parameter '" + param.name + "' cannot have type 'void'");
+                    param.type.type = ValueType::Unknown;
                     continue;
                 }
-                entry.constructor = method;
+                ResolveTypeRef(param.type, param.location, "so parameter '" + param.name + "' has no type");
             }
-            if (entry.constructor) continue;
-
-            auto synthesized = std::make_unique<MethodDecl>();
-            synthesized->location = decl.location;
-            synthesized->name = decl.name;
-            synthesized->isConstructor = true;
-            synthesized->returnType.type = ValueType::Void;
-            synthesized->body = std::make_unique<BlockStmt>();
-            synthesized->body->location = decl.location;
-
-            entry.constructor = synthesized.get();
-            decl.methods.push_back(std::move(synthesized));
         }
     }
 
-    // Every method is numbered here, before any body is looked at, so a
-    // call can be resolved against a method declared later in the file.
-    void AssignFunctionIndices()
+    // --- Naming, sequences and type arguments --------------------------------
+
+    // What a resolved type is called, which is also what a generated
+    // declaration is named after.
+    std::string TypeName(const TypeRef& resolved) const
     {
-        u32 nextFunctionIndex = 0;
-        for (ClassEntry& entry : m_classes)
+        if (resolved.type == ValueType::Object)
         {
-            ClassDecl& decl = *entry.decl;
-            for (DeclPtr& methodDecl : decl.methods)
-            {
-                auto* method = static_cast<MethodDecl*>(methodDecl.get());
-                method->owningClass = entry.index;
-                method->qualifiedName = decl.name + "." + method->name;
-                method->functionIndex = nextFunctionIndex++;
-
-                if (method->isConstructor) continue;
-                if (!m_methods.emplace(method->qualifiedName, method).second)
-                    Error(method->location, "method '" + method->qualifiedName + "' is declared more than once");
-            }
-            if (entry.constructor) decl.constructorFunction = entry.constructor->functionIndex;
+            if (resolved.classIndex < m_classes.size()) return m_classes[resolved.classIndex].decl->name;
+            return "<unknown>";
         }
+        return ValueTypeName(resolved.type);
     }
 
-    bool ResolveTypeRef(TypeRef& type, const SourceLocation& location, const std::string& what)
+    // What the source wrote, for a message about a type that could not be
+    // resolved and therefore has no name of its own yet.
+    static std::string DescribeWrittenType(const TypeRef& written)
     {
-        if (type.type != ValueType::Object) return true;
+        std::string text = (written.type == ValueType::Object) ? written.name : ValueTypeName(written.type);
+        if (!written.typeArgs.empty())
+        {
+            text += "<";
+            for (size_t i = 0; i < written.typeArgs.size(); ++i)
+            {
+                if (i != 0) text += ", ";
+                text += DescribeWrittenType(written.typeArgs[i]);
+            }
+            text += ">";
+        }
+        for (u32 i = 0; i < written.arrayDepth; ++i) text += "[]";
+        return text;
+    }
+
+    u32 TypeArgumentDepth(const TypeRef& resolved) const
+    {
+        if (resolved.type != ValueType::Object || resolved.classIndex >= m_classes.size()) return 0;
+        return m_classes[resolved.classIndex].typeArgumentDepth;
+    }
+
+    // A sequence of one element type is a declaration like any other: it
+    // gets an index, a name and a place in the class table, so a
+    // collection can ask it whether its elements are references.
+    u32 GetOrCreateArrayClass(const TypeRef& element, const SourceLocation& location)
+    {
+        const std::string name = TypeName(element) + "[]";
+
+        u32 existing = kNoClass;
+        if (FindClass(name, existing)) return existing;
+
+        if (m_generatedClasses >= kMaxGeneratedClasses)
+        {
+            Error(location, "this program needs more generated types than one module may hold");
+            return kNoClass;
+        }
+
+        auto decl = std::make_unique<ClassDecl>();
+        decl->location = location;
+        decl->name = name;
+        decl->isArray = true;
+        decl->arrayElementType = element;
+        decl->arrayElementIsReference = element.type == ValueType::Object;
+
+        ClassDecl* raw = decl.get();
+        const u32 index = RegisterClass(raw, name, TypeArgumentDepth(element));
+        m_classes[index].isArray = true;
+        m_classes[index].elementType = element;
+        m_classes[index].prepared = true;
+        m_classes[index].layoutState = 2;
+
+        m_program.declarations.push_back(std::move(decl));
+        ++m_generatedClasses;
+        return index;
+    }
+
+    // Turns a pattern plus one set of arguments into a declaration of its
+    // own: its own fields, its own field bitmap, its own tables and its
+    // own copy of every method body. Registering the name before the copy
+    // is prepared is what lets a declaration mention itself.
+    u32 Instantiate(ClassDecl& pattern, const std::vector<TypeRef>& args, const SourceLocation& location)
+    {
+        if (args.size() != pattern.typeParams.size())
+        {
+            Error(location, "'" + pattern.name + "' takes " + std::to_string(pattern.typeParams.size()) +
+                                " type argument(s) but " + std::to_string(args.size()) + " were given");
+            return kNoClass;
+        }
+
+        std::string name = pattern.name + "<";
+        u32 depth = 0;
+        for (size_t i = 0; i < args.size(); ++i)
+        {
+            if (i != 0) name += ", ";
+            name += TypeName(args[i]);
+
+            const u32 argumentDepth = TypeArgumentDepth(args[i]);
+            if (argumentDepth > depth) depth = argumentDepth;
+        }
+        name += ">";
+        ++depth;
+
+        u32 existing = kNoClass;
+        if (FindClass(name, existing)) return existing;
+
+        // A declaration whose own field names it again with a deeper
+        // argument would go on producing new ones forever; stopping at a
+        // fixed depth turns that into something a reader can act on.
+        if (depth > kMaxTypeArgumentDepth)
+        {
+            Error(location, "'" + name + "' nests type arguments more than " + std::to_string(kMaxTypeArgumentDepth) +
+                                " deep, which is what a declaration that builds on itself without end looks like");
+            return kNoClass;
+        }
+        if (m_generatedClasses >= kMaxGeneratedClasses)
+        {
+            Error(location, "this program needs more generated types than one module may hold");
+            return kNoClass;
+        }
+
+        std::unique_ptr<ClassDecl> copy = CloneClassDecl(pattern);
+        copy->name = name;
+        copy->typeParams.clear();
+        copy->typeParamLocations.clear();
+
+        std::unordered_map<std::string, TypeRef> substitution;
+        for (size_t i = 0; i < args.size(); ++i) substitution.emplace(pattern.typeParams[i], args[i]);
+        SubstituteTypeParameters(*copy, substitution);
+
+        ClassDecl* raw = copy.get();
+        const u32 index = RegisterClass(raw, name, depth);
+        m_program.declarations.push_back(std::move(copy));
+        ++m_generatedClasses;
+
+        PrepareClass(index);
+        BuildLayout(index);
+        return index;
+    }
+
+    // Resolves the name at the head of a written type, creating the
+    // declaration it names if a set of type arguments has not been seen
+    // before.
+    bool ResolveNamedType(const TypeRef& written, const SourceLocation& location, const std::string& what, u32& outIndex)
+    {
+        auto pattern = m_templates.find(written.name);
+        if (pattern != m_templates.end())
+        {
+            if (written.typeArgs.empty())
+            {
+                Error(location, "'" + written.name + "' is declared with type parameters, so it needs type arguments to name a type");
+                return false;
+            }
+
+            std::vector<TypeRef> args;
+            args.reserve(written.typeArgs.size());
+            for (const TypeRef& argument : written.typeArgs)
+            {
+                TypeRef resolved = argument;
+                if (!ResolveTypeRef(resolved, location, what)) return false;
+                if (resolved.type == ValueType::Void)
+                {
+                    Error(location, "'void' cannot be used as a type argument");
+                    return false;
+                }
+                args.push_back(std::move(resolved));
+            }
+
+            outIndex = Instantiate(*pattern->second, args, location);
+            return outIndex != kNoClass;
+        }
 
         u32 index = kNoClass;
-        if (!FindClass(type.name, index))
+        if (!FindClass(written.name, index))
         {
-            Error(location, "no type named '" + type.name + "' is declared, " + what);
-            type.type = ValueType::Unknown;
+            Error(location, "no type named '" + written.name + "' is declared, " + what);
+            return false;
+        }
+        if (!written.typeArgs.empty())
+        {
+            Error(location, "'" + written.name + "' is not declared with type parameters, so it cannot be given type arguments");
             return false;
         }
         if (m_classes[index].decl->isStatic)
         {
-            Error(location, "'" + type.name + "' holds only static members, so nothing can have it as a type");
-            type.type = ValueType::Unknown;
+            Error(location, "'" + written.name + "' holds only static members, so nothing can have it as a type");
             return false;
         }
-        type.classIndex = index;
+
+        outIndex = index;
         return true;
     }
 
-    void ResolveMemberTypes()
+    // Turns a written type into a concrete one. Afterwards the reference
+    // names exactly one declaration or one built-in, and carries no type
+    // arguments and no brackets of its own -- so resolving an already
+    // resolved type is the same answer again.
+    bool ResolveTypeRef(TypeRef& type, const SourceLocation& location, const std::string& what)
     {
-        for (ClassEntry& entry : m_classes)
+        if (IsPoisoned(type.type)) return false;
+
+        u32 baseClass = kNoClass;
+        if (type.type == ValueType::Object && !ResolveNamedType(type, location, what, baseClass))
         {
-            ClassDecl& decl = *entry.decl;
-
-            for (DeclPtr& fieldDecl : decl.fields)
-            {
-                auto* field = static_cast<FieldDecl*>(fieldDecl.get());
-                if (field->type.type == ValueType::Void)
-                {
-                    Error(field->location, "field '" + field->name + "' cannot have type 'void'");
-                    field->type.type = ValueType::Unknown;
-                    continue;
-                }
-                ResolveTypeRef(field->type, field->location, "so field '" + field->name + "' has no type");
-            }
-
-            for (DeclPtr& methodDecl : decl.methods)
-            {
-                auto* method = static_cast<MethodDecl*>(methodDecl.get());
-                ResolveTypeRef(method->returnType, method->location,
-                    "so '" + method->qualifiedName + "' has no return type");
-
-                for (ParamDecl& param : method->params)
-                {
-                    if (param.type.type == ValueType::Void)
-                    {
-                        Error(param.location, "parameter '" + param.name + "' cannot have type 'void'");
-                        param.type.type = ValueType::Unknown;
-                        continue;
-                    }
-                    ResolveTypeRef(param.type, param.location, "so parameter '" + param.name + "' has no type");
-                }
-            }
+            type.type = ValueType::Unknown;
+            type.typeArgs.clear();
+            type.arrayDepth = 0;
+            return false;
         }
+
+        if (type.arrayDepth != 0 && type.type == ValueType::Void)
+        {
+            Error(location, "there is no sequence of 'void'");
+            type.type = ValueType::Unknown;
+            type.arrayDepth = 0;
+            return false;
+        }
+
+        TypeRef resolved;
+        resolved.type = type.type;
+        resolved.classIndex = baseClass;
+        if (type.type == ValueType::Object) resolved.name = TypeName(resolved);
+
+        for (u32 i = 0; i < type.arrayDepth; ++i)
+        {
+            const u32 arrayClass = GetOrCreateArrayClass(resolved, location);
+            if (arrayClass == kNoClass)
+            {
+                type.type = ValueType::Unknown;
+                type.arrayDepth = 0;
+                return false;
+            }
+
+            resolved = TypeRef{};
+            resolved.type = ValueType::Object;
+            resolved.classIndex = arrayClass;
+            resolved.name = ClassName(arrayClass);
+        }
+
+        type = std::move(resolved);
+        return true;
     }
 
     // --- Layout --------------------------------------------------------------
@@ -401,6 +719,11 @@ private:
     void BuildLayout(u32 index)
     {
         ClassEntry& entry = m_classes[index];
+        if (entry.isArray)
+        {
+            entry.layoutState = 2;
+            return;
+        }
         if (entry.layoutState == 2) return;
         if (entry.layoutState == 1)
         {
@@ -418,6 +741,7 @@ private:
         for (u32 iface : entry.declaredInterfaces) BuildLayout(iface);
 
         BuildFields(index);
+        CollectInterfaces(index);
         BuildVirtualTable(index);
         BuildInterfaceTables(index);
 
@@ -453,6 +777,34 @@ private:
         }
     }
 
+    // Every interface this class answers to, its base's included, worked
+    // out before the tables that need to consult it.
+    void CollectInterfaces(u32 index)
+    {
+        ClassEntry& entry = m_classes[index];
+
+        if (entry.base != kNoClass) entry.allInterfaces = m_classes[entry.base].allInterfaces;
+        for (u32 iface : entry.declaredInterfaces)
+        {
+            bool present = false;
+            for (u32 existing : entry.allInterfaces) present = present || existing == iface;
+            if (!present) entry.allInterfaces.push_back(iface);
+        }
+    }
+
+    // Whether one of the interfaces this class answers to declares a
+    // method of this name, which is the other reason a method may be
+    // written 'override': it replaces nothing, but it is what a call
+    // through the interface will reach.
+    bool AnInterfaceDeclares(u32 index, const std::string& name) const
+    {
+        for (u32 iface : m_classes[index].allInterfaces)
+        {
+            if (FindMethodInChain(iface, name)) return true;
+        }
+        return false;
+    }
+
     void BuildVirtualTable(u32 index)
     {
         ClassEntry& entry = m_classes[index];
@@ -485,7 +837,13 @@ private:
             {
                 if (!inherited)
                 {
-                    Error(method->location, "'" + method->qualifiedName + "' is declared 'override', but no base class declares a method named '" + method->name + "'");
+                    // Answering an interface is the other thing 'override'
+                    // says. Such a method takes no table slot of its own:
+                    // the class's table for that interface is what a call
+                    // through it consults.
+                    if (AnInterfaceDeclares(index, method->name)) continue;
+
+                    Error(method->location, "'" + method->qualifiedName + "' is declared 'override', but neither a base class nor an interface declares a method named '" + method->name + "'");
                     continue;
                 }
                 if (inherited->vtableSlot == kNoVtableSlot)
@@ -523,14 +881,6 @@ private:
     {
         ClassEntry& entry = m_classes[index];
         ClassDecl& decl = *entry.decl;
-
-        if (entry.base != kNoClass) entry.allInterfaces = m_classes[entry.base].allInterfaces;
-        for (u32 iface : entry.declaredInterfaces)
-        {
-            bool present = false;
-            for (u32 existing : entry.allInterfaces) present = present || existing == iface;
-            if (!present) entry.allInterfaces.push_back(iface);
-        }
 
         if (decl.isInterface || decl.isStatic) return;
 
@@ -656,6 +1006,18 @@ private:
         return IsDerivedFrom(value.resolvedClass, target.classIndex);
     }
 
+    // The same question asked of two types rather than of an expression
+    // and a type, which is what a loop variable needs: there is no node
+    // standing for the element a walk produces.
+    bool IsTypeAssignable(const TypeRef& from, const TypeRef& to) const
+    {
+        if (SameType(from, to)) return true;
+        if (from.type != ValueType::Object || to.type != ValueType::Object) return false;
+        if (from.classIndex >= m_classes.size() || to.classIndex >= m_classes.size()) return false;
+        if (m_classes[to.classIndex].decl->isInterface) return ImplementsInterface(from.classIndex, to.classIndex);
+        return IsDerivedFrom(from.classIndex, to.classIndex);
+    }
+
     // --- Methods -------------------------------------------------------------
 
     void AnalyzeMethod(MethodDecl& method)
@@ -752,7 +1114,7 @@ private:
         m_scopeSlotMarks.pop_back();
     }
 
-    int DeclareLocal(const std::string& name, const TypeRef& type, const SourceLocation& location)
+    int DeclareLocal(const std::string& name, const TypeRef& type, const SourceLocation& location, bool readOnly = false)
     {
         auto& scope = m_scopes.back();
         if (scope.find(name) != scope.end())
@@ -778,7 +1140,7 @@ private:
         m_slotUses[(size_t)slot] = use;
         if (m_nextSlot > m_highWaterSlot) m_highWaterSlot = m_nextSlot;
 
-        scope.emplace(name, LocalSymbol{ type, slot });
+        scope.emplace(name, LocalSymbol{ type, slot, readOnly });
         return slot;
     }
 
@@ -848,6 +1210,8 @@ private:
                 break;
             }
 
+            case StmtKind::ForEach: AnalyzeForEach(static_cast<ForEachStmt&>(stmt)); break;
+
             case StmtKind::Return: AnalyzeReturn(static_cast<ReturnStmt&>(stmt)); break;
 
             case StmtKind::Break:
@@ -891,7 +1255,7 @@ private:
         }
         else
         {
-            if (stmt.declaredType.type == ValueType::Void)
+            if (stmt.declaredType.type == ValueType::Void && stmt.declaredType.arrayDepth == 0)
             {
                 Error(stmt.location, "variable '" + stmt.name + "' cannot have type 'void'");
                 stmt.declaredType.type = ValueType::Unknown;
@@ -905,6 +1269,109 @@ private:
         }
 
         stmt.localSlot = DeclareLocal(stmt.name, stmt.declaredType, stmt.location);
+    }
+
+    // A counted walk, whatever it walks over. The sequence and the
+    // position live in slots of the loop's own, so the sequence stays
+    // reachable for as long as the loop runs and the body cannot reach
+    // either of them by name.
+    void AnalyzeForEach(ForEachStmt& stmt)
+    {
+        AnalyzeExpr(*stmt.sequence);
+
+        PushScope();
+
+        TypeRef elementType;
+        elementType.type = ValueType::Unknown;
+
+        const ValueType sequenceType = stmt.sequence->resolvedType;
+        const u32 sequenceClass = stmt.sequence->resolvedClass;
+
+        if (!IsPoisoned(sequenceType))
+        {
+            if (sequenceType != ValueType::Object)
+            {
+                Error(stmt.sequence->location, "'foreach' needs something with elements, found " + Quoted(*stmt.sequence));
+            }
+            else if (sequenceClass < m_classes.size() && m_classes[sequenceClass].isArray)
+            {
+                stmt.overArray = true;
+                elementType = m_classes[sequenceClass].elementType;
+            }
+            else
+            {
+                stmt.overArray = false;
+                BindSequenceMethods(stmt, sequenceClass, elementType);
+            }
+        }
+
+        TypeRef holder;
+        holder.type = ValueType::Object;
+        holder.classIndex = (sequenceType == ValueType::Object) ? sequenceClass : kNoClass;
+        stmt.sequenceSlot = DeclareLocal("$sequence", holder, stmt.location);
+
+        TypeRef position;
+        position.type = ValueType::Int;
+        stmt.indexSlot = DeclareLocal("$position", position, stmt.location);
+
+        if (stmt.declaredType.type == ValueType::Void && stmt.declaredType.arrayDepth == 0)
+        {
+            Error(stmt.location, "the loop variable '" + stmt.name + "' cannot have type 'void'");
+            stmt.declaredType.type = ValueType::Unknown;
+        }
+        else
+        {
+            ResolveTypeRef(stmt.declaredType, stmt.location, "so the loop variable '" + stmt.name + "' has no type");
+        }
+
+        if (!IsPoisoned(elementType.type) && !IsPoisoned(stmt.declaredType.type) &&
+            !IsTypeAssignable(elementType, stmt.declaredType))
+        {
+            Error(stmt.location, "cannot convert " + Quoted(elementType) + " to " + Quoted(stmt.declaredType) +
+                                     " in the loop variable '" + stmt.name + "'");
+        }
+
+        stmt.loopSlot = DeclareLocal(stmt.name, stmt.declaredType, stmt.location, true);
+
+        ++m_loopDepth;
+        AnalyzeStmt(*stmt.body);
+        --m_loopDepth;
+
+        PopScope();
+    }
+
+    // What a type has to offer for a counted walk over it to mean
+    // anything: how many elements there are, and how to reach one.
+    void BindSequenceMethods(ForEachStmt& stmt, u32 sequenceClass, TypeRef& outElementType)
+    {
+        MethodDecl* count = FindMethodInChain(sequenceClass, "Count");
+        MethodDecl* element = FindMethodInChain(sequenceClass, "Get");
+
+        const bool countUsable = count && !count->isStatic && !count->isConstructor &&
+                                 count->params.empty() && count->returnType.type == ValueType::Int;
+        const bool elementUsable = element && !element->isStatic && !element->isConstructor &&
+                                   element->params.size() == 1 && element->params[0].type.type == ValueType::Int &&
+                                   element->returnType.type != ValueType::Void;
+
+        if (!countUsable || !elementUsable)
+        {
+            Error(stmt.sequence->location, "'foreach' cannot walk " + Quoted(*stmt.sequence) +
+                                               ": it is neither a sequence nor a type declaring 'int Count()' and a 'Get(int)' that answers with an element");
+            return;
+        }
+
+        stmt.countTarget = DispatchKind(sequenceClass, *count);
+        stmt.countFunction = count->functionIndex;
+        stmt.elementTarget = DispatchKind(sequenceClass, *element);
+        stmt.elementFunction = element->functionIndex;
+        outElementType = element->returnType;
+    }
+
+    CallTarget DispatchKind(u32 receiverClass, const MethodDecl& method) const
+    {
+        if (receiverClass < m_classes.size() && m_classes[receiverClass].decl->isInterface) return CallTarget::InterfaceMethod;
+        if (method.vtableSlot != kNoVtableSlot) return CallTarget::VirtualMethod;
+        return CallTarget::InstanceMethod;
     }
 
     void AnalyzeReturn(ReturnStmt& stmt)
@@ -984,8 +1451,10 @@ private:
             }
 
             case ExprKind::New: AnalyzeNew(static_cast<NewExpr&>(expr)); break;
+            case ExprKind::NewArray: AnalyzeNewArray(static_cast<NewArrayExpr&>(expr)); break;
             case ExprKind::Identifier: AnalyzeIdentifier(static_cast<IdentifierExpr&>(expr)); break;
             case ExprKind::Member: AnalyzeMemberValue(static_cast<MemberExpr&>(expr)); break;
+            case ExprKind::Index: AnalyzeIndex(static_cast<IndexExpr&>(expr)); break;
             case ExprKind::Call: AnalyzeCall(static_cast<CallExpr&>(expr)); break;
             case ExprKind::Unary: AnalyzeUnary(static_cast<UnaryExpr&>(expr)); break;
             case ExprKind::Binary: AnalyzeBinary(static_cast<BinaryExpr&>(expr)); break;
@@ -999,22 +1468,31 @@ private:
     {
         expr.resolvedType = ValueType::Unknown;
 
-        u32 index = kNoClass;
-        if (!FindClass(expr.typeName, index))
+        const std::string written = DescribeWrittenType(expr.type);
+        if (expr.type.type != ValueType::Object)
         {
-            Error(expr.location, "no type named '" + expr.typeName + "' is declared");
+            Error(expr.location, "'" + written + "' is not a type 'new' can create");
             return;
         }
+        if (!ResolveTypeRef(expr.type, expr.location, "so there is nothing to create")) return;
+
+        const u32 index = expr.type.classIndex;
+        const std::string& name = ClassName(index);
 
         ClassDecl& decl = *m_classes[index].decl;
+        if (decl.isArray)
+        {
+            Error(expr.location, "'" + name + "' is a sequence, which is created with 'new' and an element count in brackets");
+            return;
+        }
         if (decl.isInterface)
         {
-            Error(expr.location, "interface '" + expr.typeName + "' cannot be created with 'new', only a class implementing it can");
+            Error(expr.location, "interface '" + name + "' cannot be created with 'new', only a class implementing it can");
             return;
         }
         if (decl.isStatic)
         {
-            Error(expr.location, "'" + expr.typeName + "' holds only static members and cannot be created with 'new'");
+            Error(expr.location, "'" + name + "' holds only static members and cannot be created with 'new'");
             return;
         }
 
@@ -1030,13 +1508,58 @@ private:
 
         if (expr.args.size() != constructor->params.size())
         {
-            Error(expr.location, "the constructor of '" + expr.typeName + "' takes " + std::to_string(constructor->params.size()) +
+            Error(expr.location, "the constructor of '" + name + "' takes " + std::to_string(constructor->params.size()) +
                                      " argument(s) but " + std::to_string(expr.args.size()) + " were given");
             return;
         }
         for (size_t i = 0; i < expr.args.size(); ++i)
             CheckAssignable(*expr.args[i], constructor->params[i].type,
-                "in argument " + std::to_string(i + 1) + " of the constructor of '" + expr.typeName + "'");
+                "in argument " + std::to_string(i + 1) + " of the constructor of '" + name + "'");
+    }
+
+    void AnalyzeNewArray(NewArrayExpr& expr)
+    {
+        expr.resolvedType = ValueType::Unknown;
+
+        AnalyzeExpr(*expr.length);
+        if (expr.length->resolvedType != ValueType::Int && !IsPoisoned(expr.length->resolvedType))
+            Error(expr.length->location, "the element count of a sequence must be 'int', found " + Quoted(*expr.length));
+
+        if (expr.elementType.type == ValueType::Void && expr.elementType.arrayDepth == 0)
+        {
+            Error(expr.location, "there is no sequence of 'void'");
+            return;
+        }
+        if (!ResolveTypeRef(expr.elementType, expr.location, "so this sequence has no element type")) return;
+
+        expr.arrayClass = GetOrCreateArrayClass(expr.elementType, expr.location);
+        if (expr.arrayClass == kNoClass) return;
+
+        expr.resolvedType = ValueType::Object;
+        expr.resolvedClass = expr.arrayClass;
+    }
+
+    void AnalyzeIndex(IndexExpr& expr)
+    {
+        AnalyzeExpr(*expr.base);
+        AnalyzeExpr(*expr.index);
+
+        expr.resolvedType = ValueType::Unknown;
+        if (IsPoisoned(expr.base->resolvedType)) return;
+
+        const u32 baseClass = expr.base->resolvedClass;
+        if (expr.base->resolvedType != ValueType::Object || baseClass >= m_classes.size() || !m_classes[baseClass].isArray)
+        {
+            Error(expr.location, Quoted(*expr.base) + " has no elements to reach by position");
+            return;
+        }
+
+        if (expr.index->resolvedType != ValueType::Int && !IsPoisoned(expr.index->resolvedType))
+            Error(expr.index->location, "an element position must be 'int', found " + Quoted(*expr.index));
+
+        const TypeRef& element = m_classes[baseClass].elementType;
+        expr.resolvedType = element.type;
+        expr.resolvedClass = element.classIndex;
     }
 
     void AnalyzeIdentifier(IdentifierExpr& expr)
@@ -1045,6 +1568,7 @@ private:
         if (Lookup(expr.name, symbol))
         {
             expr.localSlot = symbol.slot;
+            expr.isReadOnly = symbol.readOnly;
             expr.resolvedType = symbol.type.type;
             expr.resolvedClass = symbol.type.classIndex;
             return;
@@ -1106,6 +1630,22 @@ private:
             return;
         }
 
+        // A sequence carries one thing worth reading besides its elements,
+        // and it is the count it was created with.
+        const u32 baseClass = expr.base->resolvedClass;
+        if (baseClass < m_classes.size() && m_classes[baseClass].isArray)
+        {
+            if (expr.member != "Length")
+            {
+                Error(expr.location, "'" + ClassName(baseClass) + "' has no member named '" + expr.member + "'");
+                expr.resolvedType = ValueType::Unknown;
+                return;
+            }
+            expr.binding = MemberBinding::ArrayLength;
+            expr.resolvedType = ValueType::Int;
+            return;
+        }
+
         const FieldEntry* field = FindField(expr.base->resolvedClass, expr.member);
         if (!field)
         {
@@ -1163,6 +1703,10 @@ private:
     // object. `null` compares with any of them.
     bool CanCompareReferences(Expr& lhs, Expr& rhs) const
     {
+        // Both sides have to be references before either can be `null`:
+        // a value has no identity to compare, so there is nothing for
+        // `null` to mean beside one.
+        if (!IsReference(lhs.resolvedType) || !IsReference(rhs.resolvedType)) return false;
         if (lhs.resolvedType == ValueType::Null || rhs.resolvedType == ValueType::Null) return true;
         if (lhs.resolvedType != ValueType::Object || rhs.resolvedType != ValueType::Object) return false;
 
@@ -1307,10 +1851,11 @@ private:
     {
         const bool targetIsName = expr.target->kind == ExprKind::Identifier;
         const bool targetIsMember = expr.target->kind == ExprKind::Member;
+        const bool targetIsElement = expr.target->kind == ExprKind::Index;
 
-        if (!targetIsName && !targetIsMember)
+        if (!targetIsName && !targetIsMember && !targetIsElement)
         {
-            Error(expr.location, "the left-hand side of an assignment must be a variable or a field");
+            Error(expr.location, "the left-hand side of an assignment must be a variable, a field or an element");
             AnalyzeExpr(*expr.value);
             expr.resolvedType = ValueType::Unknown;
             return;
@@ -1318,10 +1863,19 @@ private:
 
         AnalyzeExpr(*expr.target);
 
+        if (targetIsName && static_cast<IdentifierExpr&>(*expr.target).isReadOnly)
+        {
+            Error(expr.location, "'" + static_cast<IdentifierExpr&>(*expr.target).name +
+                                     "' is written by the loop it belongs to, so nothing inside the loop can assign to it");
+            AnalyzeExpr(*expr.value);
+            expr.resolvedType = ValueType::Unknown;
+            return;
+        }
+
         if (targetIsMember && static_cast<MemberExpr&>(*expr.target).binding != MemberBinding::Field &&
             !IsPoisoned(expr.target->resolvedType))
         {
-            Error(expr.location, "the left-hand side of an assignment must be a variable or a field");
+            Error(expr.location, "the left-hand side of an assignment must be a variable, a field or an element");
             AnalyzeExpr(*expr.value);
             expr.resolvedType = ValueType::Unknown;
             return;

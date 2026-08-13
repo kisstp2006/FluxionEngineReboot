@@ -34,6 +34,8 @@ const std::unordered_map<std::string, TokenKind>& Keywords()
         { "else", TokenKind::KwElse },
         { "while", TokenKind::KwWhile },
         { "for", TokenKind::KwFor },
+        { "foreach", TokenKind::KwForeach },
+        { "in", TokenKind::KwIn },
         { "return", TokenKind::KwReturn },
         { "break", TokenKind::KwBreak },
         { "continue", TokenKind::KwContinue },
@@ -292,6 +294,8 @@ private:
             case ')': return one(TokenKind::RParen, ")");
             case '{': return one(TokenKind::LBrace, "{");
             case '}': return one(TokenKind::RBrace, "}");
+            case '[': return one(TokenKind::LBracket, "[");
+            case ']': return one(TokenKind::RBracket, "]");
             case ',': return one(TokenKind::Comma, ",");
             case ';': return one(TokenKind::Semicolon, ";");
             case ':': return one(TokenKind::Colon, ":");

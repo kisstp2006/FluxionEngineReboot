@@ -24,10 +24,10 @@ enum class TokenKind
 
     // Value and control-flow keywords.
     KwTrue, KwFalse, KwNull, KwThis, KwBase, KwNew,
-    KwIf, KwElse, KwWhile, KwFor, KwReturn, KwBreak, KwContinue,
+    KwIf, KwElse, KwWhile, KwFor, KwForeach, KwIn, KwReturn, KwBreak, KwContinue,
 
     // Punctuation and operators.
-    LParen, RParen, LBrace, RBrace,
+    LParen, RParen, LBrace, RBrace, LBracket, RBracket,
     Comma, Semicolon, Colon, Dot,
     Plus, Minus, Star, Slash, Percent,
     Assign, PlusAssign, MinusAssign, StarAssign, SlashAssign,
