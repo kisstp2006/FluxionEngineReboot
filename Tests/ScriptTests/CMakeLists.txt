@@ -8,6 +8,10 @@ engine_add_test(
         Test_Bytecode.cpp
         Test_VmExecution.cpp
         Test_Objects.cpp
+        Test_Structs.cpp
+        Test_Casts.cpp
+        Test_Enums.cpp
+        Test_Mathf.cpp
         Test_Generics.cpp
         Test_Arrays.cpp
         Test_Gc.cpp

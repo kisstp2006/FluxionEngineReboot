@@ -105,6 +105,7 @@ ExprPtr CloneExpr(const Expr* source)
             clone->typeArgLocation = node.typeArgLocation;
             clone->binding = node.binding;
             clone->fieldSlot = node.fieldSlot;
+            clone->constantValue = node.constantValue;
             return clone;
         }
 
@@ -133,6 +134,15 @@ ExprPtr CloneExpr(const Expr* source)
             const auto& node = *static_cast<const UnaryExpr*>(source);
             auto clone = MakeExprClone<UnaryExpr>(*source);
             clone->op = node.op;
+            clone->operand = CloneExpr(node.operand.get());
+            return clone;
+        }
+
+        case ExprKind::Convert: {
+            const auto& node = *static_cast<const ConvertExpr*>(source);
+            auto clone = MakeExprClone<ConvertExpr>(*source);
+            clone->target = node.target;
+            clone->targetLocation = node.targetLocation;
             clone->operand = CloneExpr(node.operand.get());
             return clone;
         }
@@ -399,6 +409,9 @@ void SubstituteExpr(Expr* expr, const Substitution& substitution)
         case ExprKind::Unary:
             SubstituteExpr(static_cast<UnaryExpr*>(expr)->operand.get(), substitution);
             break;
+        case ExprKind::Convert:
+            SubstituteExpr(static_cast<ConvertExpr*>(expr)->operand.get(), substitution);
+            break;
         case ExprKind::Binary: {
             auto& node = *static_cast<BinaryExpr*>(expr);
             SubstituteExpr(node.lhs.get(), substitution);
@@ -425,6 +438,9 @@ std::unique_ptr<ClassDecl> CloneClassDecl(const ClassDecl& source)
     clone->name = source.name;
     clone->isStatic = source.isStatic;
     clone->isInterface = source.isInterface;
+    clone->isStruct = source.isStruct;
+    clone->isEnum = source.isEnum;
+    clone->enumerators = source.enumerators;
     clone->attributes = source.attributes;
     clone->typeParams = source.typeParams;
     clone->typeParamLocations = source.typeParamLocations;

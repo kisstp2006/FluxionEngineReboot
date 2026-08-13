@@ -913,10 +913,10 @@ void Test_Binding_Run(TestContext& ctx)
     // --- Built-ins, now chosen by the whole argument list ---------------
 
     {
-        // Each entry names the list it accepts, and the thirteen the
+        // Each entry names the list it accepts, and the eighteen the
         // language has still take what they always took.
         const NativeFunctionSignature* natives = NativeFunctionTable();
-        TEST_CHECK(ctx, kNativeFunctionCount == 13);
+        TEST_CHECK(ctx, kNativeFunctionCount == 18);
 
         u32 withOne = 0;
         u32 withNone = 0;
@@ -925,7 +925,7 @@ void Test_Binding_Run(TestContext& ctx)
             if (natives[i].parameterCount == 0) { ++withNone; TEST_CHECK(ctx, natives[i].parameterTypes == nullptr); }
             else { ++withOne; TEST_CHECK(ctx, natives[i].parameterCount == 1 && natives[i].parameterTypes != nullptr); }
         }
-        TEST_CHECK(ctx, withOne == 11 && withNone == 2);
+        TEST_CHECK(ctx, withOne == 16 && withNone == 2);
     }
     {
         // An exact match is taken over one reached by conversion: an int

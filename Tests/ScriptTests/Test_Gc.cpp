@@ -788,6 +788,143 @@ void Test_Gc_Run(TestContext& ctx)
         }
     }
     {
+        // The safety property a value-typed field has to have: once a
+        // field occupies more than one slot, every field after it moves
+        // along, and the bitmap describing which slots hold a reference
+        // has to move with it. Getting that wrong either frees an object
+        // something still names or follows three numbers as though they
+        // were one.
+        ScriptRun run(ctx, "a-wide-field-keeps-the-bitmap-honest",
+            std::string(kNode) +
+            "class Anchor\n"
+            "{\n"
+            "    Vector3 where;\n"
+            "    Node held;\n"
+            "    int tag;\n"
+            "\n"
+            "    Anchor(float x, Node n) { this.where = new Vector3(x, x + 1.0f, x + 2.0f); this.held = n; this.tag = 7; }\n"
+            "}\n"
+            "static class Program\n"
+            "{\n"
+            "    static float Main()\n"
+            "    {\n"
+            "        Anchor anchor = new Anchor(1.0f, new Node(4.0f));\n"
+            "        Junk.Churn(500);\n"
+            "        Gc.Collect();\n"
+            "\n"
+            "        if (anchor.where.x != 1.0f) { return 0.0f - 1.0f; }\n"
+            "        if (anchor.where.y != 2.0f) { return 0.0f - 2.0f; }\n"
+            "        if (anchor.where.z != 3.0f) { return 0.0f - 3.0f; }\n"
+            "        if (anchor.tag != 7) { return 0.0f - 4.0f; }\n"
+            "\n"
+            "        return anchor.held.Read() + Gc.LiveObjects() * 1.0f;\n"
+            "    }\n"
+            "}\n");
+
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            // The referenced object is still there and still reads 4, and
+            // exactly two objects are left: the anchor and the node.
+            TEST_CHECK(ctx, value.type == ValueType::Float);
+            TEST_CHECK(ctx, value.floatValue == 6.0f);
+            TEST_CHECK(ctx, GetHeapStats(run.Machine()).collectionCount > 0);
+        }
+    }
+    {
+        // A sequence of a value type is not scanned: its slots are
+        // numbers, and numbers that look exactly like live handles at
+        // that. Nothing in it may keep anything alive, and the sequence
+        // itself goes away when nothing names it.
+        ScriptRun run(ctx, "a-sequence-of-values-is-not-followed",
+            std::string(kNode) +
+            "static class Waste\n"
+            "{\n"
+            "    static int Points(int n)\n"
+            "    {\n"
+            "        for (int i = 0; i < n; i += 1)\n"
+            "        {\n"
+            "            Vector3[] temporary = new Vector3[4];\n"
+            "            temporary[1] = new Vector3(1.0f, 2.0f, 3.0f);\n"
+            "        }\n"
+            "        return n;\n"
+            "    }\n"
+            "}\n"
+            "static class Program\n"
+            "{\n"
+            "    static int Main()\n"
+            "    {\n"
+            "        Vector3[] kept = new Vector3[8];\n"
+            "        for (int i = 0; i < 8; i += 1) { kept[i] = new Vector3(i * 1.0f, 0.0f, 0.0f); }\n"
+            "        Node keep = new Node(1.0f);\n"
+            "\n"
+            "        Waste.Points(300);\n"
+            "        Gc.Collect();\n"
+            "\n"
+            "        if (kept[7].x != 7.0f) { return 0 - 1; }\n"
+            "        if (kept.Length != 8) { return 0 - 2; }\n"
+            "        return Gc.LiveObjects();\n"
+            "    }\n"
+            "}\n");
+
+        ScriptValue value;
+        if (run.Ready() && run.Call("Program.Main", value))
+        {
+            // The sequence and the one object a local names, and nothing
+            // the three hundred temporary sequences left behind.
+            TEST_CHECK(ctx, value.intValue == 2);
+
+            const HeapStats stats = GetHeapStats(run.Machine());
+            TEST_CHECK(ctx, stats.totalAllocations == 302);
+
+            CollectGarbage(run.Machine());
+            TEST_CHECK(ctx, GetHeapStats(run.Machine()).liveObjects == 0);
+        }
+    }
+    {
+        // The layout a value-typed field produces, read back off the
+        // module: the slots it covers carry no bits, and the field after
+        // it carries its own at the slot it actually occupies.
+        DiagnosticList diagnostics;
+        CompileOptions options;
+        options.fileName = "a-wide-field-shifts-the-bits-along";
+
+        auto compiled = Compile(
+            std::string(kNode) +
+            "class Anchor { Vector3 where; Node held; Anchor() { } }\n"
+            "static class Program\n"
+            "{\n"
+            "    static int Main() { Anchor a = new Anchor(); return 0; }\n"
+            "}\n",
+            options, diagnostics);
+        TEST_CHECK(ctx, compiled.IsOk());
+        if (compiled.IsOk())
+        {
+            const ClassInfo* anchor = nullptr;
+            const ClassInfo* points = nullptr;
+            for (const ClassInfo& info : compiled.Value().classes)
+            {
+                if (info.name == "Anchor") anchor = &info;
+                if (info.name == "Vector3[]") points = &info;
+            }
+
+            TEST_CHECK(ctx, anchor != nullptr);
+            if (anchor)
+            {
+                TEST_CHECK(ctx, anchor->fieldSlotCount == 4);
+                TEST_CHECK(ctx, !IsReferenceBitSet(anchor->fieldReferenceBits, 0));
+                TEST_CHECK(ctx, !IsReferenceBitSet(anchor->fieldReferenceBits, 1));
+                TEST_CHECK(ctx, !IsReferenceBitSet(anchor->fieldReferenceBits, 2));
+                TEST_CHECK(ctx, IsReferenceBitSet(anchor->fieldReferenceBits, 3));
+            }
+
+            // The sequence type exists only because something named it,
+            // so this also says the prelude's own types reach the module
+            // whole.
+            TEST_CHECK(ctx, points == nullptr);
+        }
+    }
+    {
         // The bitmap a built type carries is its own: the same
         // declaration around a value and around a reference produce two
         // layouts, and only one of them has a reference in it.

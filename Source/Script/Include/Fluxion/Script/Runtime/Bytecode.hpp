@@ -26,11 +26,24 @@ enum class OpCode : u16
     PushString,
     PushNull,
 
+    // Pushes `operand` zeroed slots, which is the starting value of every
+    // type the language has: zero, false, empty text, no object. It is
+    // how a value type is brought into being before its constructor is
+    // handed it.
+    PushZero,
+
     // Local variable access. The operand is a slot index relative to the
     // current frame's base. Parameters occupy the lowest slots, preceded
     // by the receiver in a method that has one.
     LoadLocal,
     StoreLocal,
+
+    // The same, for a value that occupies more than one slot. The operand
+    // names the first slot and how many follow it (see MakeSlotSpan), and
+    // the slots travel in order: the lowest is pushed first and stored
+    // last, so a value's fields keep their layout wherever it is put.
+    LoadLocalWide,
+    StoreLocalWide,
 
     // Discards the top of the stack (an expression evaluated purely for
     // its side effects).
@@ -46,6 +59,13 @@ enum class OpCode : u16
     // store that also has to produce the stored value needs both of them
     // twice.
     Dup2,
+
+    // Removes slots sitting underneath the top of the stack: the operand
+    // says how many to drop and how many above them to keep (see
+    // MakeSlotSpan). Reading one field out of a value that is not stored
+    // anywhere -- the answer of a call, say -- is the slots above the
+    // field being popped and the slots below it being dropped this way.
+    DiscardUnder,
 
     // Integer arithmetic.
     AddInt,
@@ -107,9 +127,13 @@ enum class OpCode : u16
     NotBool,
 
     // Conversions. IntToFloat is the language's only implicit numeric
-    // widening; the *ToString forms back string concatenation with a
-    // non-string operand.
+    // widening, and also backs a written-out conversion to float;
+    // FloatToInt only ever comes from a written-out one, because dropping
+    // a fractional part is never done behind the writer's back. The
+    // *ToString forms back string concatenation with a non-string
+    // operand.
     IntToFloat,
+    FloatToInt,
     IntToString,
     FloatToString,
     BoolToString,
@@ -123,6 +147,13 @@ enum class OpCode : u16
     LoadField,
     StoreField,
 
+    // The same, for a field that occupies more than one slot. The operand
+    // names the first of the object's slots and how many follow it (see
+    // MakeSlotSpan); the object is popped exactly as it is for the
+    // single-slot forms.
+    LoadFieldWide,
+    StoreFieldWide,
+
     // Element storage. NewArray's operand is the class index of the
     // sequence type being created; the element count is popped off the
     // stack, and a negative one is a reported fault rather than a
@@ -133,11 +164,21 @@ enum class OpCode : u16
     // rather than from the instruction, since it is a computed value.
     // Both check it against the length that was allocated: a position
     // outside the sequence stops execution with a fault, and never reads
-    // or writes anything.
+    // or writes anything. How many slots one element occupies is a
+    // property of the sequence type, so both forms read it from the class
+    // rather than from the instruction and move a whole element.
     NewArray,
     ArrayLength,
     LoadElement,
     StoreElement,
+
+    // One field of one element, for a sequence whose elements occupy more
+    // than one slot. The operand names the field's offset within an
+    // element and how many slots it occupies (see MakeSlotSpan); the
+    // position still comes off the stack and is still checked against the
+    // length the sequence was created with.
+    LoadElementField,
+    StoreElementField,
 
     // Control flow. The operand is a target instruction index within the
     // enclosing function's own code range. JumpIfFalse/JumpIfTrue consume
@@ -170,6 +211,11 @@ enum class OpCode : u16
     Return,
     ReturnVoid,
 
+    // Answers with a value that occupies more than one slot; the operand
+    // is how many. The slots are taken off the caller's side of the stack
+    // and put back in the same order once the frame is gone.
+    ReturnWide,
+
     // A point where the operand stack is known to be empty, so a pending
     // collection can run without having to interpret anything the current
     // expression left behind. Emitted between statements.
@@ -187,6 +233,18 @@ struct Instruction
     OpCode op = OpCode::Halt;
     u32 operand = 0;
 };
+
+// Several instructions have to name two numbers at once: where a run of
+// slots starts and how many there are. Both are bounded well below what
+// half an operand holds -- a frame never has more slots than the value
+// stack allows, and one value's own width is smaller again -- so the pair
+// travels inside the single operand an instruction carries rather than
+// widening every instruction in the stream for the sake of a few.
+inline constexpr u32 kMaxSlotSpan = 0xFFFFu;
+
+inline constexpr u32 MakeSlotSpan(u32 start, u32 count) { return (start & kMaxSlotSpan) | (count << 16); }
+inline constexpr u32 SlotSpanStart(u32 operand) { return operand & kMaxSlotSpan; }
+inline constexpr u32 SlotSpanCount(u32 operand) { return operand >> 16; }
 
 // Functions the language can call but cannot declare. Their identity is
 // fixed here so the compiler and the interpreter agree on the numbering
@@ -209,6 +267,18 @@ enum class NativeFunctionId : u16
 
     GcCollect,
     GcLiveObjects,
+
+    // The few functions the language cannot write for itself. Everything
+    // the built-in value types compute -- a length, a normalization, a
+    // rotation about an axis -- is written in the language on top of
+    // these, as is everything Mathf offers: a minimum, a clamp and an
+    // interpolation are all comparisons and arithmetic, and only these
+    // are not.
+    MathSqrt,
+    MathSin,
+    MathCos,
+    MathFloor,
+    MathCeil,
 
     Count,
 };
@@ -281,12 +351,12 @@ inline constexpr u8 kModuleMagic[4] = { 'F', 'L', 'X', 'S' };
 
 // Bumped when the accepted source language changes in a way that alters
 // the meaning of already-valid code.
-inline constexpr u32 kLanguageVersion = 3;
+inline constexpr u32 kLanguageVersion = 5;
 
 // Bumped whenever the instruction set or the module layout changes. A
 // module carrying any other value is refused by the loader -- running it
 // would silently misinterpret opcodes.
-inline constexpr u32 kBytecodeVersion = 5;
+inline constexpr u32 kBytecodeVersion = 7;
 
 // Bumped when the engine-side interface reachable from a module changes
 // shape.
@@ -369,16 +439,33 @@ struct ClassInfo
     bool isInterface = false;
     bool isStatic = false;
 
+    // A value type rather than a reference: nothing on the heap is ever
+    // of this class. Its objects do not exist -- what exists is a run of
+    // `fieldSlotCount` slots, copied wherever the value goes.
+    bool isStruct = false;
+
+    // A named set of whole numbers. It has no storage of its own at all:
+    // one of its constants is a single slot holding the number it was
+    // declared with.
+    bool isEnum = false;
+
     // An indexable sequence of one element type rather than a set of
     // named fields. Its objects each carry their own element count, so
     // `fieldSlotCount` says nothing about them; `elementIsReference` is
     // what a collection reads to decide whether the whole length has to
-    // be followed or none of it does.
+    // be followed or none of it does, and `elementSlotCount` is how many
+    // slots one element occupies -- more than one only for a value type,
+    // whose elements are never followed.
     bool isArray = false;
     bool elementIsReference = false;
+    u32 elementSlotCount = 1;
 
     // Fields of the whole inheritance chain: a base class's fields keep
-    // the slots they had, and a derived class's own fields follow them.
+    // the slots they had, and a derived class's own fields follow them. A
+    // field of a value type occupies a run of slots rather than one, and
+    // none of that run is ever marked in the bitmap -- which is exactly
+    // why a value type may hold nothing a collection would have to
+    // follow.
     u32 fieldSlotCount = 0;
     std::vector<u32> fieldReferenceBits;
 
@@ -411,9 +498,24 @@ struct FunctionInfo
     ValueType returnType = ValueType::Void;
     std::vector<ValueType> parameterTypes;
 
+    // How many slots the answer and the parameters actually occupy, which
+    // is one apiece except where a value type is involved. A call site
+    // pushes `receiverSlotCount + parameterSlotCount` slots, and those
+    // become the frame's lowest slots unchanged.
+    u32 returnSlotCount = 0;
+    u32 parameterSlotCount = 0;
+    u32 receiverSlotCount = 0;
+
+    // Set when the receiver is a value rather than an object, which is
+    // the case for a method declared on a value type: those slots hold
+    // the method's own copy of it, so nothing about them is a reference
+    // and no object is reached through them.
+    bool receiverIsValue = false;
+
     // Total frame size, receiver and parameters included: an instance
-    // method's receiver is slot 0 and its parameters follow, a static
-    // method's parameters start at slot 0, and locals come after either.
+    // method's receiver starts at slot 0 and its parameters follow, a
+    // static method's parameters start at slot 0, and locals come after
+    // either.
     u32 localSlotCount = 0;
 
     // This function's instructions are BytecodeModule::code[codeOffset]

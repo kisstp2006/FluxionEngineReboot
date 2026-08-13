@@ -48,6 +48,10 @@ OpCode ComparisonOpcode(BinaryOp op, ValueType operandType)
         case ValueType::Object:
         case ValueType::Null:
             return op == BinaryOp::Equal ? OpCode::EqualRef : OpCode::NotEqualRef;
+        // A named constant is the number it stands for, so comparing two
+        // of them is comparing two whole numbers.
+        case ValueType::Enum:
+            return op == BinaryOp::Equal ? OpCode::EqualInt : OpCode::NotEqualInt;
         case ValueType::Handle:
             return op == BinaryOp::Equal ? OpCode::EqualHandle : OpCode::NotEqualHandle;
         default:
@@ -139,6 +143,15 @@ private:
     // per instruction.
     std::vector<Instruction> m_code;
     std::vector<u32> m_lines;
+
+    // What the method being emitted runs on and answers with, counted in
+    // slots. A method on a value type runs on a copy that lives in the
+    // frame's lowest slots, which is what makes `this` addressable there
+    // and what a constructor of one hands back when it is done.
+    u32 m_receiverSlots = 0;
+    bool m_receiverIsValue = false;
+    u32 m_returnSlots = 0;
+    bool m_valueConstructor = false;
 
     // Which line the instructions being emitted right now came from. A
     // node sets it while it is being walked and hands it back afterwards,
@@ -263,8 +276,11 @@ private:
             info.baseClass = classDecl->baseClass;
             info.isInterface = classDecl->isInterface;
             info.isStatic = classDecl->isStatic;
+            info.isStruct = classDecl->isStruct;
+            info.isEnum = classDecl->isEnum;
             info.isArray = classDecl->isArray;
             info.elementIsReference = classDecl->arrayElementIsReference;
+            info.elementSlotCount = classDecl->arrayElementSlotCount != 0 ? classDecl->arrayElementSlotCount : 1;
             info.fieldSlotCount = classDecl->fieldSlotCount;
             info.fieldReferenceBits = classDecl->fieldReferenceBits;
             info.vtable = classDecl->vtable;
@@ -282,11 +298,25 @@ private:
         m_loops.clear();
         m_line = method.location.line;
 
+        m_receiverSlots = method.receiverSlotCount;
+        m_receiverIsValue = method.receiverIsValue;
+        m_returnSlots = method.returnSlotCount;
+        m_valueConstructor = method.isConstructor && method.receiverIsValue;
+
         outInfo.qualifiedName = method.qualifiedName;
         outInfo.sourceFile = method.location.file;
-        outInfo.returnType = method.returnType.type;
+
+        // A constructor of a value type answers with the value, not with
+        // nothing: there is no object the caller could have kept a name
+        // for, so what it made is what comes back.
+        outInfo.returnType = m_valueConstructor ? ValueType::Struct : method.returnType.type;
         outInfo.parameterTypes.clear();
         for (const ParamDecl& param : method.params) outInfo.parameterTypes.push_back(param.type.type);
+
+        outInfo.returnSlotCount = method.returnSlotCount;
+        outInfo.parameterSlotCount = method.parameterSlotCount;
+        outInfo.receiverSlotCount = method.receiverSlotCount;
+        outInfo.receiverIsValue = method.receiverIsValue;
 
         outInfo.owningClass = method.owningClass;
         outInfo.vtableSlot = method.vtableSlot;
@@ -300,7 +330,7 @@ private:
 
         // A frame is at least large enough for the receiver and the
         // parameters, whatever the body turned out to need.
-        const u32 fixedSlots = (u32)method.params.size() + (outInfo.isInstance ? 1u : 0u);
+        const u32 fixedSlots = method.parameterSlotCount + method.receiverSlotCount;
         outInfo.localSlotCount = method.localSlotCount < fixedSlots ? fixedSlots : method.localSlotCount;
 
         // A method an interface only declares carries a signature and no
@@ -351,12 +381,28 @@ private:
 
     void EmitDefaultReturn(ValueType returnType)
     {
+        // A constructor of a value type ends by handing back the slots it
+        // was given, however its body left them.
+        if (m_valueConstructor)
+        {
+            EmitReturnReceiver();
+            return;
+        }
+
         switch (returnType)
         {
             case ValueType::Int: Emit(OpCode::PushInt, IntConstant(0)); Emit(OpCode::Return); break;
             case ValueType::Float: Emit(OpCode::PushFloat, FloatConstant(0.0f)); Emit(OpCode::Return); break;
             case ValueType::Bool: Emit(OpCode::PushBool, 0); Emit(OpCode::Return); break;
             case ValueType::String: Emit(OpCode::PushString, StringConstant(std::string())); Emit(OpCode::Return); break;
+            // A named constant starts at zero exactly as a number does.
+            case ValueType::Enum: Emit(OpCode::PushInt, IntConstant(0)); Emit(OpCode::Return); break;
+            // A value type starts out with every field at its own zero,
+            // which is a run of zeroed slots.
+            case ValueType::Struct:
+                Emit(OpCode::PushZero, m_returnSlots);
+                Emit(OpCode::ReturnWide, m_returnSlots);
+                break;
             // An all-zero slot is the null reference, and is equally the
             // handle that names nothing: neither needs an opcode of its
             // own to produce.
@@ -364,6 +410,20 @@ private:
             case ValueType::Handle: Emit(OpCode::PushNull); Emit(OpCode::Return); break;
             default: Emit(OpCode::ReturnVoid); break;
         }
+    }
+
+    void EmitReturnReceiver()
+    {
+        Emit(OpCode::LoadLocalWide, MakeSlotSpan(0, m_receiverSlots));
+        Emit(OpCode::ReturnWide, m_receiverSlots);
+    }
+
+    // Hands back whatever is already on the stack, which is one slot for
+    // most types and a run of them for a value type.
+    void EmitReturnValue()
+    {
+        if (m_returnSlots > 1) Emit(OpCode::ReturnWide, m_returnSlots);
+        else Emit(OpCode::Return);
     }
 
     // --- Emission helpers ---------------------------------------------------
@@ -415,15 +475,197 @@ private:
         return index;
     }
 
-    u32 SlotOf(const Expr& expr, const char* what)
+    // --- Values wider than one slot -----------------------------------------
+
+    // How many slots a value of this type occupies. Everything answers
+    // one except a value type, whose width is the field area the class
+    // table already records for it.
+    u32 SlotWidth(ValueType type, u32 classIndex) const
     {
-        if (expr.kind == ExprKind::Identifier)
+        if (type != ValueType::Struct) return 1;
+        if (classIndex >= m_module.classes.size()) return 1;
+        const u32 width = m_module.classes[classIndex].fieldSlotCount;
+        return width == 0 ? 1 : width;
+    }
+
+    u32 SlotWidth(const Expr& expr) const { return SlotWidth(expr.resolvedType, expr.resolvedClass); }
+    u32 SlotWidth(const TypeRef& type) const { return SlotWidth(type.type, type.classIndex); }
+
+    u32 ElementWidth(const Expr& sequence) const
+    {
+        if (sequence.resolvedClass >= m_module.classes.size()) return 1;
+        const u32 width = m_module.classes[sequence.resolvedClass].elementSlotCount;
+        return width == 0 ? 1 : width;
+    }
+
+    // Where a value lives, so that reading one field of it and writing
+    // one field of it both come out as instructions that touch exactly
+    // those slots and no others. A field of a value type is not a step
+    // through anything at run time: it is an offset added to wherever the
+    // value itself sits, which is what a chain of them collapses into
+    // here.
+    struct ValuePath
+    {
+        enum class Kind
         {
-            const auto& identifier = static_cast<const IdentifierExpr&>(expr);
-            if (identifier.localSlot >= 0) return (u32)identifier.localSlot;
+            // Frame slots, an object's field slots, one element's slots,
+            // and -- when the value belongs to no storage at all -- the
+            // slots the expression itself leaves behind.
+            Local,
+            Field,
+            Element,
+            Stack,
+        };
+
+        Kind kind = Kind::Stack;
+
+        const Expr* object = nullptr; // Field: null means the enclosing instance
+        const Expr* array = nullptr;  // Element
+        const Expr* index = nullptr;
+        const Expr* source = nullptr; // Stack
+
+        u32 slot = 0;  // offset of the wanted run within the storage
+        u32 width = 1; // how long the wanted run is
+        u32 total = 1; // Stack: how much the expression produces altogether
+    };
+
+    ValuePath ResolvePath(const Expr& expr) const
+    {
+        ValuePath path;
+        path.width = SlotWidth(expr);
+
+        switch (expr.kind)
+        {
+            case ExprKind::Identifier: {
+                const auto& identifier = static_cast<const IdentifierExpr&>(expr);
+                if (identifier.isField)
+                {
+                    path.kind = ValuePath::Kind::Field;
+                    path.slot = identifier.fieldSlot;
+                    return path;
+                }
+                if (identifier.localSlot >= 0)
+                {
+                    path.kind = ValuePath::Kind::Local;
+                    path.slot = (u32)identifier.localSlot;
+                    return path;
+                }
+                break;
+            }
+
+            case ExprKind::This: {
+                // A value-type receiver is storage of its own -- the
+                // frame's lowest slots. An object receiver is a reference
+                // like any other, and reaches its fields through itself.
+                if (!m_receiverIsValue) break;
+                path.kind = ValuePath::Kind::Local;
+                path.slot = 0;
+                return path;
+            }
+
+            case ExprKind::Index: {
+                const auto& node = static_cast<const IndexExpr&>(expr);
+                path.kind = ValuePath::Kind::Element;
+                path.array = node.base.get();
+                path.index = node.index.get();
+                return path;
+            }
+
+            case ExprKind::Member: {
+                const auto& member = static_cast<const MemberExpr&>(expr);
+                if (member.binding != MemberBinding::Field || !member.base) break;
+
+                if (member.base->resolvedType != ValueType::Struct)
+                {
+                    path.kind = ValuePath::Kind::Field;
+                    path.object = member.base.get();
+                    path.slot = member.fieldSlot;
+                    return path;
+                }
+
+                ValuePath base = ResolvePath(*member.base);
+                base.slot += member.fieldSlot;
+                base.width = path.width;
+                return base;
+            }
+
+            default: break;
         }
-        m_diagnostics.AddError(expr.location, std::string("could not determine the storage slot for ") + what);
-        return 0;
+
+        path.kind = ValuePath::Kind::Stack;
+        path.source = &expr;
+        path.total = path.width;
+        return path;
+    }
+
+    void EmitLoadRun(OpCode narrow, OpCode wide, u32 slot, u32 width)
+    {
+        if (width == 1) Emit(narrow, slot);
+        else Emit(wide, MakeSlotSpan(slot, width));
+    }
+
+    void EmitStoreRun(OpCode narrow, OpCode wide, u32 slot, u32 width)
+    {
+        if (width == 1) Emit(narrow, slot);
+        else Emit(wide, MakeSlotSpan(slot, width));
+    }
+
+    void EmitPathReceiver(const ValuePath& path)
+    {
+        if (path.object) EmitExpr(*path.object);
+        else Emit(OpCode::LoadLocal, 0);
+    }
+
+    // Keeps `width` slots starting at `offset` out of a value of `total`
+    // slots that is already on the stack: what sits above them is popped,
+    // and what sits below them is dropped out from under them.
+    void EmitNarrow(u32 total, u32 offset, u32 width)
+    {
+        for (u32 i = offset + width; i < total; ++i) Emit(OpCode::Pop);
+        if (offset != 0) Emit(OpCode::DiscardUnder, MakeSlotSpan(offset, width));
+    }
+
+    void EmitLoadPath(const ValuePath& path)
+    {
+        switch (path.kind)
+        {
+            case ValuePath::Kind::Local:
+                EmitLoadRun(OpCode::LoadLocal, OpCode::LoadLocalWide, path.slot, path.width);
+                return;
+
+            case ValuePath::Kind::Field:
+                EmitPathReceiver(path);
+                EmitLoadRun(OpCode::LoadField, OpCode::LoadFieldWide, path.slot, path.width);
+                return;
+
+            case ValuePath::Kind::Element:
+                EmitExpr(*path.array);
+                EmitExpr(*path.index);
+                EmitElementAccess(*path.array, path, false);
+                return;
+
+            case ValuePath::Kind::Stack:
+                EmitExpr(*path.source);
+                EmitNarrow(path.total, path.slot, path.width);
+                return;
+        }
+    }
+
+    // A whole element is what the sequence type says it is, so reading or
+    // writing one needs no width in the instruction; a field of one
+    // carries where it sits and how long it is.
+    void EmitElementAccess(const Expr& sequence, const ValuePath& path, bool storing)
+    {
+        const u32 elementWidth = ElementWidth(sequence);
+        const bool whole = path.slot == 0 && path.width == elementWidth;
+        if (whole)
+        {
+            // The whole element carries its width, which the machine
+            // checks against the sequence type rather than trusting.
+            Emit(storing ? OpCode::StoreElement : OpCode::LoadElement, elementWidth);
+            return;
+        }
+        Emit(storing ? OpCode::StoreElementField : OpCode::LoadElementField, MakeSlotSpan(path.slot, path.width));
     }
 
     // --- Statements ---------------------------------------------------------
@@ -438,14 +680,15 @@ private:
                 const auto& node = static_cast<const LocalDeclStmt&>(stmt);
                 if (!node.initializer) break; // frame slots start zeroed
                 EmitExpr(*node.initializer);
-                Emit(OpCode::StoreLocal, node.localSlot >= 0 ? (u32)node.localSlot : 0);
+                EmitStoreRun(OpCode::StoreLocal, OpCode::StoreLocalWide,
+                    node.localSlot >= 0 ? (u32)node.localSlot : 0, SlotWidth(node.declaredType));
                 break;
             }
 
             case StmtKind::Expr: {
                 const auto& node = static_cast<const ExprStmt&>(stmt);
                 EmitExpr(*node.expr);
-                if (node.expr->resolvedType != ValueType::Void) Emit(OpCode::Pop);
+                EmitDiscard(*node.expr);
                 break;
             }
 
@@ -472,7 +715,11 @@ private:
                 if (node.value)
                 {
                     EmitExpr(*node.value);
-                    Emit(OpCode::Return);
+                    EmitReturnValue();
+                }
+                else if (m_valueConstructor)
+                {
+                    EmitReturnReceiver();
                 }
                 else
                 {
@@ -553,7 +800,7 @@ private:
         if (stmt.step)
         {
             EmitExpr(*stmt.step);
-            if (stmt.step->resolvedType != ValueType::Void) Emit(OpCode::Pop);
+            EmitDiscard(*stmt.step);
         }
         Emit(OpCode::Jump, conditionLabel);
 
@@ -588,7 +835,7 @@ private:
         Emit(OpCode::LoadLocal, sequenceSlot);
         Emit(OpCode::LoadLocal, positionSlot);
         EmitSequenceElement(stmt);
-        Emit(OpCode::StoreLocal, elementSlot);
+        EmitStoreRun(OpCode::StoreLocal, OpCode::StoreLocalWide, elementSlot, SlotWidth(stmt.declaredType));
 
         m_loops.emplace_back();
         EmitStmt(*stmt.body);
@@ -621,7 +868,9 @@ private:
     {
         if (stmt.overArray)
         {
-            Emit(OpCode::LoadElement);
+            // A sequence walked this way hands over whole elements, so
+            // the width is the loop variable's own.
+            Emit(OpCode::LoadElement, SlotWidth(stmt.declaredType));
             return;
         }
         EmitBoundCall(stmt.elementTarget, stmt.elementFunction, stmt.location);
@@ -684,7 +933,7 @@ private:
                 break;
 
             case ExprKind::This:
-                Emit(OpCode::LoadLocal, 0);
+                EmitLoadRun(OpCode::LoadLocal, OpCode::LoadLocalWide, 0, m_receiverIsValue ? m_receiverSlots : 1u);
                 break;
 
             case ExprKind::New: EmitNew(static_cast<const NewExpr&>(expr)); break;
@@ -701,23 +950,15 @@ private:
                 break;
             }
 
-            case ExprKind::Index: {
-                const auto& node = static_cast<const IndexExpr&>(expr);
-                EmitExpr(*node.base);
-                EmitExpr(*node.index);
-                Emit(OpCode::LoadElement);
-                break;
-            }
-
+            case ExprKind::Index:
             case ExprKind::Identifier: {
-                const auto& identifier = static_cast<const IdentifierExpr&>(expr);
-                if (identifier.isField)
+                const ValuePath path = ResolvePath(expr);
+                if (path.kind == ValuePath::Kind::Stack)
                 {
-                    Emit(OpCode::LoadLocal, 0);
-                    Emit(OpCode::LoadField, identifier.fieldSlot);
+                    m_diagnostics.AddError(expr.location, "this reference was never bound to any storage");
                     break;
                 }
-                Emit(OpCode::LoadLocal, SlotOf(expr, "a variable reference"));
+                EmitLoadPath(path);
                 break;
             }
 
@@ -729,17 +970,24 @@ private:
                     Emit(OpCode::ArrayLength);
                     break;
                 }
+                // A constant of a named set was settled while the source
+                // was being read, so what is left is the number itself.
+                if (member.binding == MemberBinding::EnumConstant)
+                {
+                    Emit(OpCode::PushInt, IntConstant((i32)member.constantValue));
+                    break;
+                }
                 if (member.binding != MemberBinding::Field || !member.base)
                 {
                     m_diagnostics.AddError(expr.location, "this member reference was never bound to a field");
                     break;
                 }
-                EmitExpr(*member.base);
-                Emit(OpCode::LoadField, member.fieldSlot);
+                EmitLoadPath(ResolvePath(expr));
                 break;
             }
 
             case ExprKind::Unary: EmitUnary(static_cast<const UnaryExpr&>(expr)); break;
+            case ExprKind::Convert: EmitConvert(static_cast<const ConvertExpr&>(expr)); break;
             case ExprKind::Binary: EmitBinary(static_cast<const BinaryExpr&>(expr)); break;
             case ExprKind::Assign: EmitAssign(static_cast<const AssignExpr&>(expr)); break;
             case ExprKind::Call: EmitCall(static_cast<const CallExpr&>(expr)); break;
@@ -770,14 +1018,35 @@ private:
         }
     }
 
+    // Discards what an expression evaluated for its side effects left
+    // behind, which is a run of slots when it produced a value type.
+    void EmitDiscard(const Expr& expr)
+    {
+        if (expr.resolvedType == ValueType::Void) return;
+        const u32 width = SlotWidth(expr);
+        for (u32 i = 0; i < width; ++i) Emit(OpCode::Pop);
+    }
+
     // The new object is its own constructor's receiver and the value the
     // expression produces, so it is duplicated once and the copy is what
     // the constructor consumes.
+    //
+    // A value type has no object to duplicate: the constructor is handed
+    // a zeroed value of the right width in the slots a receiver would
+    // occupy, and hands back what it made of it.
     void EmitNew(const NewExpr& expr)
     {
         if (expr.classIndex == kNoClass || expr.constructorFunction == kNoFunction)
         {
             m_diagnostics.AddError(expr.location, "this allocation was never bound to a class");
+            return;
+        }
+
+        if (expr.resolvedType == ValueType::Struct)
+        {
+            Emit(OpCode::PushZero, SlotWidth(expr));
+            for (const ExprPtr& arg : expr.args) EmitExpr(*arg);
+            Emit(OpCode::Call, expr.constructorFunction);
             return;
         }
 
@@ -796,6 +1065,20 @@ private:
             return;
         }
         Emit(expr.resolvedType == ValueType::Float ? OpCode::NegFloat : OpCode::NegInt);
+    }
+
+    void EmitConvert(const ConvertExpr& expr)
+    {
+        EmitExpr(*expr.operand);
+
+        // Naming the type a value already has is allowed and costs
+        // nothing, which is worth keeping cheap: generated code cannot
+        // always tell in advance that it is asking for nothing.
+        const ValueType from = expr.operand->resolvedType;
+        if (from == expr.target) return;
+
+        if (expr.target == ValueType::Float) Emit(OpCode::IntToFloat);
+        else Emit(OpCode::FloatToInt);
     }
 
     void EmitBinary(const BinaryExpr& expr)
@@ -834,117 +1117,83 @@ private:
         }
     }
 
-    // Where an assignment stores. A field needs its object evaluated
-    // first, and that object is needed again to read the stored value
-    // back out, since an assignment is an expression.
-    struct FieldTarget
-    {
-        const Expr* object = nullptr; // null when the receiver is the enclosing instance
-        u32 slot = 0;
-    };
-
-    static bool AsFieldTarget(const Expr& target, FieldTarget& outTarget)
-    {
-        if (target.kind == ExprKind::Identifier)
-        {
-            const auto& identifier = static_cast<const IdentifierExpr&>(target);
-            if (!identifier.isField) return false;
-            outTarget.object = nullptr;
-            outTarget.slot = identifier.fieldSlot;
-            return true;
-        }
-        if (target.kind == ExprKind::Member)
-        {
-            const auto& member = static_cast<const MemberExpr&>(target);
-            if (member.binding != MemberBinding::Field) return false;
-            outTarget.object = member.base.get();
-            outTarget.slot = member.fieldSlot;
-            return true;
-        }
-        return false;
-    }
-
-    void EmitReceiver(const FieldTarget& target)
-    {
-        if (target.object) EmitExpr(*target.object);
-        else Emit(OpCode::LoadLocal, 0);
-    }
-
+    // An assignment is an expression, so every form below ends by reading
+    // the stored value back; a statement-level assignment discards it.
+    // What a compound form combines with is always a single slot, since
+    // no value type is a number or a piece of text.
     void EmitAssign(const AssignExpr& expr)
     {
-        if (expr.target->kind == ExprKind::Index)
+        const ValuePath path = ResolvePath(*expr.target);
+
+        switch (path.kind)
         {
-            EmitElementAssign(expr, static_cast<const IndexExpr&>(*expr.target));
-            return;
+            case ValuePath::Kind::Local: EmitLocalAssign(expr, path); return;
+            case ValuePath::Kind::Field: EmitFieldAssign(expr, path); return;
+            case ValuePath::Kind::Element: EmitElementAssign(expr, path); return;
+            default:
+                m_diagnostics.AddError(expr.location, "this assignment has no storage to write into");
+                return;
         }
+    }
 
-        FieldTarget field;
-        if (AsFieldTarget(*expr.target, field))
-        {
-            EmitFieldAssign(expr, field);
-            return;
-        }
-
-        const u32 slot = SlotOf(*expr.target, "an assignment target");
-
+    void EmitLocalAssign(const AssignExpr& expr, const ValuePath& path)
+    {
         if (expr.op == AssignOp::Assign)
         {
             EmitExpr(*expr.value);
         }
         else
         {
-            Emit(OpCode::LoadLocal, slot);
+            Emit(OpCode::LoadLocal, path.slot);
             EmitExpr(*expr.value);
             Emit(ArithmeticOpcode(BinaryOpForCompound(expr.op), expr.operandType));
         }
 
-        Emit(OpCode::StoreLocal, slot);
-        // An assignment is an expression, so it leaves the stored value
-        // behind; a statement-level assignment discards it with a Pop.
-        Emit(OpCode::LoadLocal, slot);
+        EmitStoreRun(OpCode::StoreLocal, OpCode::StoreLocalWide, path.slot, path.width);
+        EmitLoadRun(OpCode::LoadLocal, OpCode::LoadLocalWide, path.slot, path.width);
     }
 
-    void EmitFieldAssign(const AssignExpr& expr, const FieldTarget& field)
+    void EmitFieldAssign(const AssignExpr& expr, const ValuePath& path)
     {
         if (expr.op == AssignOp::Assign)
         {
             // One copy of the object is consumed by the store, the other
             // reads the field back as the expression's value.
-            EmitReceiver(field);
+            EmitPathReceiver(path);
             Emit(OpCode::Dup);
             EmitExpr(*expr.value);
-            Emit(OpCode::StoreField, field.slot);
-            Emit(OpCode::LoadField, field.slot);
+            EmitStoreRun(OpCode::StoreField, OpCode::StoreFieldWide, path.slot, path.width);
+            EmitLoadRun(OpCode::LoadField, OpCode::LoadFieldWide, path.slot, path.width);
             return;
         }
 
         // A compound form needs the object a third time, to read the
         // value it is combining with.
-        EmitReceiver(field);
+        EmitPathReceiver(path);
         Emit(OpCode::Dup);
         Emit(OpCode::Dup);
-        Emit(OpCode::LoadField, field.slot);
+        Emit(OpCode::LoadField, path.slot);
         EmitExpr(*expr.value);
         Emit(ArithmeticOpcode(BinaryOpForCompound(expr.op), expr.operandType));
-        Emit(OpCode::StoreField, field.slot);
-        Emit(OpCode::LoadField, field.slot);
+        Emit(OpCode::StoreField, path.slot);
+        Emit(OpCode::LoadField, path.slot);
     }
 
     // An element is named by two values rather than one, so a store that
     // also has to produce what it stored keeps both of them: the pair is
     // copied, the store consumes one copy, and the read that follows uses
     // the other.
-    void EmitElementAssign(const AssignExpr& expr, const IndexExpr& target)
+    void EmitElementAssign(const AssignExpr& expr, const ValuePath& path)
     {
-        EmitExpr(*target.base);
-        EmitExpr(*target.index);
+        EmitExpr(*path.array);
+        EmitExpr(*path.index);
 
         if (expr.op == AssignOp::Assign)
         {
             Emit(OpCode::Dup2);
             EmitExpr(*expr.value);
-            Emit(OpCode::StoreElement);
-            Emit(OpCode::LoadElement);
+            EmitElementAccess(*path.array, path, true);
+            EmitElementAccess(*path.array, path, false);
             return;
         }
 
@@ -952,11 +1201,11 @@ private:
         // it is combining with.
         Emit(OpCode::Dup2);
         Emit(OpCode::Dup2);
-        Emit(OpCode::LoadElement);
+        EmitElementAccess(*path.array, path, false);
         EmitExpr(*expr.value);
         Emit(ArithmeticOpcode(BinaryOpForCompound(expr.op), expr.operandType));
-        Emit(OpCode::StoreElement);
-        Emit(OpCode::LoadElement);
+        EmitElementAccess(*path.array, path, true);
+        EmitElementAccess(*path.array, path, false);
     }
 
     // Writes down what a call into the engine names, so the module says

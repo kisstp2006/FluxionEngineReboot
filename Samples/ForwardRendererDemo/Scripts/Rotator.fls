@@ -1,7 +1,8 @@
 // The cube's whole animation, written as a component: the demo attaches
 // one of these to the object it draws, and every turn of the scene the
 // object is turned a little further about its up axis. Nothing in the
-// program says how fast, or in which direction -- that is here.
+// program says how fast, or in which direction, or whether it is turning
+// at all -- that is here, and it answers to whoever is at the keyboard.
 class Rotator : Component
 {
     [SerializeField]
@@ -9,15 +10,33 @@ class Rotator : Component
     [Tooltip("Radians per second about the up axis.")]
     float speed;
 
+    bool spinning;
+
     void Awake()
     {
         // A component is made with nothing handed to it, so what it
         // starts with is what it sets for itself.
         this.speed = 0.625f;
+        this.spinning = true;
     }
 
     void Update(float deltaTime)
     {
+        // Space stops it and starts it again; that is a thing that
+        // happens once per press rather than for as long as the key is
+        // held, so it is the press that is asked about.
+        if (Input.WasKeyPressed(KeyCode.Space)) { this.spinning = !this.spinning; }
+
+        // The arrow keys change how fast for as long as they are held, so
+        // how far they move it depends on how long the frame took.
+        if (Input.IsKeyDown(KeyCode.Right)) { this.speed = this.speed + deltaTime * 2.0f; }
+        if (Input.IsKeyDown(KeyCode.Left)) { this.speed = this.speed - deltaTime * 2.0f; }
+
+        // The wheel does the same in one go, and one notch is worth a
+        // good deal more than one frame of holding a key.
+        this.speed = Mathf.Clamp(this.speed + Input.MouseScroll() * 0.25f, 0.0f, 8.0f);
+
+        if (!this.spinning) { return; }
         this.transform.Rotate(0.0f, this.speed * deltaTime, 0.0f);
     }
 }

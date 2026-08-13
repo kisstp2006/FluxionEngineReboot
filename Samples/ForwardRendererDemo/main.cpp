@@ -7,8 +7,10 @@
 // whole layer actually works end to end on real hardware, across all
 // three real backends, that RHITests' offscreen checks can't show on
 // their own. The cube's material tint is animated every frame via
-// Fluxion_Material_SetVec3 + Fluxion_Material_FlushDirty, proving the
-// runtime-settable-material-parameter path specifically. Vertex/index/
+// Fluxion_Material_SetVec3 + Fluxion_Material_FlushDirty -- reached from
+// Scripts/CubeRenderer.fls rather than from here, since what gets drawn
+// and what colour it is are decisions this file has handed over to the
+// scripts entirely. Vertex/index/
 // texture data still go CPU->staging buffer->GPU_ONLY resource via
 // Map/Unmap + CommandList Copy + a Barrier by hand (MeshBuffer only owns
 // vertex/index buffers, not arbitrary textures, and RenderTarget/RenderView
@@ -18,6 +20,8 @@
 // Shaders/cube.frag.jsl) and compiled by Fluxion_ShaderProgram_Create
 // itself; this file never touches backend-specific bytecode directly.
 #include <Fluxion/Application/Events/EventQueue.h>
+#include <Fluxion/Application/Input/Input.h>
+#include <Fluxion/Application/Time/Time.h>
 #include <Fluxion/Application/Window/Window.h>
 #include <Fluxion/Foundation/Defines.h>
 #include <Fluxion/Foundation/Log.h>
@@ -32,6 +36,7 @@
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
 #include <Fluxion/RenderCore/Renderer/Renderer.h>
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
+#include <Fluxion/Scene/EngineScript.hpp>
 #include <Fluxion/Scene/Scene.h>
 #include <Fluxion/Scene/SceneScript.hpp>
 #include <Fluxion/Script/Script.hpp>
@@ -136,6 +141,16 @@ int main(int argc, char** argv)
     FluxionEventQueue queue;
     Fluxion_EventQueue_Init(&queue, NULL, 256);
     Fluxion_WindowSystem_Init(NULL, &queue, 1);
+
+    // The input system is not fed by the window system: it is fed by
+    // whoever drains the event queue, which is this file. Without both of
+    // these -- the per-frame reset below and an event handed over for
+    // every event popped -- Input answers "nothing is held down" forever.
+    Fluxion_Input_Init();
+
+    // The clock is started before the window is made, so the long, unrepresentative
+    // stretch of work between here and the first frame is not mistaken for one.
+    Fluxion_Time_Init();
 
     // The backend is otherwise only visible in the startup log line below
     // ("Using adapter: ...") -- putting it in the title too means it's
@@ -420,11 +435,13 @@ int main(int argc, char** argv)
     // on the second frame).
     FluxionRHISemaphoreHandle noSemaphore = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
-    // --- The cube as a scene object driven by a script component -------
+    // --- The cube as a scene object driven by script components --------
     //
-    // Nothing below computes an angle. The demo makes one object, puts a
-    // Rotator on it, and hands the scene how much time has passed each
-    // frame; what the object then is, is whatever Rotator has made of it.
+    // Nothing below computes an angle, picks a colour or asks for a draw.
+    // The demo makes one object, puts the two components in Scripts/ on
+    // it, registers what it made under names those components ask for,
+    // and then hands the scene how much time has passed each frame. What
+    // ends up on the screen is whatever they have made of it.
 
     FluxionSceneHandle scene = Fluxion_Scene_Create();
     if (!Fluxion_Scene_IsValid(scene))
@@ -442,23 +459,44 @@ int main(int argc, char** argv)
         std::exit(1);
     }
 
-    std::string rotatorSource = ReadFile(FLUXION_DEMO_SCRIPT_DIR "/Rotator.fls");
-    if (rotatorSource.empty())
+    // The rest of the engine, on top of the scene: the clock, the input
+    // state, and the small drawing surface a component needs to put
+    // something on the screen. The scene's own types go in first, since
+    // Renderer.DrawMesh is written in terms of a GameObject.
+    if (!Fluxion::Scene::BuildEngineBindings(scene, sceneBindings, scriptDiagnostics))
     {
-        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to read Rotator.fls from %s", FLUXION_DEMO_SCRIPT_DIR);
+        ReportScriptDiagnostics(scriptDiagnostics);
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to describe the engine to the scripting runtime.");
         std::exit(1);
     }
 
-    Fluxion::Script::CompileOptions scriptOptions;
-    scriptOptions.fileName = "Rotator.fls";
-    scriptOptions.bindings = &sceneBindings;
-    scriptOptions.hostPrelude = Fluxion::Scene::ComponentPreludeSource();
+    // Every script file the demo has, handed to the compiler as one
+    // source: a module is compiled in one go, and a component in one file
+    // may perfectly well name a class declared in another.
+    std::string demoScriptSource;
+    for (const char* scriptFile : { "/Rotator.fls", "/CubeRenderer.fls" })
+    {
+        std::string contents = ReadFile((std::string(FLUXION_DEMO_SCRIPT_DIR) + scriptFile).c_str());
+        if (contents.empty())
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to read %s from %s", scriptFile, FLUXION_DEMO_SCRIPT_DIR);
+            std::exit(1);
+        }
+        demoScriptSource += contents;
+        demoScriptSource += "\n";
+    }
 
-    auto compiledScript = Fluxion::Script::Compile(rotatorSource, scriptOptions, scriptDiagnostics);
+    Fluxion::Script::CompileOptions scriptOptions;
+    scriptOptions.fileName = "DemoScripts.fls";
+    scriptOptions.bindings = &sceneBindings;
+    scriptOptions.hostPrelude =
+        std::string(Fluxion::Scene::ComponentPreludeSource()) + Fluxion::Scene::EnginePreludeSource();
+
+    auto compiledScript = Fluxion::Script::Compile(demoScriptSource, scriptOptions, scriptDiagnostics);
     if (!compiledScript.IsOk())
     {
         ReportScriptDiagnostics(scriptDiagnostics);
-        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to compile Rotator.fls.");
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to compile the demo's scripts.");
         std::exit(1);
     }
 
@@ -471,40 +509,71 @@ int main(int argc, char** argv)
         std::exit(1);
     }
 
-    FluxionGameObjectHandle cubeObject = Fluxion_Scene_CreateGameObject(scene, "Cube");
-    Fluxion_GameObject_SetLocalPosition(scene, cubeObject, FluxionVec3{ 0.0f, 0.0f, -3.0f });
+    // The debug lines a script draws go into the same colour attachment
+    // as everything else, which is a swapchain image -- and the renderer
+    // cannot work its format out for itself.
+    Fluxion_Renderer_SetDebugDrawColorFormat(renderer, swapchainDesc.format);
 
-    const u32 rotatorClass = Fluxion::Scene::FindComponentClass(scene, "Rotator");
-    if (rotatorClass == Fluxion::Script::kNoClass ||
-        Fluxion::Scene::AddComponent(scene, cubeObject, rotatorClass).IsNull())
+    // What a script may name, and what it draws through. The three names
+    // are the ones Scripts/CubeRenderer.fls asks for; making any of them
+    // is a device-and-queue matter and stays here.
+    Fluxion::Scene::SetScriptRenderer(renderer);
+    if (!Fluxion::Scene::RegisterScriptMesh("Cube", cubeMesh) || !Fluxion::Scene::RegisterScriptMaterial("Cube", cubeMaterial) ||
+        !Fluxion::Scene::RegisterScriptPipeline("Cube", cubePipeline))
     {
-        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a Rotator on the cube: %s", Fluxion_Scene_GetLastError(scene));
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put the cube's mesh, material and pipeline within reach of a script.");
         std::exit(1);
     }
 
-    FLUXION_LOG_INFO("ForwardRendererDemo", "Window created. Rendering a rotating textured cube every frame through the RenderCore layer.");
+    FluxionGameObjectHandle cubeObject = Fluxion_Scene_CreateGameObject(scene, "Cube");
+    Fluxion_GameObject_SetLocalPosition(scene, cubeObject, FluxionVec3{ 0.0f, 0.0f, -3.0f });
+
+    for (const char* componentName : { "Rotator", "CubeRenderer" })
+    {
+        const u32 componentClass = Fluxion::Scene::FindComponentClass(scene, componentName);
+        if (componentClass == Fluxion::Script::kNoClass ||
+            Fluxion::Scene::AddComponent(scene, cubeObject, componentClass).IsNull())
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a %s on the cube: %s", componentName,
+                Fluxion_Scene_GetLastError(scene));
+            std::exit(1);
+        }
+    }
+
+    FLUXION_LOG_INFO("ForwardRendererDemo",
+        "Window created. Space stops and starts the spin, the arrow keys and the wheel change how fast, Tab shows and hides the axes, "
+        "Escape closes.");
 
     bool running = true;
     u32 frameIndex = 0;
-    f32 totalTime = 0.0f;
 
-    // No delta-time tracking in this demo -- a fixed nominal step, which
-    // is what the pulse below already assumed, and now also what the
-    // scene is told each frame.
-    const f32 nominalDeltaTime = 0.016f;
     while (running)
     {
+        // Whatever was pressed or released during the last frame stops
+        // counting as "this frame" here, before any new event arrives --
+        // so a component asking whether a key went down this frame is
+        // asking about the frame it is running in and no other.
+        Fluxion_Input_BeginFrame();
+
         Fluxion_WindowSystem_PollEvents();
         FluxionEvent event;
         while (Fluxion_EventQueue_Pop(&queue, &event))
         {
+            // Every event goes to the input system as well as to this
+            // loop's own handling of it: neither is a substitute for the
+            // other, and Input ignores what it has no interest in.
+            Fluxion_Input_ProcessEvent(&event);
             if (event.type == FLUXION_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
         }
+        if (Fluxion_Input_WasKeyPressed(FLUXION_KEY_ESCAPE)) running = false;
         if (!running) break;
 
-        // One turn of the scene: Rotator.Update is what moves the cube.
-        Fluxion_Scene_Tick(scene, nominalDeltaTime);
-        totalTime += nominalDeltaTime;
+        // How long the last frame took, worked out once and read by
+        // everything below. A frame that stalled -- a debugger break, the
+        // window being dragged -- is reported as the clock's ceiling
+        // rather than as the truth, so the scene never takes one enormous
+        // step it cannot recover from.
+        Fluxion_Time_BeginFrame();
 
         u32 imageIndex = Fluxion_RHI_Swapchain_AcquireNextImage(swapchain, noSemaphore);
 
@@ -547,22 +616,6 @@ int main(int argc, char** argv)
         FluxionRenderViewHandle frameView = Fluxion_RenderView_Create(device, &viewDesc);
         Fluxion_RenderView_UpdateFrameConstants(frameView);
 
-        // Slow color pulse to make the Material.SetVec3 runtime-update
-        // path visible on screen -- the whole point of this demo's tint
-        // parameter, not a static material.
-        f32 pulse = 0.5f + 0.5f * std::sin(totalTime);
-        Fluxion_Material_SetVec3(cubeMaterial, "tint", FluxionVec3{ 1.0f, 0.5f + 0.5f * pulse, 0.5f + 0.5f * (1.0f - pulse) });
-        Fluxion_Material_FlushDirty(cubeMaterial);
-
-        // OBJECT model matrix: same transpose-for-upload requirement as
-        // the FRAME matrix above -- Fluxion_Renderer_DrawMesh's `transform`
-        // is memcpy'd verbatim into the OBJECT storage buffer with no
-        // transpose of its own (see Renderer.cpp), and cube.vert.jsl reads
-        // it as `model[0]` in the same column-major-expecting multiply as
-        // viewProjection.
-        FluxionMat4 model = Fluxion_GameObject_GetWorldMatrix(scene, cubeObject);
-        FluxionMat4 modelForUpload = TransposeForUpload(model);
-
         FluxionRHICommandListHandle cmd = commandLists[frameIndex];
         Fluxion_RHI_CommandList_Begin(cmd);
 
@@ -593,7 +646,12 @@ int main(int argc, char** argv)
         Fluxion_RenderGraph_AddPassFromRegistry(graph, "ForwardOpaquePass", Fluxion_Renderer_GetForwardOpaquePassUserData(renderer));
 
         Fluxion_Renderer_BeginFrame(renderer, frameView);
-        Fluxion_Renderer_DrawMesh(renderer, cubeMesh, cubeMaterial, cubePipeline, &modelForUpload);
+
+        // One turn of the scene, taken here rather than at the top of the
+        // loop: a component's Update is where the cube is turned, where
+        // its colour is chosen and where the draw is asked for, and a
+        // draw only lands inside the frame the renderer has open.
+        Fluxion_Scene_Tick(scene, Fluxion_Time_GetDeltaTime());
 
         if (!Fluxion_RenderGraph_Compile(graph))
         {
@@ -655,6 +713,14 @@ int main(int argc, char** argv)
     // bounded timeout for work that was never submitted.
     FLUXION_LOG_INFO("ForwardRendererDemo", "Closing.");
 
+    // Nothing a script can name may outlive what it names. The renderer
+    // and the three registered handles are taken away first, so that a
+    // component's OnDestroy -- which runs while the scene is being
+    // destroyed, below -- cannot ask for a draw into a renderer that is
+    // about to be torn down.
+    Fluxion::Scene::SetScriptRenderer(FluxionRendererHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 });
+    Fluxion::Scene::ClearScriptAssets();
+
     // The scene goes before the machine it runs on: destroying it runs
     // OnDestroy on everything still attached, which is script code.
     Fluxion_Scene_Destroy(scene);
@@ -684,6 +750,8 @@ int main(int argc, char** argv)
 
     Fluxion_Window_Destroy(window);
     Fluxion_WindowSystem_Shutdown();
+    Fluxion_Time_Shutdown();
+    Fluxion_Input_Shutdown();
     Fluxion_EventQueue_Destroy(&queue);
     return 0;
 }

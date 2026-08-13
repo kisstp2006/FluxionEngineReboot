@@ -20,6 +20,8 @@ const std::unordered_map<std::string, TokenKind>& Keywords()
         { "string", TokenKind::KwString },
         { "class", TokenKind::KwClass },
         { "interface", TokenKind::KwInterface },
+        { "struct", TokenKind::KwStruct },
+        { "enum", TokenKind::KwEnum },
         { "static", TokenKind::KwStatic },
         { "var", TokenKind::KwVar },
         { "virtual", TokenKind::KwVirtual },

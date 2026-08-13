@@ -140,6 +140,14 @@ typedef struct FluxionRenderer
     FluxionRHIShaderHandle debugFragmentShader;
     FluxionRHIPipelineHandle debugPipeline;
     FluxionRHIBindGroupLayoutHandle debugFrameBindGroupLayout;
+
+    // The colour format debugPipeline was built against. It has to match
+    // the colour attachment a frame is actually drawn into, and nothing
+    // reachable from here says what that is -- a FluxionRHITextureViewHandle
+    // carries no queryable format any more than it carries an extent --
+    // so the caller says it (Fluxion_Renderer_SetDebugDrawColorFormat) and
+    // this is what it last said.
+    FluxionRHIFormat debugColorFormat;
 } FluxionRenderer;
 
 // --- Cross-file internal accessors ------------------------------------------

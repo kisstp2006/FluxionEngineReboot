@@ -11,9 +11,14 @@ engine_add_test(
         Test_Input_Mouse.c
         Test_Input_Gamepad.c
         Test_InputAction.c
+        Test_Time.c
     DEPENDENCIES
         Fluxion::Application
         Fluxion::Foundation
+        # Test_Time.c sleeps between frames to make the clock advance, and
+        # the sleep is the platform's -- Application itself never exposes
+        # one.
+        Fluxion::Platform
 )
 
 if(UNIX)
@@ -35,6 +40,7 @@ engine_add_header_selfcontained_test(
         Fluxion/Application/Input/InputAction.h
         Fluxion/Application/Input/KeyCode.h
         Fluxion/Application/Input/MouseButton.h
+        Fluxion/Application/Time/Time.h
         Fluxion/Application/Window/Clipboard.h
         Fluxion/Application/Window/Display.h
         Fluxion/Application/Window/Window.h

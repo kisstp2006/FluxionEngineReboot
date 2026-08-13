@@ -14,12 +14,16 @@ const char* OpCodeName(OpCode op)
         case OpCode::PushBool: return "PushBool";
         case OpCode::PushString: return "PushString";
         case OpCode::PushNull: return "PushNull";
+        case OpCode::PushZero: return "PushZero";
 
         case OpCode::LoadLocal: return "LoadLocal";
         case OpCode::StoreLocal: return "StoreLocal";
+        case OpCode::LoadLocalWide: return "LoadLocalWide";
+        case OpCode::StoreLocalWide: return "StoreLocalWide";
         case OpCode::Pop: return "Pop";
         case OpCode::Dup: return "Dup";
         case OpCode::Dup2: return "Dup2";
+        case OpCode::DiscardUnder: return "DiscardUnder";
 
         case OpCode::AddInt: return "AddInt";
         case OpCode::SubInt: return "SubInt";
@@ -63,6 +67,7 @@ const char* OpCodeName(OpCode op)
         case OpCode::NotBool: return "NotBool";
 
         case OpCode::IntToFloat: return "IntToFloat";
+        case OpCode::FloatToInt: return "FloatToInt";
         case OpCode::IntToString: return "IntToString";
         case OpCode::FloatToString: return "FloatToString";
         case OpCode::BoolToString: return "BoolToString";
@@ -70,11 +75,15 @@ const char* OpCodeName(OpCode op)
         case OpCode::NewObject: return "NewObject";
         case OpCode::LoadField: return "LoadField";
         case OpCode::StoreField: return "StoreField";
+        case OpCode::LoadFieldWide: return "LoadFieldWide";
+        case OpCode::StoreFieldWide: return "StoreFieldWide";
 
         case OpCode::NewArray: return "NewArray";
         case OpCode::ArrayLength: return "ArrayLength";
         case OpCode::LoadElement: return "LoadElement";
         case OpCode::StoreElement: return "StoreElement";
+        case OpCode::LoadElementField: return "LoadElementField";
+        case OpCode::StoreElementField: return "StoreElementField";
 
         case OpCode::Jump: return "Jump";
         case OpCode::JumpIfFalse: return "JumpIfFalse";
@@ -87,6 +96,7 @@ const char* OpCodeName(OpCode op)
         case OpCode::CallBound: return "CallBound";
         case OpCode::Return: return "Return";
         case OpCode::ReturnVoid: return "ReturnVoid";
+        case OpCode::ReturnWide: return "ReturnWide";
 
         case OpCode::SafePoint: return "SafePoint";
 
@@ -130,6 +140,12 @@ const NativeFunctionSignature* NativeFunctionTable()
 
         { "Gc.Collect", nullptr, 0, ValueType::Void },
         { "Gc.LiveObjects", nullptr, 0, ValueType::Int },
+
+        { "Math.Sqrt", kOneFloat, 1, ValueType::Float },
+        { "Math.Sin", kOneFloat, 1, ValueType::Float },
+        { "Math.Cos", kOneFloat, 1, ValueType::Float },
+        { "Math.Floor", kOneFloat, 1, ValueType::Float },
+        { "Math.Ceil", kOneFloat, 1, ValueType::Float },
     };
     return table;
 }

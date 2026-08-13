@@ -20,7 +20,7 @@ enum class TokenKind
     KwVoid, KwBool, KwInt, KwFloat, KwString,
 
     // Declaration keywords.
-    KwClass, KwInterface, KwStatic, KwVar, KwVirtual, KwOverride,
+    KwClass, KwInterface, KwStruct, KwEnum, KwStatic, KwVar, KwVirtual, KwOverride,
 
     // Value and control-flow keywords.
     KwTrue, KwFalse, KwNull, KwThis, KwBase, KwNew,

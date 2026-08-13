@@ -189,6 +189,11 @@ u32 AddBoundType(BindingTable& table, const FluxionTypeInfo& typeInfo, HandleRes
             }
             method.parameterTypes.push_back(parameterType);
             method.parameterBoundTypes.push_back(parameterBound);
+
+            // One entry per parameter, so the three lists can always be
+            // read together. Which of them, if any, takes a constant of a
+            // named set is said afterwards, by the host.
+            method.parameterConstantSets.emplace_back();
         }
         if (!ok) break;
 
@@ -221,6 +226,26 @@ u32 AddBoundType(BindingTable& table, const FluxionTypeInfo& typeInfo, HandleRes
         return kNoBoundType;
     }
     return index;
+}
+
+bool BindParameterToConstantSet(BindingTable& table, u32 typeIndex, const std::string& methodName, u32 parameterIndex,
+    const std::string& setName)
+{
+    if (typeIndex >= table.types.size() || setName.empty()) return false;
+
+    const u32 methodIndex = FindBoundMethod(table, typeIndex, methodName);
+    if (methodIndex == kNoBoundMethod) return false;
+
+    BoundMethod& method = table.types[typeIndex].methods[methodIndex];
+    if (parameterIndex >= method.parameterTypes.size()) return false;
+
+    // A constant travels as the number it stands for, so the parameter it
+    // lands in has to be one that holds a whole number.
+    if (method.parameterTypes[parameterIndex] != ValueType::Int) return false;
+
+    method.parameterConstantSets.resize(method.parameterTypes.size());
+    method.parameterConstantSets[parameterIndex] = setName;
+    return true;
 }
 
 } // namespace Fluxion::Script

@@ -121,6 +121,7 @@ private:
         {
             const TokenKind kind = Current().kind;
             if (kind == TokenKind::KwClass || kind == TokenKind::KwInterface) return;
+            if (kind == TokenKind::KwStruct || kind == TokenKind::KwEnum) return;
             if (kind == TokenKind::KwStatic && PeekKind(1) == TokenKind::KwClass) return;
             Advance();
         }
@@ -323,6 +324,7 @@ private:
 
         bool isStatic = false;
         bool isInterface = false;
+        bool isStruct = false;
 
         if (Check(TokenKind::KwStatic))
         {
@@ -339,14 +341,28 @@ private:
             Advance();
             isInterface = true;
         }
+        else if (Check(TokenKind::KwStruct))
+        {
+            Advance();
+            isStruct = true;
+        }
+        else if (Check(TokenKind::KwEnum))
+        {
+            Advance();
+            return ParseEnumDecl(std::move(attributes), loc);
+        }
         else
         {
-            Error(loc, "expected a class or interface declaration, found '" + Describe(Current()) + "'");
+            Error(loc, "expected a class, interface, struct or enum declaration, found '" + Describe(Current()) + "'");
             Advance();
             return nullptr;
         }
 
-        const Token* nameToken = Expect(TokenKind::Identifier, isInterface ? "an interface name" : "a class name");
+        const char* wanted = "a class name";
+        if (isInterface) wanted = "an interface name";
+        else if (isStruct) wanted = "a struct name";
+
+        const Token* nameToken = Expect(TokenKind::Identifier, wanted);
         if (!nameToken) return nullptr;
 
         auto decl = std::make_unique<ClassDecl>();
@@ -354,21 +370,10 @@ private:
         decl->name = nameToken->text;
         decl->isStatic = isStatic;
         decl->isInterface = isInterface;
+        decl->isStruct = isStruct;
         decl->attributes = std::move(attributes);
 
-        if (Check(TokenKind::Less))
-        {
-            Advance();
-            do
-            {
-                const SourceLocation paramLoc = Current().location;
-                const Token* paramName = Expect(TokenKind::Identifier, "a type parameter name");
-                if (!paramName) return nullptr;
-                decl->typeParams.push_back(paramName->text);
-                decl->typeParamLocations.push_back(paramLoc);
-            } while (Match(TokenKind::Comma));
-            if (!Expect(TokenKind::Greater, "'>'")) return nullptr;
-        }
+        if (Check(TokenKind::Less) && !ParseTypeParameters(*decl)) return nullptr;
 
         if (Match(TokenKind::Colon))
         {
@@ -395,6 +400,82 @@ private:
 
             SynchronizeToNextMember();
             if (m_position == before) Advance();
+        }
+
+        if (!Expect(TokenKind::RBrace, "'}'")) return nullptr;
+        return decl;
+    }
+
+    // The `<A, B>` after a declared name. Written out for every kind of
+    // declaration that can carry one, including the kinds that go on to
+    // be told they cannot -- reading it here is what lets the refusal
+    // name the parameter and the place it was written.
+    bool ParseTypeParameters(ClassDecl& decl)
+    {
+        Advance(); // '<'
+        do
+        {
+            const SourceLocation paramLoc = Current().location;
+            const Token* paramName = Expect(TokenKind::Identifier, "a type parameter name");
+            if (!paramName) return false;
+            decl.typeParams.push_back(paramName->text);
+            decl.typeParamLocations.push_back(paramLoc);
+        } while (Match(TokenKind::Comma));
+        return Expect(TokenKind::Greater, "'>'") != nullptr;
+    }
+
+    // `enum Name { A, B = 10, C }`. A constant written without a number
+    // continues from the one before it, so the whole set has its values
+    // by the time parsing is done and nothing later has to work them out.
+    DeclPtr ParseEnumDecl(std::vector<AttributeNode> attributes, SourceLocation loc)
+    {
+        const Token* nameToken = Expect(TokenKind::Identifier, "an enum name");
+        if (!nameToken) return nullptr;
+
+        auto decl = std::make_unique<ClassDecl>();
+        decl->location = loc;
+        decl->name = nameToken->text;
+        decl->isEnum = true;
+        decl->attributes = std::move(attributes);
+
+        if (Check(TokenKind::Less) && !ParseTypeParameters(*decl)) return nullptr;
+
+        if (Check(TokenKind::Colon))
+        {
+            Error(Current().location, "'" + decl->name + "' declares named constants, so it cannot declare a base list");
+            return nullptr;
+        }
+
+        if (!Expect(TokenKind::LBrace, "'{'")) return nullptr;
+
+        long long next = 0;
+        while (!Check(TokenKind::RBrace) && !AtEnd())
+        {
+            EnumeratorDecl entry;
+            entry.location = Current().location;
+
+            const Token* constantName = Expect(TokenKind::Identifier, "a constant name");
+            if (!constantName) return nullptr;
+            entry.name = constantName->text;
+
+            if (Match(TokenKind::Assign))
+            {
+                const bool negated = Match(TokenKind::Minus);
+                const Token* literal = Expect(TokenKind::IntLiteral, "a whole number");
+                if (!literal) return nullptr;
+                entry.value = negated ? -literal->intValue : literal->intValue;
+            }
+            else
+            {
+                entry.value = next;
+            }
+
+            next = entry.value + 1;
+            decl->enumerators.push_back(std::move(entry));
+
+            // A trailing comma is allowed: the loop stops at the closing
+            // brace whether or not one was written.
+            if (!Match(TokenKind::Comma)) break;
         }
 
         if (!Expect(TokenKind::RBrace, "'}'")) return nullptr;
@@ -899,6 +980,35 @@ private:
 
     ExprPtr ParseUnary()
     {
+        // `(int)` and `(float)` name a conversion; anything else after an
+        // opening bracket is an expression to be grouped. Both spellings
+        // are keywords, so the two can never be confused -- which is the
+        // reason only these two types may be named here.
+        if (Check(TokenKind::LParen) && PeekKind(2) == TokenKind::RParen &&
+            (PeekKind(1) == TokenKind::KwInt || PeekKind(1) == TokenKind::KwFloat))
+        {
+            SourceLocation loc = Current().location;
+            Advance();
+
+            SourceLocation targetLoc = Current().location;
+            const ValueType target = Check(TokenKind::KwInt) ? ValueType::Int : ValueType::Float;
+            Advance();
+            Advance();
+
+            // The operand is whatever binds tightest after it, so the
+            // conversion takes the value next to it and not the
+            // arithmetic around it.
+            ExprPtr operand = ParseUnary();
+            if (!operand) return nullptr;
+
+            auto expr = std::make_unique<ConvertExpr>();
+            expr->location = loc;
+            expr->target = target;
+            expr->targetLocation = targetLoc;
+            expr->operand = std::move(operand);
+            return expr;
+        }
+
         if (Check(TokenKind::Minus) || Check(TokenKind::Not))
         {
             SourceLocation loc = Current().location;

@@ -6,9 +6,14 @@ engine_add_test(
         Test_Transform.cpp
         Test_Components.cpp
         Test_Attributes.cpp
+        Test_EngineApi.cpp
     DEPENDENCIES
         Fluxion::Scene
         Fluxion::Script
+        # Test_EngineApi.cpp drives the clock and feeds the input state
+        # directly, so it sees what a component running on top of them
+        # sees.
+        Fluxion::Application
     NO_EXCEPTIONS
     NO_RTTI
 )
@@ -18,4 +23,5 @@ engine_add_header_selfcontained_test(
     HEADERS
         Fluxion/Scene/Scene.h
         Fluxion/Scene/SceneScript.hpp
+        Fluxion/Scene/EngineScript.hpp
 )

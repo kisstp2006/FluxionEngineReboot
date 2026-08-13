@@ -76,6 +76,15 @@ struct BoundMethod
     std::vector<ValueType> parameterTypes;
     std::vector<u32> parameterBoundTypes;
 
+    // For a whole-number parameter the host has said takes a constant of
+    // a named set: the name of that set, and empty for every ordinary
+    // parameter. Nothing about the call changes -- a constant already is
+    // the number it stands for, and that number is what the native
+    // receives -- but the compiler will only accept a constant of that
+    // very set at the call site, so a key cannot be written where a
+    // button was meant, nor a bare number where either was.
+    std::vector<std::string> parameterConstantSets;
+
     ValueType returnType = ValueType::Void;
     u32 returnBoundType = kNoBoundType;
 
@@ -126,5 +135,18 @@ u32 FindBoundMethod(const BindingTable& table, u32 typeIndex, const std::string&
 // Returns the index of the added type, or kNoBoundType on failure.
 u32 AddBoundType(BindingTable& table, const FluxionTypeInfo& typeInfo, HandleResolverFn resolve, void* resolveUser,
     DiagnosticList& outDiagnostics);
+
+// Narrows one already-added parameter from "any whole number" to "a
+// constant of the set called `setName`". Reflection cannot say this on
+// its own: what reaches the native is an ordinary number either way, and
+// which set that number has to have come from is a decision about the
+// interface rather than anything about the C function -- so whoever made
+// the type visible is who says it, and whoever wrote the set is who
+// declares it, in the source they hand to the same compilation.
+//
+// Returns false, changing nothing, when there is no such type, method or
+// parameter, or when the parameter is not a whole number to begin with.
+bool BindParameterToConstantSet(BindingTable& table, u32 typeIndex, const std::string& methodName, u32 parameterIndex,
+    const std::string& setName);
 
 } // namespace Fluxion::Script

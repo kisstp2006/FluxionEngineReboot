@@ -37,8 +37,12 @@ constexpr u32 kMaxArrayElements = 1u << 24;
 // How many arguments one call out of the script may carry. Both limits
 // are what lets the arguments be gathered into fixed storage on the way
 // out, with nothing allocated per call.
+// The second is as high as it is because a value the engine cannot take
+// whole -- a position, a colour -- crosses as one argument per number it
+// is made of, and a call carrying two positions and a colour is already
+// ten of them.
 constexpr u32 kMaxNativeArguments = 4;
-constexpr u32 kMaxBoundArguments = 8;
+constexpr u32 kMaxBoundArguments = 16;
 
 // Where one argument of a call into the engine is kept while the call is
 // made. One member per value type rather than a union: the C side is
@@ -387,6 +391,10 @@ private:
 
             case OpCode::PushNull: Push(MakeNullSlot()); break;
 
+            case OpCode::PushZero:
+                for (u32 i = 0; i < instruction.operand && !m_faulted; ++i) Push(Slot{});
+                break;
+
             case OpCode::LoadLocal: {
                 const size_t index = (size_t)m_vm.frames.back().localBase + instruction.operand;
                 if (index >= m_vm.stack.size()) { Fault(kFaultCodeMalformed, "script method read a local outside its frame"); break; }
@@ -402,7 +410,12 @@ private:
                 break;
             }
 
+            case OpCode::LoadLocalWide: ExecuteLoadLocalWide(instruction.operand); break;
+            case OpCode::StoreLocalWide: ExecuteStoreLocalWide(instruction.operand); break;
+
             case OpCode::Pop: Pop(); break;
+
+            case OpCode::DiscardUnder: ExecuteDiscardUnder(instruction.operand); break;
 
             case OpCode::Dup: {
                 if (m_vm.stack.empty()) { Fault(kFaultCodeStackUnderflow, "script value stack underflowed"); break; }
@@ -505,6 +518,21 @@ private:
             case OpCode::NotBool: PushBool(!SlotAsBool(Pop())); break;
 
             case OpCode::IntToFloat: PushFloat((f32)SlotAsInt(Pop())); break;
+
+            // Narrowing a float the int range cannot hold is undefined at
+            // the machine level, and an interpreter must not hand that
+            // through: whatever it produced would differ between machines
+            // and between builds. Both ends are pinned to the nearest int
+            // there is, and a value that is not a number becomes zero --
+            // one fixed answer each, the same everywhere.
+            case OpCode::FloatToInt: {
+                const f32 value = SlotAsFloat(Pop());
+                if (value != value) { PushInt(0); break; }
+                if (value >= 2147483648.0f) { PushInt(2147483647); break; }
+                if (value <= -2147483648.0f) { PushInt(-2147483647 - 1); break; }
+                PushInt((i32)value);
+                break;
+            }
             case OpCode::IntToString: PushText(FormatInt(SlotAsInt(Pop()))); break;
             case OpCode::FloatToString: PushText(FormatFloat(SlotAsFloat(Pop()))); break;
             case OpCode::BoolToString: PushText(FormatBool(SlotAsBool(Pop()))); break;
@@ -538,6 +566,9 @@ private:
                 break;
             }
 
+            case OpCode::LoadFieldWide: ExecuteLoadFieldWide(instruction.operand); break;
+            case OpCode::StoreFieldWide: ExecuteStoreFieldWide(instruction.operand); break;
+
             case OpCode::NewArray: ExecuteNewArray(instruction.operand); break;
 
             case OpCode::ArrayLength: {
@@ -545,47 +576,24 @@ private:
                 if (!RequireObject(Pop(), handle)) break;
 
                 u32 count = 0;
-                if (!RequireSequence(handle, count)) break;
+                u32 width = 1;
+                if (!RequireSequence(handle, count, width)) break;
                 PushInt((i32)count);
                 break;
             }
 
-            case OpCode::LoadElement: {
-                const i32 position = SlotAsInt(Pop());
-                ObjectHandle handle;
-                if (!RequireObject(Pop(), handle)) break;
+            // A whole element, however many slots the sequence type says
+            // that is; a field of one, at the offset the instruction
+            // names.
+            case OpCode::LoadElement: ExecuteLoadElement(instruction.operand, 0, instruction.operand); break;
+            case OpCode::StoreElement: ExecuteStoreElement(instruction.operand, 0, instruction.operand); break;
 
-                u32 count = 0;
-                if (!RequireSequence(handle, count)) break;
-                if (!RequireInRange(position, count)) break;
-
-                Slot value;
-                if (!m_vm.heap.ReadField(handle, (u32)position, value))
-                {
-                    Fault(kFaultCodeMalformed, "script read a sequence element that does not exist");
-                    break;
-                }
-                Push(value);
+            case OpCode::LoadElementField:
+                ExecuteLoadElement(0, SlotSpanStart(instruction.operand), SlotSpanCount(instruction.operand));
                 break;
-            }
-
-            case OpCode::StoreElement: {
-                const Slot value = Pop();
-                const i32 position = SlotAsInt(Pop());
-                ObjectHandle handle;
-                if (!RequireObject(Pop(), handle)) break;
-
-                u32 count = 0;
-                if (!RequireSequence(handle, count)) break;
-                if (!RequireInRange(position, count)) break;
-
-                if (!m_vm.heap.WriteField(handle, (u32)position, value))
-                {
-                    Fault(kFaultCodeMalformed, "script wrote a sequence element that does not exist");
-                    break;
-                }
+            case OpCode::StoreElementField:
+                ExecuteStoreElement(0, SlotSpanStart(instruction.operand), SlotSpanCount(instruction.operand));
                 break;
-            }
 
             case OpCode::Jump: m_vm.frames.back().ip = instruction.operand; break;
 
@@ -603,8 +611,9 @@ private:
             case OpCode::CallNative: ExecuteNativeCall(instruction.operand); break;
             case OpCode::CallBound: ExecuteBoundCall(instruction.operand); break;
 
-            case OpCode::Return: ExecuteReturn(true); break;
-            case OpCode::ReturnVoid: ExecuteReturn(false); break;
+            case OpCode::Return: ExecuteReturn(1); break;
+            case OpCode::ReturnVoid: ExecuteReturn(0); break;
+            case OpCode::ReturnWide: ExecuteReturn(instruction.operand); break;
 
             case OpCode::SafePoint:
                 // A suspended run's own operand stack is not described by
@@ -624,6 +633,187 @@ private:
                 Fault(kFaultCodeMalformed, "script module contains an unrecognized instruction");
                 break;
         }
+    }
+
+    // --- Values wider than one slot -----------------------------------------
+
+    // The slots a run occupies, checked against what is actually there.
+    // Every one of these is reached by a computed index, so a module that
+    // named a run the frame or the object does not have is stopped rather
+    // than allowed to read past the end of either.
+    bool RequireStackDepth(size_t count)
+    {
+        if (m_vm.stack.size() >= count) return true;
+        Fault(kFaultCodeStackUnderflow, "script value stack underflowed");
+        return false;
+    }
+
+    void ExecuteLoadLocalWide(u32 operand)
+    {
+        const u32 slot = SlotSpanStart(operand);
+        const u32 count = SlotSpanCount(operand);
+        const size_t base = (size_t)m_vm.frames.back().localBase;
+
+        if (base + slot + count > m_vm.stack.size())
+        {
+            Fault(kFaultCodeMalformed, "script method read a local outside its frame");
+            return;
+        }
+
+        for (u32 i = 0; i < count; ++i)
+        {
+            Push(m_vm.stack[base + slot + i]);
+            if (m_faulted) return;
+        }
+    }
+
+    void ExecuteStoreLocalWide(u32 operand)
+    {
+        const u32 slot = SlotSpanStart(operand);
+        const u32 count = SlotSpanCount(operand);
+        const size_t base = (size_t)m_vm.frames.back().localBase;
+
+        if (!RequireStackDepth(count)) return;
+        const size_t first = m_vm.stack.size() - count;
+        if (base + slot + count > m_vm.stack.size())
+        {
+            Fault(kFaultCodeMalformed, "script method wrote a local outside its frame");
+            return;
+        }
+
+        // Lowest slot first, so the value keeps the layout it was built
+        // with wherever it is put.
+        for (u32 i = 0; i < count; ++i) m_vm.stack[base + slot + i] = m_vm.stack[first + i];
+        m_vm.stack.resize(first);
+    }
+
+    // Drops the slots underneath the top of the stack, keeping what sits
+    // above them: how one field is taken out of a value that belongs to
+    // no storage.
+    void ExecuteDiscardUnder(u32 operand)
+    {
+        const u32 dropped = SlotSpanStart(operand);
+        const u32 kept = SlotSpanCount(operand);
+
+        if (!RequireStackDepth((size_t)dropped + kept)) return;
+
+        const size_t first = m_vm.stack.size() - kept;
+        for (u32 i = 0; i < kept; ++i) m_vm.stack[first - dropped + i] = m_vm.stack[first + i];
+        m_vm.stack.resize(m_vm.stack.size() - dropped);
+    }
+
+    void ExecuteLoadFieldWide(u32 operand)
+    {
+        const u32 slot = SlotSpanStart(operand);
+        const u32 count = SlotSpanCount(operand);
+
+        ObjectHandle handle;
+        if (!RequireObject(Pop(), handle)) return;
+
+        for (u32 i = 0; i < count; ++i)
+        {
+            Slot value;
+            if (!m_vm.heap.ReadField(handle, slot + i, value))
+            {
+                Fault(kFaultCodeMalformed, "script read a field the object does not have");
+                return;
+            }
+            Push(value);
+            if (m_faulted) return;
+        }
+    }
+
+    void ExecuteStoreFieldWide(u32 operand)
+    {
+        const u32 slot = SlotSpanStart(operand);
+        const u32 count = SlotSpanCount(operand);
+
+        // The object was pushed before the value, so it sits underneath
+        // the whole run and is read out rather than popped first.
+        if (!RequireStackDepth((size_t)count + 1)) return;
+
+        const size_t first = m_vm.stack.size() - count;
+        ObjectHandle handle;
+        if (!RequireObject(m_vm.stack[first - 1], handle)) return;
+
+        for (u32 i = 0; i < count; ++i)
+        {
+            if (m_vm.heap.WriteField(handle, slot + i, m_vm.stack[first + i])) continue;
+            Fault(kFaultCodeMalformed, "script wrote a field the object does not have");
+            return;
+        }
+        m_vm.stack.resize(first - 1);
+    }
+
+    // `declaredWidth` is what the instruction said one element occupies,
+    // and is zero for the forms that name a field instead. It is checked
+    // against the sequence type rather than trusted: a module claiming a
+    // width the type does not have would otherwise read past an element.
+    bool ResolveElement(ObjectHandle handle, i32 position, u32 declaredWidth, u32 offset, u32 count, u32& outFirstSlot)
+    {
+        u32 elements = 0;
+        u32 width = 1;
+        if (!RequireSequence(handle, elements, width)) return false;
+        if (declaredWidth != 0 && declaredWidth != width)
+        {
+            Fault(kFaultCodeMalformed, "script reached a sequence element with a width the sequence does not have");
+            return false;
+        }
+        if (offset + count > width)
+        {
+            Fault(kFaultCodeMalformed, "script reached past the end of a sequence element");
+            return false;
+        }
+        if (!RequireInRange(position, elements)) return false;
+
+        outFirstSlot = (u32)position * width + offset;
+        return true;
+    }
+
+    void ExecuteLoadElement(u32 declaredWidth, u32 offset, u32 count)
+    {
+        const i32 position = SlotAsInt(Pop());
+        ObjectHandle handle;
+        if (!RequireObject(Pop(), handle)) return;
+
+        u32 first = 0;
+        if (!ResolveElement(handle, position, declaredWidth, offset, count, first)) return;
+
+        for (u32 i = 0; i < count; ++i)
+        {
+            Slot value;
+            if (!m_vm.heap.ReadField(handle, first + i, value))
+            {
+                Fault(kFaultCodeMalformed, "script read a sequence element that does not exist");
+                return;
+            }
+            Push(value);
+            if (m_faulted) return;
+        }
+    }
+
+    void ExecuteStoreElement(u32 declaredWidth, u32 offset, u32 count)
+    {
+        // The sequence and the position were pushed before the value, so
+        // both sit underneath the whole run.
+        if (!RequireStackDepth((size_t)count + 2)) return;
+
+        const size_t start = m_vm.stack.size() - count;
+        const i32 position = SlotAsInt(m_vm.stack[start - 1]);
+
+        ObjectHandle handle;
+        if (!RequireObject(m_vm.stack[start - 2], handle)) return;
+
+        u32 first = 0;
+        if (!ResolveElement(handle, position, declaredWidth, offset, count, first)) return;
+
+        for (u32 i = 0; i < count; ++i)
+        {
+            if (m_vm.heap.WriteField(handle, first + i, m_vm.stack[start + i])) continue;
+            Fault(kFaultCodeMalformed, "script wrote a sequence element that does not exist");
+            return;
+        }
+        m_vm.stack.resize(start - 2);
     }
 
     void ExecuteNewObject(u32 classIndex)
@@ -662,6 +852,13 @@ private:
             return;
         }
 
+        const u32 width = m_vm.module.classes[classIndex].elementSlotCount;
+        if (width == 0)
+        {
+            Fault(kFaultCodeMalformed, "script allocation names a sequence type whose elements have no size");
+            return;
+        }
+
         // A count that came out negative is a mistake in the script, not
         // a request for a very large sequence: it is reported here rather
         // than wrapped around into one.
@@ -670,13 +867,16 @@ private:
             Fault(kFaultCodeArrayLength, "script asked for a sequence with a negative number of elements");
             return;
         }
-        if ((u32)requested > kMaxArrayElements)
+        // The limit is on elements, so a sequence of a wide value type
+        // reaches it that much sooner -- and the multiplication below can
+        // never wrap, because this is what it is checked against.
+        if ((u32)requested > kMaxArrayElements / width)
         {
             Fault(kFaultCodeArrayLength, "script asked for a sequence with more elements than one may hold");
             return;
         }
 
-        const ObjectHandle handle = m_vm.heap.Allocate(classIndex, (u32)requested);
+        const ObjectHandle handle = m_vm.heap.Allocate(classIndex, (u32)requested * width);
         if (handle.IsNull())
         {
             Fault(kFaultCodeMalformed, "script could not create a sequence");
@@ -691,7 +891,9 @@ private:
 
     // The object is known to be live by the time this runs; what is left
     // to establish is that it is a sequence at all, and how long it is.
-    bool RequireSequence(ObjectHandle handle, u32& outCount)
+    // The slots it was created with are its element count times the width
+    // of one element, so the count is what those two give back together.
+    bool RequireSequence(ObjectHandle handle, u32& outCount, u32& outWidth)
     {
         const u32 classIndex = m_vm.heap.ClassOf(handle);
         if (classIndex >= m_vm.module.classes.size() || !m_vm.module.classes[classIndex].isArray)
@@ -699,11 +901,23 @@ private:
             Fault(kFaultCodeMalformed, "script used something that is not a sequence as one");
             return false;
         }
-        if (!m_vm.heap.TrySlotCount(handle, outCount))
+
+        const u32 width = m_vm.module.classes[classIndex].elementSlotCount;
+        if (width == 0)
+        {
+            Fault(kFaultCodeMalformed, "script used a sequence whose elements have no size");
+            return false;
+        }
+
+        u32 slots = 0;
+        if (!m_vm.heap.TrySlotCount(handle, slots))
         {
             Fault(kFaultCodeStaleReference, "script reached through a reference whose object no longer exists");
             return false;
         }
+
+        outWidth = width;
+        outCount = slots / width;
         return true;
     }
 
@@ -715,10 +929,12 @@ private:
     }
 
     // How many stack slots a call to `function` consumes: its declared
-    // parameters, plus the receiver when it has one.
+    // parameters, plus the receiver when it has one. Both are counted in
+    // slots rather than in names, since a value type occupies as many as
+    // it has fields.
     static size_t IncomingSlotCount(const FunctionInfo& function)
     {
-        return function.parameterTypes.size() + (function.isInstance ? 1u : 0u);
+        return (size_t)function.parameterSlotCount + function.receiverSlotCount;
     }
 
     // Reads back the receiver a call already pushed, without disturbing
@@ -813,7 +1029,10 @@ private:
             return;
         }
 
-        if (callee.isInstance)
+        // A receiver that is a value is simply the frame's lowest slots:
+        // there is nothing to reach through and nothing that could have
+        // gone away, so only an object receiver is checked.
+        if (callee.isInstance && !callee.receiverIsValue)
         {
             ObjectHandle receiver;
             if (!RequireObject(m_vm.stack[m_vm.stack.size() - incoming], receiver)) return;
@@ -836,19 +1055,37 @@ private:
         m_vm.frames.push_back(frame);
     }
 
-    void ExecuteReturn(bool withValue)
+    // `count` is how many slots the answer occupies: none for a void
+    // return, one for most types, and a run of them for a value type.
+    void ExecuteReturn(u32 count)
     {
-        const Slot value = withValue ? Pop() : Slot{};
-        const u32 base = m_vm.frames.back().localBase;
+        const size_t base = (size_t)m_vm.frames.back().localBase;
+        if (m_vm.stack.size() < base + count)
+        {
+            Fault(kFaultCodeStackUnderflow, "script value stack underflowed");
+            return;
+        }
+
+        // The answer is sitting at the top of the frame; moving it down
+        // to where the frame started is what leaves it behind for the
+        // caller once the frame itself is gone.
+        const size_t first = m_vm.stack.size() - count;
+        for (u32 i = 0; i < count; ++i) m_vm.stack[base + i] = m_vm.stack[first + i];
+
         m_vm.frames.pop_back();
-        m_vm.stack.resize(base);
 
         if (m_vm.frames.empty())
         {
-            m_returnSlot = value;
+            // Nothing is left to hand the answer to, so it travels back
+            // to whoever started the run instead. A value wider than one
+            // slot has no way through here, and no entry point that
+            // answers with one is ever reached.
+            m_returnSlot = count != 0 ? m_vm.stack[base] : Slot{};
+            m_vm.stack.resize(base);
             return;
         }
-        if (withValue) Push(value);
+
+        m_vm.stack.resize(base + count);
     }
 
     void ExecuteNativeCall(u32 nativeIndex)
@@ -896,6 +1133,25 @@ private:
             // for the next point between two statements.
             case NativeFunctionId::GcCollect: m_vm.collectPending = true; break;
             case NativeFunctionId::GcLiveObjects: PushInt((i32)m_vm.heap.LiveObjects()); break;
+
+            // A negative square root has no answer, and answering with
+            // one anyway would put a value into the script that every
+            // later comparison behaves strangely around. Zero is the
+            // nearest thing that is still a number.
+            case NativeFunctionId::MathSqrt: {
+                const f32 value = SlotAsFloat(arguments[0]);
+                PushFloat(value > 0.0f ? std::sqrt(value) : 0.0f);
+                break;
+            }
+            case NativeFunctionId::MathSin: PushFloat(std::sin(SlotAsFloat(arguments[0]))); break;
+            case NativeFunctionId::MathCos: PushFloat(std::cos(SlotAsFloat(arguments[0]))); break;
+
+            // Both answer with a float rather than a whole number: there
+            // is no way in the language to write the conversion between
+            // the two, so answering with one would make the result of a
+            // rounding unusable in the arithmetic it came out of.
+            case NativeFunctionId::MathFloor: PushFloat(std::floor(SlotAsFloat(arguments[0]))); break;
+            case NativeFunctionId::MathCeil: PushFloat(std::ceil(SlotAsFloat(arguments[0]))); break;
 
             default:
                 Fault(kFaultCodeMalformed, "script call names a built-in that does not exist");
@@ -1057,6 +1313,10 @@ ScriptValue ValueFromSlot(const Vm& vm, ValueType type, Slot slot)
     switch (type)
     {
         case ValueType::Int: value.intValue = SlotAsInt(slot); break;
+        // A named constant travels as the number it stands for. Which set
+        // it belongs to is the script's business: a host that reads one
+        // gets the value, not a way to make up a new one.
+        case ValueType::Enum: value.intValue = SlotAsInt(slot); break;
         case ValueType::Float: value.floatValue = SlotAsFloat(slot); break;
         case ValueType::Bool: value.boolValue = SlotAsBool(slot); break;
         case ValueType::String: value.stringValue = StringAt(vm, SlotAsStringId(slot)); break;
@@ -1076,6 +1336,14 @@ bool SlotFromValue(Vm& vm, ValueType declared, const ScriptValue& value, Slot& o
     {
         case ValueType::Int:
             if (value.type != ValueType::Int) return false;
+            outSlot = MakeIntSlot(value.intValue);
+            return true;
+
+        // A named constant is not a number as far as the language is
+        // concerned, so a plain number is not one of the things it
+        // accepts here either.
+        case ValueType::Enum:
+            if (value.type != ValueType::Enum) return false;
             outSlot = MakeIntSlot(value.intValue);
             return true;
 
@@ -1348,6 +1616,8 @@ Fluxion::Foundation::Result<ScriptValue> Invoke(Vm* vm, const char* qualifiedNam
         return ResultType::Error(4, "the requested script method belongs to an instance and cannot be invoked this way");
     if (!entry.hasBody)
         return ResultType::Error(5, "the requested script method has no body");
+    if (entry.returnSlotCount > 1)
+        return ResultType::Error(6, "the requested script method answers with a value type, which does not travel outside the machine");
 
     return RunEntry(*vm, (u32)functionIndex, std::vector<Slot>());
 }
@@ -1512,7 +1782,7 @@ Fluxion::Foundation::Result<ObjectHandle> NewInstance(Vm* vm, u32 classIndex, co
     if (classIndex >= vm->module.classes.size()) return ResultType::Error(2, "the script module has no class with that index");
 
     const ClassInfo& classInfo = vm->module.classes[classIndex];
-    if (classInfo.isInterface || classInfo.isStatic || classInfo.isArray)
+    if (classInfo.isInterface || classInfo.isStatic || classInfo.isArray || classInfo.isStruct || classInfo.isEnum)
         return ResultType::Error(3, "this script class is not one instances can be made of");
 
     const u32 constructor = classInfo.constructorFunction;
@@ -1550,6 +1820,11 @@ Fluxion::Foundation::Result<ScriptValue> InvokeMethod(Vm* vm, ObjectHandle insta
 
     if (!vm->module.functions[methodIndex].isInstance)
         return ResultType::Error(4, "the requested script method does not run on an instance");
+    // A method on a value type runs on a copy the caller supplies, and a
+    // handle names an object rather than a value, so there is nothing
+    // here that could be that copy.
+    if (vm->module.functions[methodIndex].receiverIsValue)
+        return ResultType::Error(4, "the requested script method runs on a value type and cannot be reached through an object");
 
     const u32 target = DispatchTarget(*vm, methodIndex, instance);
     if (target >= vm->module.functions.size())
@@ -1559,6 +1834,8 @@ Fluxion::Foundation::Result<ScriptValue> InvokeMethod(Vm* vm, ObjectHandle insta
     if (!callee.hasBody) return ResultType::Error(6, "the requested script method has no body");
     if (callee.parameterTypes.size() != (size_t)argCount)
         return ResultType::Error(7, "the script method was given the wrong number of arguments");
+    if (callee.returnSlotCount > 1 || callee.parameterSlotCount != (u32)argCount)
+        return ResultType::Error(9, "the script method takes or answers with a value type, which does not travel outside the machine");
 
     std::vector<Slot> incoming;
     incoming.push_back(MakeObjectSlot(instance));
@@ -1581,6 +1858,8 @@ Fluxion::Foundation::Result<ScriptValue> InvokeStatic(Vm* vm, u32 methodIndex, c
     if (!callee.hasBody) return ResultType::Error(4, "the requested script method has no body");
     if (callee.parameterTypes.size() != (size_t)argCount)
         return ResultType::Error(5, "the script method was given the wrong number of arguments");
+    if (callee.returnSlotCount > 1 || callee.parameterSlotCount != (u32)argCount)
+        return ResultType::Error(7, "the script method takes or answers with a value type, which does not travel outside the machine");
 
     std::vector<Slot> incoming;
     if (!GatherArguments(*vm, callee, args, argCount, incoming))

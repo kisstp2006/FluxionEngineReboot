@@ -11,7 +11,10 @@ namespace Fluxion::Script
 //
 // A declaration with type parameters costs nothing until something names
 // it with arguments, so a program that never uses these carries no trace
-// of them.
+// of them. A value type is not free in the same way -- it is laid out
+// whether or not anything names it -- but it is only a handful of numbers
+// and a set of methods, and having every program agree on what a position
+// or a colour is worth far more than that.
 const char* PreludeSource();
 
 // The name diagnostics from the prelude are reported against. A message

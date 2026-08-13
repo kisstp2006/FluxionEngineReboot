@@ -1,0 +1,74 @@
+// What ends up on the screen, decided here rather than by the program
+// that starts the demo. The program brings a device up, makes the
+// geometry, the material and the pipeline, and puts each of the three
+// under a name; from that point on, whether anything is drawn at all --
+// and what colour it is, and what else is drawn around it -- is this
+// file's business.
+//
+// This runs during the scene's turn, which the demo takes between opening
+// a frame on the renderer and closing it: a draw asked for outside that
+// window has nowhere to go and is dropped.
+class CubeRenderer : Component
+{
+    Mesh mesh;
+    Material material;
+    RenderPipeline pipeline;
+
+    bool ready;
+    bool showAxes;
+
+    void Start()
+    {
+        // Everything the host was meant to have put within reach is
+        // checked for once, here, rather than every frame. A demo that
+        // was started without them says so and then draws nothing, which
+        // is a great deal easier to work out from than an empty window.
+        this.ready = Assets.HasMesh("Cube") && Assets.HasMaterial("Cube") && Assets.HasPipeline("Cube");
+        if (!this.ready)
+        {
+            Debug.LogError("Nothing was registered under the name 'Cube', so there is nothing for this to draw.");
+            return;
+        }
+
+        this.mesh = Assets.FindMesh("Cube");
+        this.material = Assets.FindMaterial("Cube");
+        this.pipeline = Assets.FindPipeline("Cube");
+        this.showAxes = true;
+    }
+
+    void Update(float deltaTime)
+    {
+        if (!this.ready) { return; }
+
+        if (Input.WasKeyPressed(KeyCode.Tab)) { this.showAxes = !this.showAxes; }
+
+        // A slow wash through the colours, worked out from how long the
+        // demo has been running rather than from a count of frames -- so
+        // it looks the same however fast the machine it is on happens to
+        // be.
+        float pulse = 0.5f + 0.5f * Mathf.Sin(Time.ElapsedTime());
+        Color tint = new Color(1.0f, 0.5f + 0.5f * pulse, 1.0f - 0.5f * pulse, 1.0f);
+
+        // A parameter set on a material reaches nothing until the
+        // material is told to send what has changed, and a draw only
+        // picks up what was sent before it.
+        MaterialValues.SetVector3(this.material, "tint", new Vector3(tint.r, tint.g, tint.b));
+        this.material.FlushDirty();
+
+        // Where it goes is the object's business: the mesh is drawn at
+        // whatever place, turn and size the object this is attached to
+        // has ended up with this frame.
+        Renderer.DrawMesh(this.mesh, this.material, this.pipeline, this.gameObject);
+
+        if (!this.showAxes) { return; }
+
+        Vector3 centre = new Vector3(
+            this.transform.GetLocalPositionX(),
+            this.transform.GetLocalPositionY(),
+            this.transform.GetLocalPositionZ());
+
+        Draw.Line(centre, centre.Add(new Vector3(1.0f, 0.0f, 0.0f)), new Color(1.0f, 0.2f, 0.2f, 1.0f));
+        Draw.Line(centre, centre.Add(new Vector3(0.0f, 1.0f, 0.0f)), new Color(0.2f, 1.0f, 0.2f, 1.0f));
+        Draw.Line(centre, centre.Add(new Vector3(0.0f, 0.0f, 1.0f)), new Color(0.2f, 0.2f, 1.0f, 1.0f));
+    }
+}

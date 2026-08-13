@@ -24,6 +24,14 @@ namespace Fluxion::Script
 // by a collection, never compared with `null`, and the object it names
 // goes away when the engine says so and not when the script stops
 // mentioning it.
+//
+// `Struct` is the one type whose values are not confined to a single
+// slot: a declared value type occupies as many slots as its fields need,
+// and which declaration is meant travels beside the type exactly as it
+// does for a reference. `Enum` is a named set of whole numbers, one slot
+// wide, and likewise carries the declaration it belongs to -- which is
+// what keeps two differently named sets from being mistaken for each
+// other or for a plain `int`.
 enum class ValueType
 {
     Void,
@@ -34,6 +42,8 @@ enum class ValueType
     Object,
     Null,
     Handle,
+    Struct,
+    Enum,
     Unknown,
 };
 
@@ -49,16 +59,20 @@ inline const char* ValueTypeName(ValueType type)
         case ValueType::Object: return "a reference";
         case ValueType::Null: return "null";
         case ValueType::Handle: return "an engine handle";
+        case ValueType::Struct: return "a value type";
+        case ValueType::Enum: return "a named constant";
         default: return "<unknown>";
     }
 }
 
 // One value slot on the virtual machine's stack, and one local variable.
 // Fixed at eight bytes so the compiler can compute every frame's size
-// statically: `int`, `float`, `bool`, a string handle and an object
-// reference each occupy exactly one slot. The slot itself is untyped --
-// the opcode that reads it already knows what it holds, so there is no
-// runtime tag to check.
+// statically: `int`, `float`, `bool`, a named constant, a string handle
+// and an object reference each occupy exactly one slot. A declared value
+// type occupies one slot per field, laid out in declaration order and
+// always moved whole, so its width is equally a compile-time number. The
+// slot itself is untyped -- the opcode that reads it already knows what
+// it holds, so there is no runtime tag to check.
 struct Slot
 {
     u64 bits = 0;

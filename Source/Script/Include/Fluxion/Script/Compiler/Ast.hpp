@@ -83,6 +83,7 @@ enum class ExprKind
     Unary,
     Binary,
     Assign,
+    Convert,
 };
 
 struct Expr
@@ -205,6 +206,10 @@ enum class MemberBinding
     // own, so `base` is left unanalyzed.
     Scope,
 
+    // One of the constants a named set declares. Its whole value is known
+    // here, so `base` is left unanalyzed and nothing is read at run time.
+    EnumConstant,
+
     // How many elements the sequence `base` evaluates to was created
     // with. Read-only, and the one member a sequence has.
     ArrayLength,
@@ -224,7 +229,14 @@ struct MemberExpr : Expr
     SourceLocation typeArgLocation;
 
     MemberBinding binding = MemberBinding::Unresolved;
+
+    // Where the member sits: within the object for a field of a
+    // reference, and within the value itself for a field of a value type.
     u32 fieldSlot = 0;
+
+    // What the member is worth, for a binding that settles it at compile
+    // time.
+    long long constantValue = 0;
 
     MemberExpr() : Expr(ExprKind::Member) {}
 };
@@ -333,6 +345,20 @@ struct AssignExpr : Expr
     ValueType operandType = ValueType::Unknown;
 
     AssignExpr() : Expr(ExprKind::Assign) {}
+};
+
+// Turns a number of one kind into a number of the other, said out loud at
+// the place it happens. Only 'int' and 'float' can be named here, and both
+// are keywords, which is what keeps `(int)x` from ever being mistaken for
+// a parenthesised expression -- a type name in that position would be
+// genuinely ambiguous.
+struct ConvertExpr : Expr
+{
+    ValueType target = ValueType::Unknown;
+    SourceLocation targetLocation;
+    ExprPtr operand;
+
+    ConvertExpr() : Expr(ExprKind::Convert) {}
 };
 
 // --- Statements --------------------------------------------------------
@@ -458,6 +484,16 @@ struct ContinueStmt : Stmt
 
 enum class DeclKind { Class, Method, Field };
 
+// One constant of a named set, as it was written. A declaration that gave
+// no number continues from the one before it, which is settled while
+// parsing so nothing downstream has to know the difference.
+struct EnumeratorDecl
+{
+    std::string name;
+    long long value = 0;
+    SourceLocation location;
+};
+
 struct Decl
 {
     DeclKind kind;
@@ -517,6 +553,16 @@ struct MethodDecl : Decl
     u32 baseConstructorFunction = kNoFunction;
     std::vector<u8> localIsReference;
 
+    // How many slots the answer, the parameters and the receiver occupy,
+    // which is one apiece until a value type is involved. A constructor
+    // of a value type is the one method whose answer is not what it was
+    // written to return: it is handed a zeroed value in its receiver
+    // slots and answers with what it made of it.
+    u32 returnSlotCount = 0;
+    u32 parameterSlotCount = 0;
+    u32 receiverSlotCount = 0;
+    bool receiverIsValue = false;
+
     MethodDecl() : Decl(DeclKind::Method) {}
 };
 
@@ -525,6 +571,17 @@ struct ClassDecl : Decl
     std::string name;
     bool isStatic = false;
     bool isInterface = false;
+
+    // A value type: copied wherever it goes, never allocated, and never
+    // reached through a reference. Its fields and methods are written and
+    // read exactly as a class's are.
+    bool isStruct = false;
+
+    // A named set of whole numbers, which declares constants instead of
+    // fields and has no methods at all.
+    bool isEnum = false;
+    std::vector<EnumeratorDecl> enumerators;
+
     std::vector<AttributeNode> attributes;
 
     // The names written between angle brackets after the declared name.
@@ -549,6 +606,7 @@ struct ClassDecl : Decl
     bool isArray = false;
     TypeRef arrayElementType;
     bool arrayElementIsReference = false;
+    u32 arrayElementSlotCount = 1;
 
     // Filled in by semantic analysis: everything the module's class table
     // needs.

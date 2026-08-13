@@ -1,9 +1,11 @@
-# Private/Events/*.c and Private/Input/*.c are platform-independent (pure
-# Foundation-backed logic) and always compiled in, alongside whichever OS
-# backend applies.
+# Private/Events/*.c, Private/Input/*.c and Private/Time/*.c are
+# platform-independent (Foundation-backed logic over a counter Platform
+# already offers everywhere) and always compiled in, alongside whichever
+# OS backend applies.
 file(GLOB APPLICATION_COMMON_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/Private/Events/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/Private/Input/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Private/Time/*.c"
 )
 
 set(APPLICATION_SOURCES ${APPLICATION_COMMON_SOURCES})
@@ -25,6 +27,11 @@ engine_add_module(
     SOURCES ${APPLICATION_SOURCES}
     PUBLIC_DEPENDENCIES
         Fluxion::Foundation
+    PRIVATE_DEPENDENCIES
+        # Private/Time/Time.c only -- the counter it builds on is the
+        # platform's, but no public header of this module exposes it, so
+        # nothing that links Application has to know Platform exists.
+        Fluxion::Platform
 )
 
 if(WIN32)

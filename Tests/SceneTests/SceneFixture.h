@@ -2,6 +2,7 @@
 
 #include "TestFramework.h"
 
+#include <Fluxion/Scene/EngineScript.hpp>
 #include <Fluxion/Scene/Scene.h>
 #include <Fluxion/Scene/SceneScript.hpp>
 #include <Fluxion/Script/Script.hpp>
@@ -27,7 +28,12 @@ public:
     ScriptedScene(const ScriptedScene&) = delete;
     ScriptedScene& operator=(const ScriptedScene&) = delete;
 
-    bool Start(TestContext& ctx, const char* label, const std::string& source)
+    // `withEngineTypes` also makes the clock, the input state and the
+    // drawing surface visible, and compiles the sets of constants that go
+    // with them. Left out by default: a test about a scene should fail
+    // for reasons about that scene, not because something the rest of the
+    // engine offers could not be described.
+    bool Start(TestContext& ctx, const char* label, const std::string& source, bool withEngineTypes = false)
     {
         using namespace Fluxion::Script;
 
@@ -48,10 +54,19 @@ public:
             return false;
         }
 
+        if (withEngineTypes && !Fluxion::Scene::BuildEngineBindings(m_scene, m_bindings, diagnostics))
+        {
+            std::fprintf(stderr, "  FAIL: '%s' could not describe the rest of the engine to a script\n", label);
+            Report(diagnostics);
+            ++ctx.failures;
+            return false;
+        }
+
         CompileOptions options;
         options.fileName = label;
         options.bindings = &m_bindings;
         options.hostPrelude = Fluxion::Scene::ComponentPreludeSource();
+        if (withEngineTypes) options.hostPrelude += Fluxion::Scene::EnginePreludeSource();
 
         auto compiled = Compile(source, options, diagnostics);
         if (!compiled.IsOk())

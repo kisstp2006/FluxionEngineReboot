@@ -11,6 +11,7 @@ void Test_Input_Keyboard_Run(TestContext* ctx);
 void Test_Input_Mouse_Run(TestContext* ctx);
 void Test_Input_Gamepad_Run(TestContext* ctx);
 void Test_InputAction_Run(TestContext* ctx);
+void Test_Time_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -27,6 +28,7 @@ int main(void)
     Test_Input_Mouse_Run(&ctx);
     Test_Input_Gamepad_Run(&ctx);
     Test_InputAction_Run(&ctx);
+    Test_Time_Run(&ctx);
 
     if (ctx.failures == 0)
     {

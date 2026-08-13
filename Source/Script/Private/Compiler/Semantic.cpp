@@ -32,6 +32,11 @@ bool IsPoisoned(ValueType type) { return type == ValueType::Unknown; }
 
 bool IsReference(ValueType type) { return type == ValueType::Object || type == ValueType::Null; }
 
+// A type whose values are copied rather than named. Neither of these is
+// ever assignable to or from anything but itself, and neither is ever
+// followed by a collection.
+bool IsValue(ValueType type) { return type == ValueType::Struct || type == ValueType::Enum; }
+
 class Analyzer
 {
 public:
@@ -69,6 +74,15 @@ public:
             for (size_t m = 0; m < decl->methods.size(); ++m)
                 AnalyzeMethod(*static_cast<MethodDecl*>(decl->methods[m].get()));
             m_currentClass = nullptr;
+        }
+
+        // How wide one element of a sequence is can only be settled once
+        // every declaration exists, since naming a sequence is itself one
+        // of the things that creates one.
+        for (u32 i = 0; i < (u32)m_classes.size(); ++i)
+        {
+            if (!m_classes[i].isArray) continue;
+            m_classes[i].decl->arrayElementSlotCount = SlotCountOf(m_classes[i].elementType);
         }
 
         return !m_diagnostics.HasErrors();
@@ -118,6 +132,16 @@ private:
         // Fields of the whole chain, the base's first, so a slot means
         // the same thing whichever class a reference is seen as.
         std::vector<FieldEntry> fields;
+
+        // How many slots the fields occupy altogether, which is more than
+        // their number as soon as one of them is a value type.
+        u32 fieldSlotCount = 0;
+
+        // How many slots one value of this type occupies: one for
+        // anything named through a reference and for a named constant,
+        // and the whole field area for a value type, which is what gets
+        // copied wherever it goes.
+        u32 valueSlotCount = 1;
 
         std::vector<u32> vtable;
         std::vector<MethodDecl*> vtableMethods;
@@ -183,10 +207,10 @@ private:
 
     std::string Quoted(ValueType type, u32 classIndex) const
     {
-        if (type == ValueType::Object)
+        if (type == ValueType::Object || type == ValueType::Struct || type == ValueType::Enum)
         {
             if (classIndex < m_classes.size()) return "'" + m_classes[classIndex].decl->name + "'";
-            return "a reference";
+            return ValueTypeName(type);
         }
         if (type == ValueType::Handle)
         {
@@ -218,6 +242,19 @@ private:
                                       m_templates.find(classDecl->name) != m_templates.end();
             if (alreadyTaken)
                 Error(classDecl->location, "'" + classDecl->name + "' is declared more than once");
+
+            // A pattern is a class and nothing else. A value type is laid
+            // out into whatever holds it, and a set of named constants
+            // has no members to vary at all, so neither has anything a
+            // type argument could stand for.
+            if (!classDecl->typeParams.empty() && (classDecl->isStruct || classDecl->isEnum))
+            {
+                Error(classDecl->typeParamLocations[0],
+                    "'" + classDecl->name + "' is " + (classDecl->isStruct ? "a struct" : "an enum") +
+                        ", so it cannot be declared with type parameters");
+                classDecl->typeParams.clear();
+                classDecl->typeParamLocations.clear();
+            }
 
             if (!classDecl->typeParams.empty())
             {
@@ -291,6 +328,12 @@ private:
         m_classes[index].prepared = true;
         if (m_classes[index].isArray) return;
 
+        if (m_classes[index].decl->isEnum)
+        {
+            CheckEnumShape(index);
+            return;
+        }
+
         ResolveBaseList(index);
         CheckClassShape(index);
         SynthesizeConstructor(index);
@@ -298,9 +341,66 @@ private:
         ResolveMemberTypes(index);
     }
 
+    // A set of named constants exists so a number can be given a name:
+    // the language has no field a value can be stored in once and read
+    // everywhere, so without this there is no way to write a constant
+    // down anywhere but at each place it is used.
+    void CheckEnumShape(u32 index)
+    {
+        ClassEntry& entry = m_classes[index];
+        ClassDecl& decl = *entry.decl;
+
+        entry.valueSlotCount = 1;
+        entry.layoutState = 2;
+
+        if (decl.enumerators.empty())
+            Error(decl.location, "'" + decl.name + "' declares no constants, so nothing can ever have its value");
+
+        for (size_t i = 0; i < decl.enumerators.size(); ++i)
+        {
+            bool duplicate = false;
+            for (size_t j = 0; j < i; ++j)
+                duplicate = duplicate || decl.enumerators[j].name == decl.enumerators[i].name;
+            if (duplicate)
+                Error(decl.enumerators[i].location,
+                    "'" + decl.name + "' declares the constant '" + decl.enumerators[i].name + "' more than once");
+        }
+    }
+
+    const EnumeratorDecl* FindEnumerator(u32 index, const std::string& name) const
+    {
+        if (index >= m_classes.size()) return nullptr;
+        for (const EnumeratorDecl& entry : m_classes[index].decl->enumerators)
+        {
+            if (entry.name == name) return &entry;
+        }
+        return nullptr;
+    }
+
+    bool IsStruct(u32 index) const { return index < m_classes.size() && m_classes[index].decl->isStruct; }
+    bool IsEnum(u32 index) const { return index < m_classes.size() && m_classes[index].decl->isEnum; }
+
+    // How many slots one value of this type occupies. Every type answers
+    // one except a value type, which answers the width of its own fields
+    // -- known here because the type it names was laid out first.
+    u32 SlotCountOf(const TypeRef& type) const
+    {
+        if (type.type != ValueType::Struct) return 1;
+        if (type.classIndex >= m_classes.size()) return 1;
+        const u32 width = m_classes[type.classIndex].valueSlotCount;
+        return width == 0 ? 1 : width;
+    }
+
     void ResolveBaseList(u32 index)
     {
         ClassDecl& decl = *m_classes[index].decl;
+
+        if (decl.isStruct && !decl.baseTypes.empty())
+        {
+            Error(decl.baseLocations[0], "struct '" + decl.name +
+                "' cannot declare a base list: a value type is not built on anything and is not seen as anything else");
+            return;
+        }
 
         if (decl.isInterface && !decl.baseTypes.empty())
         {
@@ -386,6 +486,13 @@ private:
                 continue;
             }
 
+            if (decl.isStruct && (method->isVirtual || method->isOverride))
+            {
+                Error(method->location, "'" + decl.name + "." + method->name +
+                    "' cannot be declared 'virtual' or 'override': nothing is ever built on a value type, so there is nothing to dispatch between");
+                continue;
+            }
+
             if (method->isStatic && (method->isVirtual || method->isOverride))
                 Error(method->location, "'" + decl.name + "." + method->name + "' cannot be both 'static' and dispatched on the instance");
         }
@@ -394,6 +501,8 @@ private:
             Error(decl.fields[0]->location, "interface '" + decl.name + "' cannot declare a field");
         else if (decl.isStatic && !decl.fields.empty())
             Error(decl.fields[0]->location, "'" + decl.name + "' holds only static members, so it cannot declare a field");
+        else if (decl.isStruct && decl.fields.empty())
+            Error(decl.location, "struct '" + decl.name + "' declares no fields, so it has no value to copy");
     }
 
     // Every class that can be instantiated ends up with a constructor,
@@ -572,6 +681,7 @@ private:
                 continue;
             }
             ResolveTypeRef(field->type, field->location, "so field '" + field->name + "' has no type");
+            if (decl.isStruct) CheckStructFieldType(decl, *field);
         }
 
         for (DeclPtr& methodDecl : decl.methods)
@@ -593,13 +703,50 @@ private:
         }
     }
 
+    // What a value type may hold: a number, a truth value, a named
+    // constant, or another value type. Nothing that a collection would
+    // have to follow.
+    //
+    // This is what keeps the collector out of value-type layout
+    // altogether. A value type is copied into frame slots, into object
+    // fields and into sequence elements, and those copies are not
+    // described anywhere on their own -- the reference bitmap of whatever
+    // holds them simply has no bits set across their slots. If a value
+    // type could hold a reference, every one of those copies would be a
+    // place a live object could hide from marking, and each would need
+    // its own bitmap to be woven into the holder's. Refusing the field
+    // here is what makes that whole class of mistake impossible rather
+    // than merely unlikely.
+    void CheckStructFieldType(const ClassDecl& decl, FieldDecl& field)
+    {
+        const ValueType type = field.type.type;
+        if (IsPoisoned(type)) return;
+        if (type == ValueType::Int || type == ValueType::Float || type == ValueType::Bool ||
+            type == ValueType::Enum || type == ValueType::Struct)
+        {
+            return;
+        }
+
+        std::string what = "a value of type " + Quoted(field.type);
+        if (type == ValueType::String) what = "text";
+        else if (type == ValueType::Handle) what = "an engine handle";
+        else if (type == ValueType::Object)
+            what = (field.type.classIndex < m_classes.size() && m_classes[field.type.classIndex].isArray)
+                ? "a sequence"
+                : "a reference";
+
+        Error(field.location, "field '" + field.name + "' of struct '" + decl.name + "' cannot hold " + what +
+            ": a value type may hold only numbers, truth values, named constants and other value types");
+        field.type.type = ValueType::Unknown;
+    }
+
     // --- Naming, sequences and type arguments --------------------------------
 
     // What a resolved type is called, which is also what a generated
     // declaration is named after.
     std::string TypeName(const TypeRef& resolved) const
     {
-        if (resolved.type == ValueType::Object)
+        if (resolved.type == ValueType::Object || resolved.type == ValueType::Struct || resolved.type == ValueType::Enum)
         {
             if (resolved.classIndex < m_classes.size()) return m_classes[resolved.classIndex].decl->name;
             return "<unknown>";
@@ -804,8 +951,11 @@ private:
         if (IsPoisoned(type.type)) return false;
 
         // An already-resolved handle type resolves to itself, exactly as
-        // an already-resolved class does.
+        // an already-resolved class does. So does an already-resolved
+        // value type, which no longer carries the name it was written
+        // with.
         if (type.type == ValueType::Handle) return true;
+        if (type.type == ValueType::Struct || type.type == ValueType::Enum) return true;
 
         // A name the host made visible is a handle to something the
         // engine owns. A declaration written in the source wins the name,
@@ -864,7 +1014,14 @@ private:
         TypeRef resolved;
         resolved.type = type.type;
         resolved.classIndex = baseClass;
-        if (type.type == ValueType::Object) resolved.name = TypeName(resolved);
+        if (type.type == ValueType::Object)
+        {
+            // Which kind of declaration the name turned out to be is what
+            // decides whether this is a reference or a value.
+            if (IsStruct(baseClass)) resolved.type = ValueType::Struct;
+            else if (IsEnum(baseClass)) resolved.type = ValueType::Enum;
+            resolved.name = TypeName(resolved);
+        }
 
         for (u32 i = 0; i < type.arrayDepth; ++i)
         {
@@ -899,7 +1056,11 @@ private:
         if (entry.layoutState == 2) return;
         if (entry.layoutState == 1)
         {
-            Error(entry.decl->location, "'" + entry.decl->name + "' inherits from itself through its base list");
+            if (entry.decl->isStruct)
+                Error(entry.decl->location, "'" + entry.decl->name +
+                    "' contains itself: a value type is laid out inside whatever holds it, so it can never hold one of its own kind");
+            else
+                Error(entry.decl->location, "'" + entry.decl->name + "' inherits from itself through its base list");
             entry.layoutState = 2;
             entry.base = kNoClass;
             return;
@@ -912,6 +1073,11 @@ private:
         if (entry.base != kNoClass) BuildLayout(entry.base);
         for (u32 iface : entry.declaredInterfaces) BuildLayout(iface);
 
+        // So does every value type it holds: a field of one occupies as
+        // many slots as that type turned out to need, and the fields
+        // after it start where it ends.
+        LayoutFieldTypes(index);
+
         BuildFields(index);
         CollectInterfaces(index);
         BuildVirtualTable(index);
@@ -921,12 +1087,30 @@ private:
         Publish(index);
     }
 
+    void LayoutFieldTypes(u32 index)
+    {
+        for (DeclPtr& fieldDecl : m_classes[index].decl->fields)
+        {
+            const auto* field = static_cast<const FieldDecl*>(fieldDecl.get());
+            if (field->type.type != ValueType::Struct) continue;
+            if (field->type.classIndex >= m_classes.size()) continue;
+
+            PrepareClass(field->type.classIndex);
+            BuildLayout(field->type.classIndex);
+        }
+    }
+
     void BuildFields(u32 index)
     {
         ClassEntry& entry = m_classes[index];
         ClassDecl& decl = *entry.decl;
 
-        if (entry.base != kNoClass) entry.fields = m_classes[entry.base].fields;
+        u32 nextSlot = 0;
+        if (entry.base != kNoClass)
+        {
+            entry.fields = m_classes[entry.base].fields;
+            nextSlot = m_classes[entry.base].fieldSlotCount;
+        }
 
         for (DeclPtr& fieldDecl : decl.fields)
         {
@@ -943,10 +1127,18 @@ private:
             FieldEntry created;
             created.name = field->name;
             created.type = field->type;
-            created.slot = (u32)entry.fields.size();
+
+            // A field starts where the one before it ended, which is one
+            // slot along for everything but a value type.
+            created.slot = nextSlot;
+            nextSlot += SlotCountOf(field->type);
+
             field->fieldSlot = created.slot;
             entry.fields.push_back(std::move(created));
         }
+
+        entry.fieldSlotCount = nextSlot;
+        if (decl.isStruct) entry.valueSlotCount = nextSlot;
     }
 
     // Every interface this class answers to, its base's included, worked
@@ -1092,9 +1284,12 @@ private:
         ClassDecl& decl = *entry.decl;
 
         decl.baseClass = entry.base;
-        decl.fieldSlotCount = (u32)entry.fields.size();
+        decl.fieldSlotCount = entry.fieldSlotCount;
         decl.vtable = entry.vtable;
 
+        // Only a field that names an object is a bit here. A field of a
+        // value type covers several slots and sets none of them, which is
+        // exactly what makes those slots invisible to a collection.
         decl.fieldReferenceBits.clear();
         for (const FieldEntry& field : entry.fields)
         {
@@ -1133,7 +1328,11 @@ private:
     static bool SameType(const TypeRef& a, const TypeRef& b)
     {
         if (a.type != b.type) return false;
-        if (a.type == ValueType::Object || a.type == ValueType::Handle) return a.classIndex == b.classIndex;
+        if (a.type == ValueType::Object || a.type == ValueType::Handle || a.type == ValueType::Struct ||
+            a.type == ValueType::Enum)
+        {
+            return a.classIndex == b.classIndex;
+        }
         return true;
     }
 
@@ -1211,16 +1410,41 @@ private:
 
         PushScope();
 
+        const bool onAValueType = m_currentClass->decl->isStruct;
+
+        method.receiverSlotCount = 0;
+        method.receiverIsValue = false;
+
         if (m_currentMethodIsInstance)
         {
             TypeRef self;
-            self.type = ValueType::Object;
+            self.type = onAValueType ? ValueType::Struct : ValueType::Object;
             self.classIndex = m_currentClass->index;
+
+            // A method on a value type runs on its own copy, which lives
+            // in the frame's lowest slots: `this` is not a name for
+            // something elsewhere, it is those slots. That is what makes
+            // a field of it reachable as a plain local, and what makes a
+            // change to it stop at the end of the call.
+            method.receiverSlotCount = SlotCountOf(self);
+            method.receiverIsValue = onAValueType;
             DeclareLocal("this", self, method.location);
         }
 
+        u32 parameterSlots = 0;
         for (ParamDecl& param : method.params)
+        {
+            parameterSlots += SlotCountOf(param.type);
             DeclareLocal(param.name, param.type, param.location);
+        }
+        method.parameterSlotCount = parameterSlots;
+
+        // A constructor of a value type answers with the value it was
+        // handed, since there is no object for the caller to have kept a
+        // name for.
+        if (method.isConstructor && onAValueType) method.returnSlotCount = method.receiverSlotCount;
+        else if (method.returnType.type == ValueType::Void) method.returnSlotCount = 0;
+        else method.returnSlotCount = SlotCountOf(method.returnType);
 
         if (method.isConstructor) AnalyzeBaseCall(method);
 
@@ -1302,19 +1526,34 @@ private:
 
         const SlotUse use = (type.type == ValueType::Object) ? SlotUse::Reference : SlotUse::Value;
 
+        // A value type needs its slots next to each other and in order,
+        // so what is looked for is a run of them rather than one.
+        const int width = (int)SlotCountOf(type);
+
         // A slot handed back by an earlier scope is reused only for the
         // same kind of value. Mixing the two would leave the frame's
         // reference bitmap describing whichever declaration came last,
         // and a collection reads that bitmap as fact.
-        while (m_nextSlot < (int)m_slotUses.size() && m_slotUses[(size_t)m_nextSlot] != SlotUse::Free &&
-               m_slotUses[(size_t)m_nextSlot] != use)
+        int slot = m_nextSlot;
+        for (;;)
         {
-            ++m_nextSlot;
+            int blocked = -1;
+            for (int i = 0; i < width; ++i)
+            {
+                const size_t candidate = (size_t)(slot + i);
+                if (candidate >= m_slotUses.size()) break;
+                if (m_slotUses[candidate] == SlotUse::Free || m_slotUses[candidate] == use) continue;
+                blocked = slot + i;
+                break;
+            }
+            if (blocked < 0) break;
+            slot = blocked + 1;
         }
 
-        const int slot = m_nextSlot++;
-        if ((int)m_slotUses.size() <= slot) m_slotUses.resize((size_t)slot + 1, SlotUse::Free);
-        m_slotUses[(size_t)slot] = use;
+        if ((int)m_slotUses.size() < slot + width) m_slotUses.resize((size_t)(slot + width), SlotUse::Free);
+        for (int i = 0; i < width; ++i) m_slotUses[(size_t)(slot + i)] = use;
+
+        m_nextSlot = slot + width;
         if (m_nextSlot > m_highWaterSlot) m_highWaterSlot = m_nextSlot;
 
         scope.emplace(name, LocalSymbol{ type, slot, readOnly });
@@ -1586,6 +1825,20 @@ private:
     {
         if (IsPoisoned(target.type) || IsPoisoned(value.resolvedType)) return true;
 
+        // A value type goes only where the very same value type was
+        // asked for. It is not a reference, so `null` is not one of the
+        // things it can be and it is never seen as something less
+        // specific; and a named constant is not a number, so it neither
+        // widens into one nor accepts one -- writing the conversion out
+        // is the only way to cross between them, and the language has no
+        // way to write one.
+        if (IsValue(target.type) || IsValue(value.resolvedType))
+        {
+            if (target.type == value.resolvedType && target.classIndex == value.resolvedClass) return true;
+            Error(value.location, "cannot convert " + Quoted(value) + " to " + Quoted(target) + " " + context);
+            return false;
+        }
+
         // A handle goes only where a handle of the same engine type was
         // asked for. It is not a reference, so `null` is not one of the
         // things it can be, and it does not travel towards a less
@@ -1637,7 +1890,7 @@ private:
                     expr.resolvedType = ValueType::Unknown;
                     break;
                 }
-                expr.resolvedType = ValueType::Object;
+                expr.resolvedType = m_currentClass->decl->isStruct ? ValueType::Struct : ValueType::Object;
                 expr.resolvedClass = m_currentClass->index;
                 break;
             }
@@ -1649,6 +1902,7 @@ private:
             case ExprKind::Index: AnalyzeIndex(static_cast<IndexExpr&>(expr)); break;
             case ExprKind::Call: AnalyzeCall(static_cast<CallExpr&>(expr)); break;
             case ExprKind::Unary: AnalyzeUnary(static_cast<UnaryExpr&>(expr)); break;
+            case ExprKind::Convert: AnalyzeConvert(static_cast<ConvertExpr&>(expr)); break;
             case ExprKind::Binary: AnalyzeBinary(static_cast<BinaryExpr&>(expr)); break;
             case ExprKind::Assign: AnalyzeAssign(static_cast<AssignExpr&>(expr)); break;
 
@@ -1671,9 +1925,19 @@ private:
         // An engine type is not something a script creates: the engine
         // owns its objects, and a script only ever holds a handle to one
         // it was given.
-        if (expr.type.type != ValueType::Object)
+        if (expr.type.type == ValueType::Handle)
         {
             Error(expr.location, "'" + written + "' belongs to the engine, so 'new' cannot create one");
+            return;
+        }
+        if (expr.type.type == ValueType::Enum)
+        {
+            Error(expr.location, "'" + written + "' declares named constants, so 'new' cannot create one: name one of them instead");
+            return;
+        }
+        if (expr.type.type != ValueType::Object && expr.type.type != ValueType::Struct)
+        {
+            Error(expr.location, "'" + written + "' is not a type 'new' can create");
             return;
         }
 
@@ -1702,7 +1966,7 @@ private:
 
         expr.classIndex = index;
         expr.constructorFunction = constructor->functionIndex;
-        expr.resolvedType = ValueType::Object;
+        expr.resolvedType = decl.isStruct ? ValueType::Struct : ValueType::Object;
         expr.resolvedClass = index;
 
         for (ExprPtr& arg : expr.args) AnalyzeExpr(*arg);
@@ -1784,8 +2048,16 @@ private:
                 expr.resolvedType = ValueType::Unknown;
                 return;
             }
-            expr.isField = true;
-            expr.fieldSlot = field->slot;
+
+            // Inside a method on a value type the receiver is the frame's
+            // lowest slots, so one of its fields is reached as a local
+            // rather than through anything.
+            if (m_currentClass->decl->isStruct) expr.localSlot = (int)field->slot;
+            else
+            {
+                expr.isField = true;
+                expr.fieldSlot = field->slot;
+            }
             expr.resolvedType = field->type.type;
             expr.resolvedClass = field->type.classIndex;
             return;
@@ -1820,6 +2092,25 @@ private:
         u32 classIndex = kNoClass;
         if (NamesAClass(*expr.base, classIndex))
         {
+            // The one thing a type name stands in front of that is a
+            // value: a constant of a named set, whose whole worth is
+            // settled here.
+            if (IsEnum(classIndex))
+            {
+                const EnumeratorDecl* constant = FindEnumerator(classIndex, expr.member);
+                if (!constant)
+                {
+                    Error(expr.location, "'" + ClassName(classIndex) + "' has no constant named '" + expr.member + "'");
+                    expr.resolvedType = ValueType::Unknown;
+                    return;
+                }
+                expr.binding = MemberBinding::EnumConstant;
+                expr.constantValue = constant->value;
+                expr.resolvedType = ValueType::Enum;
+                expr.resolvedClass = classIndex;
+                return;
+            }
+
             Error(expr.location, "'" + ClassName(classIndex) + "." + expr.member + "' is not a value; only a method can be named this way");
             expr.resolvedType = ValueType::Unknown;
             return;
@@ -1831,7 +2122,7 @@ private:
             expr.resolvedType = ValueType::Unknown;
             return;
         }
-        if (expr.base->resolvedType != ValueType::Object)
+        if (expr.base->resolvedType != ValueType::Object && expr.base->resolvedType != ValueType::Struct)
         {
             Error(expr.location, Quoted(*expr.base) + " has no member named '" + expr.member + "'");
             expr.resolvedType = ValueType::Unknown;
@@ -1889,6 +2180,29 @@ private:
             return;
         }
         expr.resolvedType = operandType;
+    }
+
+    // Only numbers convert. Everything else -- a reference, text, a truth
+    // value, a named constant, a value type -- is refused rather than
+    // turned into some number, because a number produced out of one of
+    // those would be a number nobody wrote and nobody could account for.
+    void AnalyzeConvert(ConvertExpr& expr)
+    {
+        AnalyzeExpr(*expr.operand);
+        const ValueType operandType = expr.operand->resolvedType;
+
+        if (!IsNumeric(operandType))
+        {
+            if (!IsPoisoned(operandType))
+            {
+                Error(expr.location, "only an 'int' or a 'float' converts to '" +
+                    std::string(ValueTypeName(expr.target)) + "', and " + Quoted(*expr.operand) + " is neither");
+            }
+            expr.resolvedType = ValueType::Unknown;
+            return;
+        }
+
+        expr.resolvedType = expr.target;
     }
 
     // Brings a numeric pair to a common type, widening the int side when
@@ -1960,6 +2274,15 @@ private:
                     const bool sameEngineType = lhsType == ValueType::Handle && rhsType == ValueType::Handle &&
                                                 expr.lhs->resolvedClass == expr.rhs->resolvedClass;
                     expr.operandType = sameEngineType ? ValueType::Handle : ValueType::Unknown;
+                }
+                // Two constants of the same set compare as the numbers
+                // they stand for. A constant of another set is a
+                // different thing entirely, and so is a plain number.
+                else if (lhsType == ValueType::Enum || rhsType == ValueType::Enum)
+                {
+                    const bool sameSet = lhsType == ValueType::Enum && rhsType == ValueType::Enum &&
+                                         expr.lhs->resolvedClass == expr.rhs->resolvedClass;
+                    expr.operandType = sameSet ? ValueType::Enum : ValueType::Unknown;
                 }
                 else if (IsReference(lhsType) || IsReference(rhsType))
                 {
@@ -2064,6 +2387,24 @@ private:
         }
     }
 
+    // Whether a store into this expression has somewhere to land. A field
+    // of a value type reached through a variable, an object field or an
+    // element does: the value lives there, and writing one of its fields
+    // writes those slots and leaves its neighbours alone. A field of a
+    // value that a call just produced does not -- that copy exists only
+    // for the length of the expression.
+    bool IsStored(const Expr& expr) const
+    {
+        if (expr.kind == ExprKind::Identifier || expr.kind == ExprKind::Index || expr.kind == ExprKind::This)
+            return true;
+        if (expr.kind != ExprKind::Member) return false;
+
+        const auto& member = static_cast<const MemberExpr&>(expr);
+        if (member.binding != MemberBinding::Field || !member.base) return false;
+        if (member.base->resolvedType != ValueType::Struct) return true;
+        return IsStored(*member.base);
+    }
+
     void AnalyzeAssign(AssignExpr& expr)
     {
         const bool targetIsName = expr.target->kind == ExprKind::Identifier;
@@ -2093,6 +2434,14 @@ private:
             !IsPoisoned(expr.target->resolvedType))
         {
             Error(expr.location, "the left-hand side of an assignment must be a variable, a field or an element");
+            AnalyzeExpr(*expr.value);
+            expr.resolvedType = ValueType::Unknown;
+            return;
+        }
+
+        if (targetIsMember && !IsPoisoned(expr.target->resolvedType) && !IsStored(*expr.target))
+        {
+            Error(expr.location, "this is a field of a value that is not stored anywhere, so writing to it would change nothing");
             AnalyzeExpr(*expr.value);
             expr.resolvedType = ValueType::Unknown;
             return;
@@ -2235,7 +2584,7 @@ private:
 
         auto self = std::make_unique<ThisExpr>();
         self->location = call.location;
-        self->resolvedType = ValueType::Object;
+        self->resolvedType = m_currentClass->decl->isStruct ? ValueType::Struct : ValueType::Object;
         self->resolvedClass = m_currentClass->index;
         call.receiver = std::move(self);
 
@@ -2317,7 +2666,7 @@ private:
             return;
         }
 
-        if (callee.base->resolvedType != ValueType::Object)
+        if (callee.base->resolvedType != ValueType::Object && callee.base->resolvedType != ValueType::Struct)
         {
             Error(call.location, Quoted(*callee.base) + " has no method named '" + callee.member + "'");
             call.resolvedType = ValueType::Unknown;
@@ -2498,9 +2847,33 @@ private:
 
         for (size_t i = 0; i < call.args.size(); ++i)
         {
+            std::string constantSet;
+            if (i < method.parameterConstantSets.size()) constantSet = method.parameterConstantSets[i];
+
             TypeRef wanted;
-            wanted.type = method.parameterTypes[i];
-            wanted.classIndex = method.parameterBoundTypes[i];
+            if (constantSet.empty())
+            {
+                wanted.type = method.parameterTypes[i];
+                wanted.classIndex = method.parameterBoundTypes[i];
+            }
+            else
+            {
+                // The engine said this argument comes from a named set,
+                // and the set itself is declared in the source being
+                // compiled -- so a set nothing declares is the engine
+                // and the source disagreeing about what is visible, not
+                // anything the call did wrong.
+                u32 setClass = kNoClass;
+                if (!FindClass(constantSet, setClass) || !IsEnum(setClass))
+                {
+                    Error(call.location, "argument " + std::to_string(i + 1) + " of '" + displayName +
+                                             "' takes a constant of '" + constantSet + "', which nothing here declares");
+                    continue;
+                }
+                wanted.type = ValueType::Enum;
+                wanted.classIndex = setClass;
+            }
+
             CheckAssignable(*call.args[i], wanted, "in argument " + std::to_string(i + 1) + " of '" + displayName + "'");
         }
     }

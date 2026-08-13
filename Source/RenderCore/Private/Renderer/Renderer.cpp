@@ -177,22 +177,14 @@ bool CompileDebugStage(FluxionRHIDeviceHandle device, FluxionRHIBackendType back
     return FLUXION_HANDLE_IS_VALID(*outShader);
 }
 
-void CreateDebugDrawPipeline(FluxionRenderer& renderer)
+// Only the pipeline object, built against whatever colour format the
+// renderer has been told it draws into. Split out from the rest because
+// that format can change after the renderer exists -- a texture view
+// carries no queryable format, so it is the caller who says what it is,
+// and saying a different one has to rebuild this and nothing else.
+void CreateDebugDrawPipelineObject(FluxionRenderer& renderer)
 {
-    FluxionRHIBackendType backend = Fluxion_RHI_GetDeviceBackendType(renderer.device);
-    bool ok = CompileDebugStage(renderer.device, backend, kDebugVertexHLSL, kDebugVertexGLSL, Fluxion::ShaderCompiler::ShaderStage::Vertex, &renderer.debugVertexShader);
-    ok = ok && CompileDebugStage(renderer.device, backend, kDebugFragmentHLSL, kDebugFragmentGLSL, Fluxion::ShaderCompiler::ShaderStage::Fragment, &renderer.debugFragmentShader);
-    if (!ok) return;
-
-    FluxionRHIBufferDesc vertexBufferDesc;
-    vertexBufferDesc.size = (usize)FLUXION_RENDERER_MAX_DEBUG_VERTICES * sizeof(FluxionDebugDrawVertex);
-    vertexBufferDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_VERTEX_BUFFER;
-    vertexBufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
-    vertexBufferDesc.debugName = "Fluxion.Renderer.DebugDraw.VertexBuffer";
-    renderer.debugVertexBuffer = Fluxion_RHI_CreateBuffer(renderer.device, &vertexBufferDesc);
-
-    FluxionRHIBindGroupLayoutDesc frameLayoutDesc = FluxionRendererInternal_MakeFrameLayoutDesc();
-    renderer.debugFrameBindGroupLayout = Fluxion_RHI_CreateBindGroupLayout(renderer.device, &frameLayoutDesc);
+    if (!FLUXION_HANDLE_IS_VALID(renderer.debugVertexShader) || !FLUXION_HANDLE_IS_VALID(renderer.debugFragmentShader)) return;
 
     FluxionRHIVertexLayout vertexLayout{};
     vertexLayout.attributes[0].location = 0;
@@ -213,13 +205,40 @@ void CreateDebugDrawPipeline(FluxionRenderer& renderer)
     pipelineDesc.depthState.writeEnable = false;
     pipelineDesc.blendState.blendEnable = true;
     pipelineDesc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_LINE_LIST; // triangles are appended as their own 3 vertices too -- see DebugDraw.c
-    pipelineDesc.colorFormats[0] = FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
+    pipelineDesc.colorFormats[0] = renderer.debugColorFormat;
     pipelineDesc.colorFormatCount = 1;
     pipelineDesc.depthFormat = FLUXION_RHI_FORMAT_UNKNOWN;
     pipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_FRAME] = renderer.debugFrameBindGroupLayout;
     pipelineDesc.bindGroupLayoutCount = FLUXION_RHI_BIND_GROUP_FRAME + 1;
     pipelineDesc.debugName = "Fluxion.Renderer.DebugDraw.Pipeline";
     renderer.debugPipeline = Fluxion_RHI_CreateGraphicsPipeline(renderer.device, &pipelineDesc);
+}
+
+// Everything the debug-draw pipeline is built out of, but not the
+// pipeline itself -- see the comment at the end of this function.
+void CreateDebugDrawResources(FluxionRenderer& renderer)
+{
+    FluxionRHIBackendType backend = Fluxion_RHI_GetDeviceBackendType(renderer.device);
+    bool ok = CompileDebugStage(renderer.device, backend, kDebugVertexHLSL, kDebugVertexGLSL, Fluxion::ShaderCompiler::ShaderStage::Vertex, &renderer.debugVertexShader);
+    ok = ok && CompileDebugStage(renderer.device, backend, kDebugFragmentHLSL, kDebugFragmentGLSL, Fluxion::ShaderCompiler::ShaderStage::Fragment, &renderer.debugFragmentShader);
+    if (!ok) return;
+
+    FluxionRHIBufferDesc vertexBufferDesc;
+    vertexBufferDesc.size = (usize)FLUXION_RENDERER_MAX_DEBUG_VERTICES * sizeof(FluxionDebugDrawVertex);
+    vertexBufferDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_VERTEX_BUFFER;
+    vertexBufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
+    vertexBufferDesc.debugName = "Fluxion.Renderer.DebugDraw.VertexBuffer";
+    renderer.debugVertexBuffer = Fluxion_RHI_CreateBuffer(renderer.device, &vertexBufferDesc);
+
+    FluxionRHIBindGroupLayoutDesc frameLayoutDesc = FluxionRendererInternal_MakeFrameLayoutDesc();
+    renderer.debugFrameBindGroupLayout = Fluxion_RHI_CreateBindGroupLayout(renderer.device, &frameLayoutDesc);
+
+    // The pipeline itself waits: it has to be built against the colour
+    // format it will draw into, and a caller that is going to say what
+    // that is has not had the chance yet. It is built the first time
+    // anything is actually drawn, by which time the answer is settled --
+    // and a program that never draws a debug line never builds one at
+    // all.
 }
 
 } // namespace
@@ -252,7 +271,7 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     // -- FLUXION_HANDLE_IS_VALID only checks index != INVALID_INDEX, so a
     // plain memset above leaves every handle field looking like a
     // *valid* handle pointing at whatever real object happens to occupy
-    // that RHI pool's slot 0. Every field CreateDebugDrawPipeline might
+    // that RHI pool's slot 0. Every field CreateDebugDrawResources might
     // leave untouched on a dxc/compile failure (debugVertexBuffer,
     // debugVertexShader, debugFragmentShader, debugPipeline,
     // debugFrameBindGroupLayout) needs the real invalid sentinel here
@@ -266,10 +285,15 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     renderer->debugPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->debugFrameBindGroupLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
 
+    // What a caller that never says otherwise gets. It is a guess, and it
+    // is why saying so exists: a frame drawn into a colour attachment of
+    // any other format needs the pipeline rebuilt against that one.
+    renderer->debugColorFormat = FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
+
     FluxionRHIBindGroupLayoutDesc objectLayoutDesc = FluxionRendererInternal_MakeObjectLayoutDesc();
     renderer->objectBindGroupLayout = Fluxion_RHI_CreateBindGroupLayout(device, &objectLayoutDesc);
 
-    CreateDebugDrawPipeline(*renderer);
+    CreateDebugDrawResources(*renderer);
 
     FluxionRenderGraphPassType passType;
     passType.name = "ForwardOpaquePass";
@@ -393,6 +417,14 @@ extern "C" void Fluxion_Renderer_EndFrame(FluxionRendererHandle rendererHandle, 
 
     // --- debug draw: recorded directly here, not through the render
     // graph -- see DebugDraw.h's comment on why it stays self-contained.
+    //
+    // The pipeline is built here, the first time there is anything to
+    // draw with it, rather than when the renderer was made: it has to
+    // match the colour format of what is being drawn into, and that is
+    // something the caller states (Fluxion_Renderer_SetDebugDrawColorFormat)
+    // after the renderer already exists.
+    if (renderer->debugVertexCount > 0 && !FLUXION_HANDLE_IS_VALID(renderer->debugPipeline)) CreateDebugDrawPipelineObject(*renderer);
+
     if (renderer->debugVertexCount > 0 && FLUXION_HANDLE_IS_VALID(renderer->debugPipeline))
     {
         void* mapped = Fluxion_RHI_MapBuffer(renderer->debugVertexBuffer);
@@ -437,6 +469,24 @@ extern "C" void Fluxion_Renderer_EndFrame(FluxionRendererHandle rendererHandle, 
     renderer->inFrame = false;
     renderer->packetCount = 0;
     renderer->debugVertexCount = 0;
+}
+
+extern "C" void Fluxion_Renderer_SetDebugDrawColorFormat(FluxionRendererHandle rendererHandle, FluxionRHIFormat format)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr || format == renderer->debugColorFormat) return;
+
+    FLUXION_ASSERT_MSG(!renderer->inFrame, "Renderer: the debug-draw colour format cannot change in the middle of a frame");
+
+    renderer->debugColorFormat = format;
+
+    // Anything already built was built against the format that has just
+    // been replaced, so it is thrown away; the next debug draw builds one
+    // against the new one. Nothing is built here, because a caller that
+    // says this at startup -- which is where it belongs -- may never draw
+    // a debug line at all.
+    if (FLUXION_HANDLE_IS_VALID(renderer->debugPipeline)) Fluxion_RHI_DestroyPipeline(renderer->debugPipeline);
+    renderer->debugPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
 }
 
 extern "C" void* Fluxion_Renderer_GetForwardOpaquePassUserData(FluxionRendererHandle rendererHandle)
