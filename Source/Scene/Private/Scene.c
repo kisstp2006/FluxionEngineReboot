@@ -106,6 +106,8 @@ void Fluxion_Scene_Destroy(FluxionSceneHandle scene)
     }
 
     Fluxion_SceneComponents_ReleaseScene(record);
+    Fluxion_SceneComponentPool_ReleaseScene(record);
+    Fluxion_SceneInternal_ReleaseCommandBuffer(record);
     record->alive = false;
 }
 
@@ -220,7 +222,9 @@ void Fluxion_SceneInternal_Unlink(FluxionSceneRecord* record, FluxionGameObjectH
     }
 }
 
-FluxionGameObjectHandle Fluxion_Scene_CreateGameObject(FluxionSceneHandle scene, const char* name)
+// Both ways of making an object come through here; they differ only in
+// where the id comes from, which the caller has settled by this point.
+static FluxionGameObjectHandle Fluxion_SceneInternal_CreateGameObject(FluxionSceneHandle scene, const char* name, FluxionUUID uuid)
 {
     FluxionGameObjectHandle handle = Fluxion_GameObject_InvalidHandle();
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
@@ -247,6 +251,7 @@ FluxionGameObjectHandle Fluxion_Scene_CreateGameObject(FluxionSceneHandle scene,
         entry->generation = generation;
     }
     entry->alive = true;
+    entry->uuid = uuid;
     Fluxion_SceneInternal_CopyName(entry->name, name);
     entry->parent = Fluxion_GameObject_InvalidHandle();
     entry->firstChild = Fluxion_GameObject_InvalidHandle();
@@ -270,6 +275,74 @@ FluxionGameObjectHandle Fluxion_Scene_CreateGameObject(FluxionSceneHandle scene,
     return handle;
 }
 
+FluxionGameObjectHandle Fluxion_Scene_CreateGameObject(FluxionSceneHandle scene, const char* name)
+{
+    return Fluxion_SceneInternal_CreateGameObject(scene, name, Fluxion_UUID_Generate());
+}
+
+FluxionGameObjectHandle Fluxion_Scene_CreateGameObjectWithUUID(FluxionSceneHandle scene, const char* name, FluxionUUID uuid)
+{
+    FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
+    if (record == NULL) return Fluxion_GameObject_InvalidHandle();
+
+    if (Fluxion_UUID_IsNil(uuid))
+    {
+        Fluxion_SceneInternal_SetError(record, "an object cannot be given the nil id");
+        return Fluxion_GameObject_InvalidHandle();
+    }
+
+    // Refused rather than allowed and sorted out later: the whole point of
+    // the id is that it names one object, and a second object answering to
+    // it would make every lookup a coin toss.
+    if (FLUXION_HANDLE_IS_VALID(Fluxion_Scene_FindByUUID(scene, uuid)))
+    {
+        Fluxion_SceneInternal_SetError(record, "this scene already holds an object with that id");
+        return Fluxion_GameObject_InvalidHandle();
+    }
+
+    return Fluxion_SceneInternal_CreateGameObject(scene, name, uuid);
+}
+
+FluxionUUID Fluxion_GameObject_GetUUID(FluxionSceneHandle scene, FluxionGameObjectHandle object)
+{
+    FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
+    FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
+    FluxionUUID nil;
+
+    if (entry != NULL) return entry->uuid;
+
+    memset(&nil, 0, sizeof(nil));
+    return nil;
+}
+
+FluxionGameObjectHandle Fluxion_Scene_FindByUUID(FluxionSceneHandle scene, FluxionUUID uuid)
+{
+    FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
+    u32 i;
+
+    if (record == NULL || Fluxion_UUID_IsNil(uuid)) return Fluxion_GameObject_InvalidHandle();
+
+    // Walked rather than looked up. The table has a fixed and small upper
+    // bound, and an index beside it would be one more thing that has to
+    // stay true through every create, destroy and reuse -- worth adding
+    // only once a caller is shown to be waiting on this.
+    for (i = 0; i < FLUXION_SCENE_MAX_GAME_OBJECTS; ++i)
+    {
+        FluxionSceneGameObjectRecord* entry = &record->objects[i];
+        if (!entry->alive) continue;
+        if (!Fluxion_UUID_Equals(entry->uuid, uuid)) continue;
+
+        {
+            FluxionGameObjectHandle handle;
+            handle.index = i;
+            handle.generation = entry->generation;
+            return handle;
+        }
+    }
+
+    return Fluxion_GameObject_InvalidHandle();
+}
+
 void Fluxion_SceneInternal_FreeObject(FluxionSceneRecord* record, FluxionGameObjectHandle object)
 {
     FluxionSceneGameObjectRecord* entry;
@@ -277,6 +350,11 @@ void Fluxion_SceneInternal_FreeObject(FluxionSceneRecord* record, FluxionGameObj
 
     entry = &record->objects[object.index];
     if (!entry->alive || entry->generation != object.generation) return;
+
+    // Here rather than where destruction was asked for: this index is
+    // about to be free to hand out again, and a data component still
+    // standing on it would be found by whoever gets it next.
+    Fluxion_SceneComponentPool_RemoveAllOf(record, object.index);
 
     entry->alive = false;
     entry->pendingDestroy = false;

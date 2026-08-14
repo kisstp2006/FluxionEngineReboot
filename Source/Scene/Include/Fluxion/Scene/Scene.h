@@ -1,8 +1,10 @@
 #pragma once
 
+#include <Fluxion/Core/Reflection/TypeId.h>
 #include <Fluxion/Foundation/Handle.h>
 #include <Fluxion/Foundation/Math.h>
 #include <Fluxion/Foundation/Types.h>
+#include <Fluxion/Foundation/UUID.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,6 +18,11 @@ extern "C" {
 #define FLUXION_SCENE_MAX_GAME_OBJECTS 1024
 #define FLUXION_SCENE_MAX_COMPONENTS 2048
 #define FLUXION_SCENE_MAX_NAME_LENGTH 64
+
+// How many distinct data-component types one scene may hold. Only the
+// table of pools is fixed at this; the storage behind each pool is taken
+// when the type is first used and given back when the scene goes.
+#define FLUXION_SCENE_MAX_COMPONENT_TYPES 32
 
 FLUXION_DEFINE_HANDLE(FluxionSceneHandle);
 FLUXION_DEFINE_HANDLE(FluxionGameObjectHandle);
@@ -64,8 +71,26 @@ const char* Fluxion_Scene_GetLastError(FluxionSceneHandle scene);
 
 // --- Game objects -------------------------------------------------------
 
-// `name` may be null, which names the object the empty string.
+// `name` may be null, which names the object the empty string. The object
+// is given a fresh unique id of its own.
 FluxionGameObjectHandle Fluxion_Scene_CreateGameObject(FluxionSceneHandle scene, const char* name);
+
+// The same, but with the id supplied rather than made: what reading a
+// scene back in needs, so that an object read from a file is the same
+// object it was when written, and so that whatever pointed at it still
+// finds it.
+//
+// Refused, with an invalid handle, when the scene already holds an object
+// with this id or when the id is nil -- an id that names two objects is
+// worse than no id at all.
+FluxionGameObjectHandle Fluxion_Scene_CreateGameObjectWithUUID(FluxionSceneHandle scene, const char* name, FluxionUUID uuid);
+
+// Nil for a handle that names no live object.
+FluxionUUID Fluxion_GameObject_GetUUID(FluxionSceneHandle scene, FluxionGameObjectHandle object);
+
+// The object of this scene carrying this id, or an invalid handle when
+// there is none. Nil is carried by no object and so never found.
+FluxionGameObjectHandle Fluxion_Scene_FindByUUID(FluxionSceneHandle scene, FluxionUUID uuid);
 
 // Destroys the object and everything below it. Every component on every
 // object destroyed has OnDestroy run on it first.
@@ -133,6 +158,51 @@ FluxionMat4 Fluxion_GameObject_GetWorldMatrix(FluxionSceneHandle scene, FluxionG
 
 // The object's own translation, rotation and scale alone.
 FluxionMat4 Fluxion_GameObject_GetLocalMatrix(FluxionSceneHandle scene, FluxionGameObjectHandle object);
+
+// --- Data components ----------------------------------------------------
+
+// A data component is a plain struct attached to a game object: no
+// behaviour, no lifecycle, nothing called on it. It is named by the id of
+// its registered reflected type, and that registration is where its size
+// comes from -- there is no second place to state it, and a type that was
+// never registered cannot be attached.
+//
+// Every one of these hands back a pointer into the scene's own storage.
+// That pointer is good until the next call that adds or removes a
+// component OF THE SAME TYPE in the SAME scene, or until the object is
+// destroyed; anything else leaves it alone. Hold the handle across such a
+// call and ask again, rather than holding the pointer.
+
+// Attaches a component of `type` and hands back the storage for it. With
+// `initialValue` null the component starts as all zero bytes; otherwise
+// that many bytes are copied from it. An object already carrying this type
+// gets its existing component back untouched -- one of a type per object.
+//
+// Null when the object is not live, when the type was never registered for
+// reflection, or when the scene has no room for another type.
+void* Fluxion_GameObject_AddComponent(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionTypeId type, const void* initialValue);
+
+// The object's component of this type, or null when it carries none.
+void* Fluxion_GameObject_GetComponent(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionTypeId type);
+
+bool Fluxion_GameObject_HasComponent(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionTypeId type);
+
+// False when the object carries no component of this type, which is not
+// an error -- removing what is not there is simply nothing to do.
+bool Fluxion_GameObject_RemoveComponent(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionTypeId type);
+
+// Every component of one type in the scene, packed with no gaps, and the
+// object each belongs to in the same order -- element i of the array is
+// owned by element i of the owners. Both are null with a count of zero
+// when the scene holds none of this type.
+//
+// The order is not stated and does not stay put: removing a component
+// moves the last one into its place. Read them as a set, not as a
+// sequence.
+void* Fluxion_Scene_GetComponentArray(FluxionSceneHandle scene, FluxionTypeId type, u32* outCount);
+const FluxionGameObjectHandle* Fluxion_Scene_GetComponentOwners(FluxionSceneHandle scene, FluxionTypeId type, u32* outCount);
+
+u32 Fluxion_Scene_ComponentCount(FluxionSceneHandle scene, FluxionTypeId type);
 
 #ifdef __cplusplus
 }

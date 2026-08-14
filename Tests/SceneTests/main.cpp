@@ -8,6 +8,10 @@ void Test_Components_Run(TestContext& ctx);
 void Test_Attributes_Run(TestContext& ctx);
 void Test_EngineApi_Run(TestContext& ctx);
 void Test_Reload_Run(TestContext& ctx);
+void Test_DataComponents_Run(TestContext& ctx);
+void Test_EntityUUID_Run(TestContext& ctx);
+void Test_CommandBuffer_Run(TestContext& ctx);
+void Test_World_Run(TestContext& ctx);
 
 int main()
 {
@@ -21,6 +25,10 @@ int main()
     Test_Attributes_Run(ctx);
     Test_EngineApi_Run(ctx);
     Test_Reload_Run(ctx);
+    Test_DataComponents_Run(ctx);
+    Test_EntityUUID_Run(ctx);
+    Test_CommandBuffer_Run(ctx);
+    Test_World_Run(ctx);
 
     if (ctx.failures == 0)
     {

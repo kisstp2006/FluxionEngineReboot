@@ -1194,16 +1194,25 @@ extern "C" void Fluxion_SceneComponents_ReleaseScene(FluxionSceneRecord* record)
 extern "C" void Fluxion_Scene_Tick(FluxionSceneHandle scene, f32 deltaTime)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
-    if (record == nullptr || record->vm == nullptr) return;
+    if (record == nullptr) return;
 
-    // What the table held when the turn began. A component attached while
-    // this runs lands above the line and is picked up next turn, which is
-    // what keeps one turn from calling a component into being and then
-    // straight away calling into it.
-    const u32 limit = record->componentHighWater;
+    if (record->vm != nullptr)
+    {
+        // What the table held when the turn began. A component attached
+        // while this runs lands above the line and is picked up next turn,
+        // which is what keeps one turn from calling a component into being
+        // and then straight away calling into it.
+        const u32 limit = record->componentHighWater;
 
-    Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_AWAKE, limit, deltaTime, true);
-    Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_START, limit, deltaTime, true);
-    Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_UPDATE, limit, deltaTime, false);
-    Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_LATE_UPDATE, limit, deltaTime, false);
+        Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_AWAKE, limit, deltaTime, true);
+        Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_START, limit, deltaTime, true);
+        Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_UPDATE, limit, deltaTime, false);
+        Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_LATE_UPDATE, limit, deltaTime, false);
+    }
+
+    // Last, and outside the check above: a scene with no scripting runtime
+    // attached still has to carry out what was written down during the
+    // turn, or a caller with no scripts would find its recorded changes
+    // piling up and never landing.
+    Fluxion_SceneInternal_PlaybackCommandBuffer(record);
 }

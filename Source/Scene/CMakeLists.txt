@@ -11,8 +11,10 @@ engine_add_module(
         # pipeline in its own signatures, so whoever includes it sees
         # those headers too.
         Fluxion::RenderCore
-    PRIVATE_DEPENDENCIES
+        # Scene.h names a data component by its FluxionTypeId, so whoever
+        # includes it sees the reflection headers too.
         Fluxion::Core
+    PRIVATE_DEPENDENCIES
         # The clock and the input state a script reads. Neither appears in
         # a header of this module.
         Fluxion::Application

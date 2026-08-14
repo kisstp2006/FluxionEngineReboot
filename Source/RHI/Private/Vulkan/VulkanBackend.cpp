@@ -203,11 +203,17 @@ static bool Fluxion_RHIVulkan_GetAdapterInfo(FluxionRHIAdapterHandle adapter, Fl
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(physicalDevice, &props);
 
-#if defined(_MSC_VER)
-    strncpy_s(outInfo->name, sizeof(outInfo->name), props.deviceName, sizeof(outInfo->name) - 1);
-#else
-    std::strncpy(outInfo->name, props.deviceName, sizeof(outInfo->name) - 1);
-#endif
+    // Copied by length and terminated by hand rather than copied as a
+    // string: the driver's name field is a fixed-size array that need not
+    // end in a terminator, and the destination is no longer than it, so a
+    // string copy has nowhere to put one that a reader would find.
+    {
+        const usize longest = sizeof(outInfo->name) - 1;
+        const usize available = sizeof(props.deviceName);
+        const usize copied = available < longest ? available : longest;
+        std::memcpy(outInfo->name, props.deviceName, copied);
+        outInfo->name[copied] = '\0';
+    }
     outInfo->vendorId = props.vendorID;
     outInfo->deviceId = props.deviceID;
     switch (props.deviceType)

@@ -25,11 +25,20 @@ concept ReflectableType = requires
     { T::Name } -> std::convertible_to<const char*>;
 };
 
+// The id a reflectable type is known by, worked out from the same name it
+// declares. Anything that has to name a type across the C interface --
+// which takes ids, not types -- goes through here rather than hashing the
+// name itself, so there is one place the two can agree or disagree.
+template<ReflectableType T>
+FluxionTypeId TypeIdOf()
+{
+    return Fluxion_TypeId_FromName(Fluxion_StringView_FromCStr(T::Name));
+}
+
 template<ReflectableType T>
 const FluxionTypeInfo* GetTypeInfo()
 {
-    const FluxionTypeId id = Fluxion_TypeId_FromName(Fluxion_StringView_FromCStr(T::Name));
-    return Fluxion_Reflection_FindTypeById(id);
+    return Fluxion_Reflection_FindTypeById(TypeIdOf<T>());
 }
 
 // Reads a property's value out of `instance` into `outValue`, dispatching

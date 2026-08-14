@@ -40,6 +40,12 @@ FluxionRHIPipelineCacheIdentity MakeIdentity()
 
 const std::vector<u8> kPayload = { 1, 2, 3, 4, 5, 6, 7, 8, 250, 251, 252, 253 };
 
+// What a file this engine never wrote is filled with. Any value works so
+// long as it is neither zero nor anything the header would hold, so that
+// a file made of it is refused for what it is rather than for being
+// empty.
+const u8 kFillerByte = 0x5A;
+
 std::vector<u8> ReadWholeFile(const char* path)
 {
     std::vector<u8> bytes;
@@ -92,7 +98,9 @@ extern "C" void Test_PipelineCacheFile_Run(TestContext* ctx)
     // as a success on two backends: the driver quietly ignores bytes it
     // cannot use and reports the cache as created either way, so a caller
     // could not tell a warm start from a cold one.
-    TEST_CHECK(ctx, WriteWholeFile(kPath, std::vector<u8>(good.size(), 0x5A)));
+    std::vector<u8> foreign;
+    foreign.assign(good.size(), kFillerByte);
+    TEST_CHECK(ctx, WriteWholeFile(kPath, foreign));
     TEST_CHECK(ctx, !Fluxion_RHIPipelineCacheFile_Read(kPath, identity, &readBack));
 
     // Each identity field on its own has to be enough to refuse the file.

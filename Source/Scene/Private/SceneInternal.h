@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Fluxion/Scene/EntityCommandBuffer.h>
 #include <Fluxion/Scene/Scene.h>
 
 #ifdef __cplusplus
@@ -67,6 +68,12 @@ typedef struct FluxionSceneGameObjectRecord
 
     u32 generation;
 
+    // What this object is called from outside the run it was made in. The
+    // handle above says where the object sits in this table right now and
+    // means nothing once the program has ended; this stays the same
+    // through being written out and read back.
+    FluxionUUID uuid;
+
     char name[FLUXION_SCENE_MAX_NAME_LENGTH];
 
     FluxionGameObjectHandle parent;
@@ -83,6 +90,29 @@ typedef struct FluxionSceneGameObjectRecord
     u32 firstComponent;
 } FluxionSceneGameObjectRecord;
 
+// One data-component type's storage. `dense` null means this slot of the
+// table stands for no type at all -- that, rather than a separate flag, is
+// what tells a used pool from a free one, because storage is what a pool
+// is.
+typedef struct FluxionSceneComponentPool
+{
+    FluxionTypeId type;
+    usize elementSize;
+
+    // The components themselves, packed, and the object each belongs to in
+    // the same order. Both hold `count` entries and have room for one per
+    // object record.
+    u8* dense;
+    FluxionGameObjectHandle* owners;
+
+    // Object index -> which row of `dense`, or FLUXION_SCENE_NO_COMPONENT
+    // for an object carrying none of this type. One entry per object
+    // record, so the answer costs no search.
+    u32* rowOf;
+
+    u32 count;
+} FluxionSceneComponentPool;
+
 typedef struct FluxionSceneRecord
 {
     bool alive;
@@ -98,6 +128,16 @@ typedef struct FluxionSceneRecord
     FluxionGameObjectHandle firstRoot;
 
     FluxionSceneComponentRecord components[FLUXION_SCENE_MAX_COMPONENTS];
+
+    // The data components, one pool per type in use. Unlike the script
+    // components above, these are not records in a shared table: each type
+    // keeps its own.
+    FluxionSceneComponentPool componentPools[FLUXION_SCENE_MAX_COMPONENT_TYPES];
+
+    // The scene's own place to write structural change down, made the
+    // first time something asks for it and played back at the end of every
+    // turn.
+    FluxionEntityCommandBuffer* commandBuffer;
 
     // One past the highest component record ever used, so a step walks
     // only as far as the table has ever reached.
@@ -167,6 +207,31 @@ void Fluxion_SceneInternal_MarkSubtreePendingDestroy(FluxionSceneRecord* record,
 // Frees every object that was said to be going. Called once the
 // components that were standing on them have been told.
 void Fluxion_SceneInternal_FreePendingObjects(FluxionSceneRecord* record);
+
+// --- Data components ----------------------------------------------------
+
+// Takes one component out of one pool, closing the gap by moving the last
+// row into it. False when that object carried none of this type.
+bool Fluxion_SceneComponentPool_RemoveByIndex(FluxionSceneComponentPool* pool, u32 objectIndex);
+
+// Takes every data component off one object record, whatever their types.
+// Called where the record is actually released rather than where
+// destruction is asked for: object indices are handed out again, so a
+// component left behind would surface on whoever gets the index next.
+void Fluxion_SceneComponentPool_RemoveAllOf(FluxionSceneRecord* record, u32 objectIndex);
+
+// Gives back the storage every pool of this scene took.
+void Fluxion_SceneComponentPool_ReleaseScene(FluxionSceneRecord* record);
+
+// --- The scene's own command buffer -------------------------------------
+
+// Carries out whatever was written down during the turn. Does nothing when
+// the scene has never been asked for a buffer.
+void Fluxion_SceneInternal_PlaybackCommandBuffer(FluxionSceneRecord* record);
+
+// Gives back the buffer without carrying out what is still in it: the
+// scene is going, so there is nothing left for those commands to change.
+void Fluxion_SceneInternal_ReleaseCommandBuffer(FluxionSceneRecord* record);
 
 // --- What the C++ half provides to the C half ---------------------------
 

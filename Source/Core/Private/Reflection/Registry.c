@@ -24,6 +24,11 @@ void Fluxion_Reflection_Shutdown(void)
     s_reflectionInitialized = false;
 }
 
+bool Fluxion_Reflection_IsInitialized(void)
+{
+    return s_reflectionInitialized;
+}
+
 bool Fluxion_Reflection_RegisterType(const FluxionTypeInfo* typeInfo)
 {
     FLUXION_ASSERT(s_reflectionInitialized);

@@ -8,6 +8,10 @@ engine_add_test(
         Test_Attributes.cpp
         Test_EngineApi.cpp
         Test_Reload.cpp
+        Test_DataComponents.cpp
+        Test_EntityUUID.cpp
+        Test_CommandBuffer.cpp
+        Test_World.cpp
     DEPENDENCIES
         Fluxion::Scene
         Fluxion::Script
@@ -23,6 +27,8 @@ engine_add_header_selfcontained_test(
     MODULE Scene
     HEADERS
         Fluxion/Scene/Scene.h
+        Fluxion/Scene/EntityCommandBuffer.h
+        Fluxion/Scene/World.hpp
         Fluxion/Scene/SceneScript.hpp
         Fluxion/Scene/EngineScript.hpp
 )
