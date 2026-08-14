@@ -22,6 +22,7 @@
 
 #include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/Foundation/Assert.h>
+#include <Fluxion/Foundation/Log.h>
 #include <Fluxion/Foundation/Memory/Allocator.h>
 #include <Fluxion/Scene/EntityQuery.h>
 
@@ -401,15 +402,16 @@ bool Fluxion_SceneArchetype_PlaceNewObject(FluxionSceneRecord* record, FluxionGa
 
     if (record == NULL || object.index >= FLUXION_SCENE_MAX_GAME_OBJECTS) return false;
 
-    // Every object starts carrying exactly one thing: its transform. There
-    // is no composition below this one, because there is no object without
-    // a place to be.
+    // Every object starts carrying the two things that are part of an
+    // object rather than attached to it: where it is, and what scripts
+    // hang off it. There is no composition below this one, because there
+    // is no object without a place to be.
     if (record->baseArchetype == FLUXION_SCENE_NO_ARCHETYPE)
     {
-        const FluxionTypeId transformType = Fluxion_Transform_TypeId();
+        const FluxionTypeId intrinsic[2] = { Fluxion_Transform_TypeId(), Fluxion_ScriptComponent_TypeId() };
         if (!Fluxion_SceneTransform_EnsureRegistered()) return false;
 
-        record->baseArchetype = Fluxion_SceneArchetype_FindOrCreate(record, &transformType, 1);
+        record->baseArchetype = Fluxion_SceneArchetype_FindOrCreate(record, intrinsic, 2);
         if (record->baseArchetype == FLUXION_SCENE_NO_ARCHETYPE) return false;
     }
 
@@ -482,6 +484,45 @@ void Fluxion_SceneArchetype_ReleaseScene(FluxionSceneRecord* record)
 
 // --- The public per-object interface -------------------------------------
 
+// The one place a system's declaration is held against what it does.
+//
+// A declaration nothing checks is decoration, and the parallelism rests
+// entirely on it being true -- so an omission has to be found where it is
+// made rather than as a race on somebody else's machine. In a build with
+// assertions compiled out this costs nothing and checks nothing, which is
+// why the tests run in a build that has them.
+static bool Fluxion_SceneArchetype_AllowedHere(FluxionSceneRecord* record, FluxionTypeId type, bool structural)
+{
+    if (Fluxion_SceneInternal_SystemMayTouch(record, type, structural)) return true;
+
+    // Both messages name the system and the type, because the mistake is
+    // always in one particular declaration and finding which one from a
+    // bare "a system did something" would mean reading them all.
+    {
+        const FluxionTypeInfo* typeInfo = Fluxion_Reflection_IsInitialized() ? Fluxion_Reflection_FindTypeById(type) : NULL;
+        const char* typeName = (typeInfo != NULL) ? typeInfo->name.data : "an unregistered type";
+        const char* systemName = Fluxion_SceneInternal_RunningSystemName(record);
+
+        if (structural)
+        {
+            FLUXION_LOG_ERROR("Scene.Systems",
+                "system '%s' added or removed '%s' directly -- record it into the scene's command buffer instead, "
+                "so it lands once the phase is over and nothing is walking the storage",
+                systemName, typeName);
+            FLUXION_ASSERT_MSG(false, "Fluxion: a system changed the storage directly -- see the log line above");
+        }
+        else
+        {
+            FLUXION_LOG_ERROR("Scene.Systems",
+                "system '%s' touched '%s', which it did not declare -- add it to that system's reads or writes",
+                systemName, typeName);
+            FLUXION_ASSERT_MSG(false, "Fluxion: a system touched an undeclared component -- see the log line above");
+        }
+    }
+    return false;
+}
+
+
 void* Fluxion_GameObject_AddComponent(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionTypeId type, const void* initialValue)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
@@ -493,6 +534,7 @@ void* Fluxion_GameObject_AddComponent(FluxionSceneHandle scene, FluxionGameObjec
 
     if (entry == NULL || type == FLUXION_TYPE_ID_INVALID) return NULL;
     if (entry->archetypeIndex == FLUXION_SCENE_NO_ARCHETYPE) return NULL;
+    if (!Fluxion_SceneArchetype_AllowedHere(record, type, true)) return NULL;
 
     // Already carrying it: the existing one comes back and nothing moves.
     // One of a type per object is what lets the composition be a set
@@ -546,6 +588,7 @@ void* Fluxion_GameObject_GetComponent(FluxionSceneHandle scene, FluxionGameObjec
     u32 typeIndex;
 
     if (entry == NULL || entry->archetypeIndex == FLUXION_SCENE_NO_ARCHETYPE) return NULL;
+    if (!Fluxion_SceneArchetype_AllowedHere(record, type, false)) return NULL;
 
     archetype = &record->archetypes[entry->archetypeIndex];
     typeIndex = Fluxion_SceneArchetype_IndexOfType(archetype, type);
@@ -569,14 +612,21 @@ bool Fluxion_GameObject_RemoveComponent(FluxionSceneHandle scene, FluxionGameObj
     u32 i;
 
     if (entry == NULL || entry->archetypeIndex == FLUXION_SCENE_NO_ARCHETYPE) return false;
+    if (!Fluxion_SceneArchetype_AllowedHere(record, type, true)) return false;
 
-    // The one component that is part of an object rather than attached to
-    // it. Refused rather than allowed, so that "where is this object" can
-    // never be answered with "nowhere" -- every other piece of code here
-    // is written on the strength of that.
+    // The two components that are part of an object rather than attached
+    // to it. Refused rather than allowed, so that "where is this object"
+    // and "what scripts does it have" can never be answered with
+    // "nowhere" -- much of the rest of this module is written on the
+    // strength of that.
     if (type == Fluxion_Transform_TypeId())
     {
         Fluxion_SceneInternal_SetError(record, "an object's transform is part of it and cannot be taken away");
+        return false;
+    }
+    if (type == Fluxion_ScriptComponent_TypeId())
+    {
+        Fluxion_SceneInternal_SetError(record, "an object's link to its scripts is part of it and cannot be taken away");
         return false;
     }
 
@@ -726,6 +776,7 @@ void* Fluxion_EntityChunk_Column(const FluxionEntityChunkView* chunk, FluxionTyp
 
     record = Fluxion_SceneInternal_Resolve(chunk->scene);
     if (record == NULL || chunk->archetypeIndex >= FLUXION_SCENE_MAX_ARCHETYPES) return NULL;
+    if (!Fluxion_SceneArchetype_AllowedHere(record, type, false)) return NULL;
 
     return Fluxion_SceneArchetype_ColumnAt(&record->archetypes[chunk->archetypeIndex], chunk->chunkIndex, type);
 }

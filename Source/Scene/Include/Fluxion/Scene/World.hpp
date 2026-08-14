@@ -4,6 +4,7 @@
 #include <Fluxion/Scene/EntityCommandBuffer.h>
 #include <Fluxion/Scene/EntityQuery.h>
 #include <Fluxion/Scene/Scene.h>
+#include <Fluxion/Scene/SystemScheduler.h>
 
 #include <span>
 #include <type_traits>
@@ -299,7 +300,70 @@ public:
         return Fluxion_Scene_ComponentCount(m_handle, Core::TypeIdOf<T>());
     }
 
+    // --- Systems ---------------------------------------------------------
+
+    // What a system reads and what it changes, written as types rather
+    // than as ids worked out at the call site:
+    //
+    //   world.AddSystem<Reads<Velocity>, Writes<Position>>(
+    //       "Movement", FLUXION_SYSTEM_PHASE_SIMULATION, &Move);
+    //
+    // Both lists may be empty. A system that names nothing conflicts with
+    // nothing and may run beside anything -- which is only true if it
+    // really touches nothing, and is checked.
+    template<ComponentType... Ts> struct Reads {};
+    template<ComponentType... Ts> struct Writes {};
+
+    template<typename ReadSet = Reads<>, typename WriteSet = Writes<>>
+    FluxionSystemHandle AddSystem(const char* name, FluxionSystemPhase phase, FluxionSystemFn run, void* userData = nullptr)
+    {
+        FluxionSystemDesc desc{};
+        desc.name = name;
+        desc.phase = phase;
+        desc.run = run;
+        desc.userData = userData;
+        return AddSystemWithSets(desc, ReadSet{}, WriteSet{});
+    }
+
+    // The same, for a system that has to be told which others it runs
+    // before or after. The arrays are only read while this call runs.
+    template<typename ReadSet = Reads<>, typename WriteSet = Writes<>>
+    FluxionSystemHandle AddOrderedSystem(const char* name, FluxionSystemPhase phase, FluxionSystemFn run,
+                                         std::span<const char* const> after,
+                                         std::span<const char* const> before = {},
+                                         void* userData = nullptr)
+    {
+        FluxionSystemDesc desc{};
+        desc.name = name;
+        desc.phase = phase;
+        desc.run = run;
+        desc.userData = userData;
+        desc.executeAfter = after.data();
+        desc.executeAfterCount = (u32)after.size();
+        desc.executeBefore = before.data();
+        desc.executeBeforeCount = (u32)before.size();
+        return AddSystemWithSets(desc, ReadSet{}, WriteSet{});
+    }
+
+    bool RemoveSystem(FluxionSystemHandle system) { return Fluxion_Scene_RemoveSystem(m_handle, system); }
+    u32 SystemCount() const { return Fluxion_Scene_SystemCount(m_handle); }
+
 private:
+    template<ComponentType... Rs, ComponentType... Ws>
+    FluxionSystemHandle AddSystemWithSets(FluxionSystemDesc& desc, Reads<Rs...>, Writes<Ws...>)
+    {
+        const FluxionTypeId reads[] = { Core::TypeIdOf<Rs>()..., FLUXION_TYPE_ID_INVALID };
+        const FluxionTypeId writes[] = { Core::TypeIdOf<Ws>()..., FLUXION_TYPE_ID_INVALID };
+
+        // The trailing invalid entry is there so the arrays are never zero
+        // length, which C++ does not allow; the counts are what is read.
+        desc.reads = reads;
+        desc.readCount = (u32)sizeof...(Rs);
+        desc.writes = writes;
+        desc.writeCount = (u32)sizeof...(Ws);
+        return Fluxion_Scene_AddSystem(m_handle, &desc);
+    }
+
     World(FluxionSceneHandle handle, bool owned) : m_handle(handle), m_owned(owned) {}
 
     void Release()

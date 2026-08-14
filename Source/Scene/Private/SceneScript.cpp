@@ -366,6 +366,8 @@ void CallLifecycle(FluxionSceneRecord* record, FluxionSceneComponentRecord& comp
     if (!result.IsOk()) ReportFault(record, kLifecycleNames[which], ClassNameOf(record, component.classIndex));
 }
 
+u32* ScriptListHead(FluxionSceneRecord* record, FluxionSceneGameObjectRecord* entry);
+
 void DetachRecord(FluxionSceneRecord* record, u32 componentIndex)
 {
     FluxionSceneComponentRecord& component = record->components[componentIndex];
@@ -373,7 +375,8 @@ void DetachRecord(FluxionSceneRecord* record, u32 componentIndex)
     FluxionSceneGameObjectRecord* owner = Fluxion_SceneInternal_ResolveObject(record, component.owner);
     if (owner != nullptr)
     {
-        u32* link = &owner->firstComponent;
+        u32* link = ScriptListHead(record, owner);
+        if (link == nullptr) return;
         while (*link != FLUXION_SCENE_NO_COMPONENT)
         {
             if (*link == componentIndex)
@@ -395,12 +398,25 @@ void DetachRecord(FluxionSceneRecord* record, u32 componentIndex)
     component.nextOnOwner = FLUXION_SCENE_NO_COMPONENT;
 }
 
+// The head of an object's list of scripts. It lives in a component of the
+// object's own rather than on the object record, so there is one place it
+// can be, and so the storage can be asked which objects have scripts.
+u32* ScriptListHead(FluxionSceneRecord* record, FluxionSceneGameObjectRecord* entry)
+{
+    FluxionScriptComponent* link =
+        (FluxionScriptComponent*)Fluxion_SceneArchetype_ValueOf(record, entry, Fluxion_ScriptComponent_TypeId());
+    return (link != nullptr) ? &link->firstComponent : nullptr;
+}
+
 u32 FindComponentIndex(FluxionSceneRecord* record, FluxionGameObjectHandle object, u32 classIndex)
 {
     FluxionSceneGameObjectRecord* owner = Fluxion_SceneInternal_ResolveObject(record, object);
     if (owner == nullptr) return FLUXION_SCENE_NO_COMPONENT;
 
-    u32 cursor = owner->firstComponent;
+    const u32* head = ScriptListHead(record, owner);
+    if (head == nullptr) return FLUXION_SCENE_NO_COMPONENT;
+
+    u32 cursor = *head;
     while (cursor != FLUXION_SCENE_NO_COMPONENT)
     {
         const FluxionSceneComponentRecord& component = record->components[cursor];
@@ -447,7 +463,10 @@ void MarkComponentsOf(FluxionSceneRecord* record, FluxionGameObjectHandle object
     FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
     if (entry == nullptr) return;
 
-    u32 cursor = entry->firstComponent;
+    const u32* head = ScriptListHead(record, entry);
+    if (head == nullptr) return;
+
+    u32 cursor = *head;
     while (cursor != FLUXION_SCENE_NO_COMPONENT)
     {
         record->components[cursor].removing = true;
@@ -1108,13 +1127,14 @@ ObjectHandle AddComponent(FluxionSceneHandle scene, FluxionGameObjectHandle obje
     for (u32 i = 0; i < FLUXION_SCENE_LIFECYCLE_COUNT; ++i) component.methods[i] = methods[i];
 
     component.nextOnOwner = FLUXION_SCENE_NO_COMPONENT;
-    if (owner->firstComponent == FLUXION_SCENE_NO_COMPONENT)
+    u32* head = ScriptListHead(record, owner);
+    if (*head == FLUXION_SCENE_NO_COMPONENT)
     {
-        owner->firstComponent = slot;
+        *head = slot;
     }
     else
     {
-        u32 cursor = owner->firstComponent;
+        u32 cursor = *head;
         while (record->components[cursor].nextOnOwner != FLUXION_SCENE_NO_COMPONENT) cursor = record->components[cursor].nextOnOwner;
         record->components[cursor].nextOnOwner = slot;
     }
@@ -1154,8 +1174,11 @@ u32 ComponentCount(FluxionSceneHandle scene, FluxionGameObjectHandle object)
     FluxionSceneGameObjectRecord* owner = Fluxion_SceneInternal_ResolveObject(record, object);
     if (owner == nullptr) return 0;
 
+    const u32* head = ScriptListHead(record, owner);
+    if (head == nullptr) return 0;
+
     u32 count = 0;
-    u32 cursor = owner->firstComponent;
+    u32 cursor = *head;
     while (cursor != FLUXION_SCENE_NO_COMPONENT)
     {
         if (record->components[cursor].inUse && !record->components[cursor].removing) ++count;
@@ -1191,35 +1214,44 @@ extern "C" void Fluxion_SceneComponents_ReleaseScene(FluxionSceneRecord* record)
     record->vm = nullptr;
 }
 
-extern "C" void Fluxion_Scene_Tick(FluxionSceneHandle scene, f32 deltaTime)
+// The script half of a step, split where the phases split it: what a
+// script does every step is simulation, and what it does once everything
+// else has moved is not.
+//
+// Both are registered as systems, so they are ordered against anything
+// else the scene runs by the same rules everything else is -- rather than
+// being a step of their own that other work has to be fitted around.
+extern "C" void Fluxion_SceneComponents_RunSimulation(FluxionSceneHandle scene, f32 deltaTime, void* userData)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
-    if (record == nullptr) return;
+    (void)userData;
+    if (record == nullptr || record->vm == nullptr) return;
 
-    if (record->vm != nullptr)
-    {
-        // What the table held when the turn began. A component attached
-        // while this runs lands above the line and is picked up next turn,
-        // which is what keeps one turn from calling a component into being
-        // and then straight away calling into it.
-        const u32 limit = record->componentHighWater;
+    // What the table held when this began. A component attached while it
+    // runs lands above the line and is picked up next step, which is what
+    // keeps one step from calling a component into being and then straight
+    // away calling into it.
+    const u32 limit = record->componentHighWater;
 
-        Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_AWAKE, limit, deltaTime, true);
-        Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_START, limit, deltaTime, true);
-        Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_UPDATE, limit, deltaTime, false);
-        Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_LATE_UPDATE, limit, deltaTime, false);
-    }
+    Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_AWAKE, limit, deltaTime, true);
+    Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_START, limit, deltaTime, true);
+    Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_UPDATE, limit, deltaTime, false);
+}
 
-    // Last, and outside the check above: a scene with no scripting runtime
-    // attached still has to carry out what was written down during the
-    // turn, or a caller with no scripts would find its recorded changes
-    // piling up and never landing.
-    Fluxion_SceneInternal_PlaybackCommandBuffer(record);
+extern "C" void Fluxion_SceneComponents_RunPostSimulation(FluxionSceneHandle scene, f32 deltaTime, void* userData)
+{
+    FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
+    (void)userData;
+    if (record == nullptr || record->vm == nullptr) return;
 
-    // And only then the transforms. The order is not a preference: the
-    // update reads and writes the storage from several threads at once,
-    // which is safe exactly as long as nothing is moving between blocks
-    // while it runs -- so every structural change of the turn has to have
-    // landed first.
-    Fluxion_SceneInternal_UpdateTransforms(record);
+    Fluxion::Scene::DispatchStep(record, FLUXION_SCENE_LIFECYCLE_LATE_UPDATE, record->componentHighWater, deltaTime, false);
+}
+
+extern "C" void Fluxion_Scene_Tick(FluxionSceneHandle scene, f32 deltaTime)
+{
+    // One step is now nothing but running the scene's systems: the script
+    // lifecycle and the world-matrix update are two of them, put in the
+    // first time a scene is stepped, and anything else a caller registered
+    // sits among them in the order its declarations ask for.
+    Fluxion_Scene_RunSystems(scene, deltaTime);
 }

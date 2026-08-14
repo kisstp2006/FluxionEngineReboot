@@ -45,6 +45,7 @@
 // were read back in a different order. The type's SIZE still covers the
 // whole structure: one says how much room a component needs, the other
 // says what is worth keeping.
+//
 // Filled in the first time the type is registered rather than written out
 // as an initializer: both the name and the type id of a field are worked
 // out by calling something, and C has no way to call anything while
@@ -70,6 +71,35 @@ FluxionTypeId Fluxion_Transform_TypeId(void)
     return FLUXION_TYPE_ID_OF(FluxionTransform);
 }
 
+FluxionTypeId Fluxion_ScriptComponent_TypeId(void)
+{
+    return FLUXION_TYPE_ID_OF(FluxionScriptComponent);
+}
+
+// The script link carries nothing worth writing out: the number in it
+// points into a table that only exists while the program runs. What a
+// saved scene records about scripts is which classes were attached and
+// what their fields held, and that is the scripting half's to write.
+static FluxionTypeInfo s_scriptLinkType;
+
+static bool Fluxion_SceneScriptLink_EnsureRegistered(void)
+{
+    const FluxionTypeId id = Fluxion_ScriptComponent_TypeId();
+
+    if (!Fluxion_Reflection_IsInitialized()) return false;
+    if (Fluxion_Reflection_FindTypeById(id) != NULL) return true;
+
+    s_scriptLinkType.name = Fluxion_StringView_FromCStr("FluxionScriptComponent");
+    s_scriptLinkType.id = id;
+    s_scriptLinkType.kind = FLUXION_TYPE_KIND_STRUCT;
+    s_scriptLinkType.size = sizeof(FluxionScriptComponent);
+    s_scriptLinkType.version = 1;
+    s_scriptLinkType.members = Fluxion_Span_Make(NULL, 0, sizeof(FluxionPropertyInfo));
+    s_scriptLinkType.methods = Fluxion_Span_Make(NULL, 0, sizeof(FluxionMethodInfo));
+
+    return Fluxion_Reflection_RegisterType(&s_scriptLinkType);
+}
+
 bool Fluxion_SceneTransform_EnsureRegistered(void)
 {
     const FluxionTypeId id = Fluxion_Transform_TypeId();
@@ -86,7 +116,7 @@ bool Fluxion_SceneTransform_EnsureRegistered(void)
     // Asked of the registry rather than remembered in a flag: the registry
     // can be taken down and brought up again, and a flag would then say
     // the type is registered when it no longer is.
-    if (Fluxion_Reflection_FindTypeById(id) != NULL) return true;
+    if (Fluxion_Reflection_FindTypeById(id) != NULL) return Fluxion_SceneScriptLink_EnsureRegistered();
 
     Fluxion_SceneTransform_DescribeProperties();
 
@@ -99,7 +129,8 @@ bool Fluxion_SceneTransform_EnsureRegistered(void)
         FLUXION_SCENE_TRANSFORM_PROPERTY_COUNT, sizeof(FluxionPropertyInfo));
     s_transformType.methods = Fluxion_Span_Make(NULL, 0, sizeof(FluxionMethodInfo));
 
-    return Fluxion_Reflection_RegisterType(&s_transformType);
+    if (!Fluxion_Reflection_RegisterType(&s_transformType)) return false;
+    return Fluxion_SceneScriptLink_EnsureRegistered();
 }
 
 // --- Reaching one object's transform -------------------------------------

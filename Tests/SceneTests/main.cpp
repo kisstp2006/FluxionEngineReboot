@@ -13,6 +13,7 @@ void Test_Reload_Run(TestContext& ctx);
 void Test_DataComponents_Run(TestContext& ctx);
 void Test_Archetype_Run(TestContext& ctx);
 void Test_TransformUpdate_Run(TestContext& ctx);
+void Test_Systems_Run(TestContext& ctx);
 void Test_EntityUUID_Run(TestContext& ctx);
 void Test_CommandBuffer_Run(TestContext& ctx);
 void Test_World_Run(TestContext& ctx);
@@ -38,6 +39,7 @@ int main()
     Test_DataComponents_Run(ctx);
     Test_Archetype_Run(ctx);
     Test_TransformUpdate_Run(ctx);
+    Test_Systems_Run(ctx);
     Test_EntityUUID_Run(ctx);
     Test_CommandBuffer_Run(ctx);
     Test_World_Run(ctx);

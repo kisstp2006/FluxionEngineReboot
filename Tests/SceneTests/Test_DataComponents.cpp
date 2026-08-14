@@ -75,6 +75,12 @@ void RegisterComponentTypes()
 FluxionTypeId PositionType() { return Fluxion_TypeId_FromName(Fluxion_StringView_FromCStr(TestPosition::Name)); }
 FluxionTypeId TagType() { return Fluxion_TypeId_FromName(Fluxion_StringView_FromCStr(TestTag::Name)); }
 
+// The components every object carries because they are part of it rather
+// than attached to it: where it is, and what scripts hang off it. They are
+// counted by GetComponentTypes like anything else, so a test about how
+// many an object carries has to say so rather than hide it in a number.
+constexpr u32 kIntrinsicComponents = 2;
+
 bool SameObject(FluxionGameObjectHandle a, FluxionGameObjectHandle b)
 {
     return a.index == b.index && a.generation == b.generation;
@@ -207,8 +213,8 @@ void Test_DataComponents_Run(TestContext& ctx)
             bool sawTag = false;
             bool sawTransform = false;
 
-            TEST_CHECK(ctx, carriedCount == 3);
-            TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, object, nullptr, 0) == 3);
+            TEST_CHECK(ctx, carriedCount == kIntrinsicComponents + 2);
+            TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, object, nullptr, 0) == kIntrinsicComponents + 2);
             for (u32 i = 0; i < carriedCount; ++i)
             {
                 if (carried[i] == PositionType()) sawPosition = true;

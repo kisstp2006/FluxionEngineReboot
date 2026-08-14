@@ -82,11 +82,13 @@ FluxionSceneHandle Fluxion_Scene_Create(void)
     record->alive = true;
     record->firstRoot = Fluxion_GameObject_InvalidHandle();
 
-    // Set by hand rather than left to the clearing above: zero is a
-    // perfectly good composition index, so "none yet" has to be said
-    // explicitly or the first object would join a composition that does
-    // not exist.
+    // Both set by hand rather than left to the clearing above: zero is a
+    // perfectly good index for either, so "none yet" has to be said
+    // explicitly. Left at zero, the first object would join a composition
+    // that does not exist, and every component access would be checked
+    // against a system that is not running.
     record->baseArchetype = FLUXION_SCENE_NO_ARCHETYPE;
+    record->runningSystem = FLUXION_SCENE_NO_SYSTEM;
 
     handle.index = index;
     handle.generation = record->generation;
@@ -268,7 +270,6 @@ static FluxionGameObjectHandle Fluxion_SceneInternal_CreateGameObject(FluxionSce
     entry->parent = Fluxion_GameObject_InvalidHandle();
     entry->firstChild = Fluxion_GameObject_InvalidHandle();
     entry->nextSibling = Fluxion_GameObject_InvalidHandle();
-    entry->firstComponent = FLUXION_SCENE_NO_COMPONENT;
     entry->depth = 0;
     entry->archetypeIndex = FLUXION_SCENE_NO_ARCHETYPE;
 
@@ -302,6 +303,14 @@ static FluxionGameObjectHandle Fluxion_SceneInternal_CreateGameObject(FluxionSce
         transform->previousWorldMatrix = Fluxion_Mat4_Identity();
         transform->dirtyFlags = FLUXION_TRANSFORM_DIRTY_LOCAL | FLUXION_TRANSFORM_DIRTY_WORLD;
         record->transformsDirty = true;
+    }
+
+    // The other thing every object has from the start: the link to the
+    // scripts attached to it, empty until something attaches one.
+    {
+        FluxionScriptComponent* scripts =
+            (FluxionScriptComponent*)Fluxion_SceneArchetype_ValueOf(record, entry, Fluxion_ScriptComponent_TypeId());
+        scripts->firstComponent = FLUXION_SCENE_NO_COMPONENT;
     }
 
     Fluxion_SceneInternal_Link(record, handle, Fluxion_GameObject_InvalidHandle());

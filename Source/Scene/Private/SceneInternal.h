@@ -2,6 +2,7 @@
 
 #include <Fluxion/Scene/EntityCommandBuffer.h>
 #include <Fluxion/Scene/Scene.h>
+#include <Fluxion/Scene/SystemScheduler.h>
 #include <Fluxion/Scene/Transform.h>
 
 #ifdef __cplusplus
@@ -15,6 +16,7 @@ extern "C" {
 
 #define FLUXION_SCENE_NO_COMPONENT 0xFFFFFFFFu
 #define FLUXION_SCENE_NO_ARCHETYPE 0xFFFFFFFFu
+#define FLUXION_SCENE_NO_SYSTEM 0xFFFFFFFFu
 
 // Which lifecycle method a cached index belongs to. Resolved once when a
 // component is attached, so a turn of the scene costs no name lookup at
@@ -93,8 +95,6 @@ typedef struct FluxionSceneGameObjectRecord
     // for everything below it.
     u32 depth;
 
-    u32 firstComponent;
-
     // Where this object's data components live: which composition, which
     // of that composition's blocks, and which row of it. Every live object
     // has all three, because an object carrying nothing still belongs to
@@ -161,6 +161,51 @@ typedef struct FluxionSceneArchetype
     u32 chunkCapacity;
 } FluxionSceneArchetype;
 
+// One registered system, with everything it declared copied in: the
+// caller's arrays only have to outlive the call that registers it.
+typedef struct FluxionSceneSystem
+{
+    bool inUse;
+    u32 generation;
+
+    char name[FLUXION_SYSTEM_MAX_NAME_LENGTH];
+    FluxionSystemPhase phase;
+    FluxionSystemFn run;
+    void* userData;
+    bool exclusive;
+
+    FluxionTypeId reads[FLUXION_SYSTEM_MAX_ACCESS];
+    u32 readCount;
+    FluxionTypeId writes[FLUXION_SYSTEM_MAX_ACCESS];
+    u32 writeCount;
+
+    char executeAfter[FLUXION_SYSTEM_MAX_ORDER_LINKS][FLUXION_SYSTEM_MAX_NAME_LENGTH];
+    u32 executeAfterCount;
+    char executeBefore[FLUXION_SYSTEM_MAX_ORDER_LINKS][FLUXION_SYSTEM_MAX_NAME_LENGTH];
+    u32 executeBeforeCount;
+} FluxionSceneSystem;
+
+// The order the systems of one phase run in, and which of them may run at
+// the same time. Worked out from the declarations rather than stored by
+// the caller, and only when it has gone stale -- a scene's systems change
+// when it is being set up, not while it runs.
+typedef struct FluxionSceneSchedule
+{
+    // Every system of every phase, in the order they run. `phaseBegin[p]`
+    // is where phase p starts and `phaseEnd[p]` is one past its end.
+    u32 order[FLUXION_SCENE_MAX_SYSTEMS];
+    u32 phaseBegin[FLUXION_SYSTEM_PHASE_COUNT];
+    u32 phaseEnd[FLUXION_SYSTEM_PHASE_COUNT];
+    u32 orderCount;
+
+    // Where each run of systems that may go at once begins, as positions
+    // in `order`. A run always lies inside one phase.
+    u32 waveBegin[FLUXION_SCENE_MAX_SYSTEMS + 1];
+    u32 waveCount;
+
+    bool valid;
+} FluxionSceneSchedule;
+
 typedef struct FluxionSceneRecord
 {
     bool alive;
@@ -199,6 +244,32 @@ typedef struct FluxionSceneRecord
     // left to do and the whole update is skipped.
     bool transformsDirty;
     bool transformsChangedLastUpdate;
+
+    // The systems this scene runs, and the order worked out from what they
+    // declared. The order is rebuilt when a system is added or taken away,
+    // not every step.
+    FluxionSceneSystem systems[FLUXION_SCENE_MAX_SYSTEMS];
+    u32 systemCount;
+    FluxionSceneSchedule schedule;
+
+    // Which system is running, as an index into `systems`, or
+    // FLUXION_SCENE_NO_SYSTEM. Set by the scheduler and read by the
+    // component accessors, which is how a system touching something it
+    // never declared is caught where it happens.
+    //
+    // Not per-thread: several systems of one run may be going at once, and
+    // any of them touching something undeclared is the same mistake. What
+    // it costs is that the check names the run rather than the exact
+    // system when a run holds more than one -- which is why it reports the
+    // whole run.
+    u32 runningSystem;
+    u32 runningWaveBegin;
+    u32 runningWaveEnd;
+
+    // Whether the built-in systems have been put in. Done when the first
+    // step runs rather than when the scene is made, so that a caller
+    // adding its own systems first still gets them in the right order.
+    bool builtInSystemsAdded;
 
     // The scene's own place to write structural change down, made the
     // first time something asks for it and played back at the end of every
@@ -327,6 +398,32 @@ void Fluxion_SceneInternal_UpdateTransforms(FluxionSceneRecord* record);
 // Says this object and everything below it now sit one level deeper or
 // shallower than they did, following a change of parent.
 void Fluxion_SceneInternal_UpdateSubtreeDepth(FluxionSceneRecord* record, FluxionGameObjectHandle object, u32 depth);
+
+// --- Systems ------------------------------------------------------------
+
+// Runs every phase, working out the order first if the systems have
+// changed since it was last worked out.
+void Fluxion_SceneInternal_RunSystems(FluxionSceneRecord* record, f32 deltaTime);
+
+// Puts in the systems this module owns -- the script lifecycle and the
+// transform update -- the first time a scene is stepped. Done then rather
+// than at creation so a caller adding its own systems first still gets
+// them ordered against these.
+void Fluxion_SceneInternal_EnsureBuiltInSystems(FluxionSceneRecord* record);
+
+// Whether the system running right now, if any, declared that it touches
+// this type. `structural` asks about adding or removing a component,
+// which no system may do directly whatever it declared.
+//
+// True when no system is running, because then there is nobody whose
+// declaration to check against.
+bool Fluxion_SceneInternal_SystemMayTouch(const FluxionSceneRecord* record, FluxionTypeId type, bool structural);
+
+const char* Fluxion_SceneInternal_RunningSystemName(const FluxionSceneRecord* record);
+
+// The two the script half provides, run as systems of their own.
+void Fluxion_SceneComponents_RunSimulation(FluxionSceneHandle scene, f32 deltaTime, void* userData);
+void Fluxion_SceneComponents_RunPostSimulation(FluxionSceneHandle scene, f32 deltaTime, void* userData);
 
 // --- The scene's own command buffer -------------------------------------
 

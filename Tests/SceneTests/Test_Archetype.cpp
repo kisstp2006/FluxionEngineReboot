@@ -82,6 +82,12 @@ FluxionTypeId BetaType()  { return Fluxion_TypeId_FromName(Fluxion_StringView_Fr
 FluxionTypeId GammaType() { return Fluxion_TypeId_FromName(Fluxion_StringView_FromCStr(TestGamma::Name)); }
 FluxionTypeId BulkType()  { return Fluxion_TypeId_FromName(Fluxion_StringView_FromCStr(TestBulk::Name)); }
 
+// The components every object carries because they are part of it rather
+// than attached to it: where it is, and what scripts hang off it. They are
+// counted by GetComponentTypes like anything else, so a test about how
+// many an object carries has to say so rather than hide it in a number.
+constexpr u32 kIntrinsicComponents = 2;
+
 bool SameEntity(FluxionEntityHandle a, FluxionEntityHandle b)
 {
     return a.index == b.index && a.generation == b.generation;
@@ -233,9 +239,9 @@ void Test_Archetype_Run(TestContext& ctx)
             TEST_CHECK(ctx, ((const TestBeta*)Fluxion_GameObject_GetComponent(scene, entity, BetaType()))->value == 222u);
         }
 
-        // Four, not three: the transform every entity carries is counted
-        // here like anything else.
-        TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == 4);
+        // More than the three attached: the ones every entity carries as
+        // part of itself are counted here like anything else.
+        TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == kIntrinsicComponents + 3);
 
         // Taking one away moves everything again, and the two that stay
         // must keep their values -- including the one that was NOT next to
@@ -251,13 +257,16 @@ void Test_Archetype_Run(TestContext& ctx)
         // must not be a special case anywhere.
         TEST_CHECK(ctx, Fluxion_GameObject_RemoveComponent(scene, entity, AlphaType()));
         TEST_CHECK(ctx, Fluxion_GameObject_RemoveComponent(scene, entity, GammaType()));
-        TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == 1);
+        TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == kIntrinsicComponents);
         TEST_CHECK(ctx, Fluxion_GameObject_HasComponent(scene, entity, Fluxion_Transform_TypeId()));
+        TEST_CHECK(ctx, Fluxion_GameObject_HasComponent(scene, entity, Fluxion_ScriptComponent_TypeId()));
         TEST_CHECK(ctx, Fluxion_GameObject_IsValid(scene, entity));
 
-        // And it cannot be taken away, however it is asked for.
+        // And neither can be taken away, however it is asked for.
         TEST_CHECK(ctx, !Fluxion_GameObject_RemoveComponent(scene, entity, Fluxion_Transform_TypeId()));
         TEST_CHECK(ctx, Fluxion_GameObject_HasComponent(scene, entity, Fluxion_Transform_TypeId()));
+        TEST_CHECK(ctx, !Fluxion_GameObject_RemoveComponent(scene, entity, Fluxion_ScriptComponent_TypeId()));
+        TEST_CHECK(ctx, Fluxion_GameObject_HasComponent(scene, entity, Fluxion_ScriptComponent_TypeId()));
 
         {
             TestAlpha a; a.value = 999u;
@@ -274,8 +283,7 @@ void Test_Archetype_Run(TestContext& ctx)
             FluxionTypeId one[1];
             const u32 written = Fluxion_GameObject_GetComponentTypes(scene, entity, one, 1);
             TEST_CHECK(ctx, written == 1);
-            TEST_CHECK(ctx, one[0] == AlphaType() || one[0] == BetaType() || one[0] == Fluxion_Transform_TypeId());
-            TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == 3);
+            TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == kIntrinsicComponents + 2);
         }
 
         Fluxion_Scene_Destroy(scene);

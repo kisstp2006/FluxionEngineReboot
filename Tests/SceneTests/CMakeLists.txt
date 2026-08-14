@@ -11,6 +11,7 @@ engine_add_test(
         Test_DataComponents.cpp
         Test_Archetype.cpp
         Test_TransformUpdate.cpp
+        Test_Systems.cpp
         Test_EntityUUID.cpp
         Test_CommandBuffer.cpp
         Test_World.cpp
@@ -31,6 +32,8 @@ engine_add_header_selfcontained_test(
         Fluxion/Scene/Scene.h
         Fluxion/Scene/EntityCommandBuffer.h
         Fluxion/Scene/EntityQuery.h
+        Fluxion/Scene/Transform.h
+        Fluxion/Scene/SystemScheduler.h
         Fluxion/Scene/World.hpp
         Fluxion/Scene/SceneScript.hpp
         Fluxion/Scene/EngineScript.hpp
