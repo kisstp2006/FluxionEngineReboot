@@ -16,6 +16,34 @@ using namespace Fluxion::Script;
 namespace Fluxion::Scene
 {
 
+// The head of an object's list of scripts. It lives in a component of the
+// object's own rather than on the object record, so there is one place it
+// can be, and so the storage can be asked which objects have scripts.
+u32* ScriptListHead(FluxionSceneRecord* record, FluxionSceneGameObjectRecord* entry)
+{
+    FluxionScriptComponent* link =
+        (FluxionScriptComponent*)Fluxion_SceneArchetype_ValueOf(record, entry, Fluxion_ScriptComponent_TypeId());
+    return (link != nullptr) ? &link->firstComponent : nullptr;
+}
+
+u32 FindComponentIndex(FluxionSceneRecord* record, FluxionGameObjectHandle object, u32 classIndex)
+{
+    FluxionSceneGameObjectRecord* owner = Fluxion_SceneInternal_ResolveObject(record, object);
+    if (owner == nullptr) return FLUXION_SCENE_NO_COMPONENT;
+
+    const u32* head = ScriptListHead(record, owner);
+    if (head == nullptr) return FLUXION_SCENE_NO_COMPONENT;
+
+    u32 cursor = *head;
+    while (cursor != FLUXION_SCENE_NO_COMPONENT)
+    {
+        const FluxionSceneComponentRecord& component = record->components[cursor];
+        if (component.inUse && !component.removing && component.classIndex == classIndex) return cursor;
+        cursor = component.nextOnOwner;
+    }
+    return FLUXION_SCENE_NO_COMPONENT;
+}
+
 namespace
 {
 
@@ -366,8 +394,6 @@ void CallLifecycle(FluxionSceneRecord* record, FluxionSceneComponentRecord& comp
     if (!result.IsOk()) ReportFault(record, kLifecycleNames[which], ClassNameOf(record, component.classIndex));
 }
 
-u32* ScriptListHead(FluxionSceneRecord* record, FluxionSceneGameObjectRecord* entry);
-
 void DetachRecord(FluxionSceneRecord* record, u32 componentIndex)
 {
     FluxionSceneComponentRecord& component = record->components[componentIndex];
@@ -398,33 +424,6 @@ void DetachRecord(FluxionSceneRecord* record, u32 componentIndex)
     component.nextOnOwner = FLUXION_SCENE_NO_COMPONENT;
 }
 
-// The head of an object's list of scripts. It lives in a component of the
-// object's own rather than on the object record, so there is one place it
-// can be, and so the storage can be asked which objects have scripts.
-u32* ScriptListHead(FluxionSceneRecord* record, FluxionSceneGameObjectRecord* entry)
-{
-    FluxionScriptComponent* link =
-        (FluxionScriptComponent*)Fluxion_SceneArchetype_ValueOf(record, entry, Fluxion_ScriptComponent_TypeId());
-    return (link != nullptr) ? &link->firstComponent : nullptr;
-}
-
-u32 FindComponentIndex(FluxionSceneRecord* record, FluxionGameObjectHandle object, u32 classIndex)
-{
-    FluxionSceneGameObjectRecord* owner = Fluxion_SceneInternal_ResolveObject(record, object);
-    if (owner == nullptr) return FLUXION_SCENE_NO_COMPONENT;
-
-    const u32* head = ScriptListHead(record, owner);
-    if (head == nullptr) return FLUXION_SCENE_NO_COMPONENT;
-
-    u32 cursor = *head;
-    while (cursor != FLUXION_SCENE_NO_COMPONENT)
-    {
-        const FluxionSceneComponentRecord& component = record->components[cursor];
-        if (component.inUse && !component.removing && component.classIndex == classIndex) return cursor;
-        cursor = component.nextOnOwner;
-    }
-    return FLUXION_SCENE_NO_COMPONENT;
-}
 
 // One pass over every component that is going: tell it, let go of it, and
 // free the record. Repeated until nothing new was marked, because being
@@ -772,6 +771,7 @@ bool AttachRuntime(FluxionSceneHandle scene, Vm* vm)
         record->vm = nullptr;
         record->componentClass = kNoClass;
         record->bindMethod = FLUXION_SCENE_NO_FUNCTION;
+        ReleaseScriptReflection(record);
         return true;
     }
     if (!EnsureViews(record)) return false;
@@ -793,6 +793,12 @@ bool AttachRuntime(FluxionSceneHandle scene, Vm* vm)
     record->vm = vm;
     record->componentClass = componentClass;
     record->bindMethod = bindMethod;
+
+    // What the machine's classes hold, said in the terms the rest of the
+    // engine reads types in -- so that writing a script component out, or
+    // showing it, needs no knowledge of the scripting runtime at all.
+    PublishScriptReflection(record);
+
     Fluxion_SceneInternal_SetError(record, nullptr);
     return true;
 }
@@ -999,6 +1005,12 @@ bool ReloadRuntime(FluxionSceneHandle scene, const ReloadRequest& request, Diagn
     guard.Keep();
     outReport.reloaded = true;
     outReport.retired = oldVm;
+
+    // Described afresh: the classes are the new module's now, and a
+    // description left over from the old one would name fields that are
+    // gone.
+    PublishScriptReflection(record);
+
     Fluxion_SceneInternal_SetError(record, nullptr);
 
     FLUXION_LOG_INFO(kLogChannel, "Reloaded %u component(s): %u field value(s) carried across, %u left behind.",
@@ -1211,6 +1223,7 @@ extern "C" void Fluxion_SceneComponents_ReleaseScene(FluxionSceneRecord* record)
     delete[] (Fluxion::Scene::ScriptTransform*)record->transformViews;
     record->gameObjectViews = nullptr;
     record->transformViews = nullptr;
+    Fluxion::Scene::ReleaseScriptReflection(record);
     record->vm = nullptr;
 }
 

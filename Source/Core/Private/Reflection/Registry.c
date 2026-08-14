@@ -37,6 +37,12 @@ bool Fluxion_Reflection_RegisterType(const FluxionTypeInfo* typeInfo)
     return Fluxion_HashMap_Set(&s_typeRegistry, &typeInfo->id, &typeInfo);
 }
 
+bool Fluxion_Reflection_UnregisterType(FluxionTypeId id)
+{
+    FLUXION_ASSERT(s_reflectionInitialized);
+    return Fluxion_HashMap_Remove(&s_typeRegistry, &id);
+}
+
 const FluxionTypeInfo* Fluxion_Reflection_FindTypeById(FluxionTypeId id)
 {
     FLUXION_ASSERT(s_reflectionInitialized);

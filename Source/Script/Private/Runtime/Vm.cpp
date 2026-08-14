@@ -1658,6 +1658,11 @@ u32 FindMethod(const Vm* vm, u32 classIndex, const char* name)
     return kNoFunction;
 }
 
+u32 ClassCount(const Vm* vm)
+{
+    return vm ? (u32)vm->module.classes.size() : 0u;
+}
+
 const char* ClassName(const Vm* vm, u32 classIndex)
 {
     if (!vm || classIndex >= vm->module.classes.size()) return nullptr;

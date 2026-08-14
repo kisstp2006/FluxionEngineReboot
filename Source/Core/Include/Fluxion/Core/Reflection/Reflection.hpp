@@ -54,7 +54,7 @@ void GetPropertyValue(const T& instance, const FluxionPropertyInfo& property, Va
     }
     else
     {
-        property.accessor.getter(base, &outValue);
+        property.accessor.getter(base, &outValue, property.accessor.context);
     }
 }
 
@@ -68,7 +68,7 @@ void SetPropertyValue(T& instance, const FluxionPropertyInfo& property, const Va
     }
     else
     {
-        property.accessor.setter(base, &value);
+        property.accessor.setter(base, &value, property.accessor.context);
     }
 }
 
@@ -109,13 +109,16 @@ namespace Detail
         static_assert(std::is_same_v<ValueType, typename SetterTraits<decltype(Setter)>::ValueType>,
             "getter and setter must agree on the property's value type");
 
-        static void Get(const void* instance, void* outValue)
+        // The context goes unread here: a member pointer known when this
+        // is compiled already says which field, so there is nothing left
+        // for it to say.
+        static void Get(const void* instance, void* outValue, void*)
         {
             const ClassType* self = static_cast<const ClassType*>(instance);
             *static_cast<ValueType*>(outValue) = (self->*Getter)();
         }
 
-        static void Set(void* instance, const void* value)
+        static void Set(void* instance, const void* value, void*)
         {
             ClassType* self = static_cast<ClassType*>(instance);
             (self->*Setter)(*static_cast<const ValueType*>(value));

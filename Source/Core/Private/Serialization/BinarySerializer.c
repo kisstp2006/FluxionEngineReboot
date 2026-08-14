@@ -29,7 +29,7 @@ static void Fluxion_BinarySerializer_ReadPropertyBytes(const FluxionPropertyInfo
     }
     else
     {
-        property->accessor.getter(instance, outBuffer);
+        property->accessor.getter(instance, outBuffer, property->accessor.context);
     }
 }
 
@@ -41,7 +41,7 @@ static void Fluxion_BinarySerializer_WritePropertyBytes(const FluxionPropertyInf
     }
     else
     {
-        property->accessor.setter(instance, value);
+        property->accessor.setter(instance, value, property->accessor.context);
     }
 }
 

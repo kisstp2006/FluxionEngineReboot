@@ -21,8 +21,18 @@ typedef enum FluxionPropertyAccessKind
 // match, regardless of the property's actual type -- outValue/value point
 // at storage of that actual type. The C++ facade (Reflection.hpp) builds
 // these as trampolines wrapping real getter/setter member functions.
-typedef void (*FluxionPropertyGetterFn)(const void* instance, void* outValue);
-typedef void (*FluxionPropertySetterFn)(void* instance, const void* value);
+// `context` is whatever the property was registered with, and it is what
+// lets one pair of functions serve many properties. A type whose fields
+// are known when it is compiled needs none, and gets a distinct function
+// per property from the C++ facade. A type whose fields are only known
+// once the program runs -- a class read out of a script module, say --
+// cannot have a function per field, so it registers one pair and tells
+// them apart by this.
+//
+// Note what the two parameters separate: `instance` says WHICH object,
+// `context` says WHICH field of it. Neither can stand in for the other.
+typedef void (*FluxionPropertyGetterFn)(const void* instance, void* outValue, void* context);
+typedef void (*FluxionPropertySetterFn)(void* instance, const void* value, void* context);
 
 typedef struct FluxionPropertyInfo
 {
@@ -43,6 +53,12 @@ typedef struct FluxionPropertyInfo
         {
             FluxionPropertyGetterFn getter;
             FluxionPropertySetterFn setter;
+
+            // Handed back to the two above, unread by anything else. The
+            // property does not own it: whoever registered the type keeps
+            // it alive for as long as the type is registered, the same
+            // rule the registry already states for the descriptor itself.
+            void* context;
         } accessor;
     };
 } FluxionPropertyInfo;

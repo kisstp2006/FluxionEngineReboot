@@ -80,6 +80,11 @@ u32 FindClass(const Vm* vm, const char* name);
 // runs is still decided by the instance it is called on.
 u32 FindMethod(const Vm* vm, u32 classIndex, const char* name);
 
+// How many classes this machine's module declares, so that everything it
+// holds can be walked without knowing any of their names in advance --
+// which is what a host describing them to something else needs.
+u32 ClassCount(const Vm* vm);
+
 const char* ClassName(const Vm* vm, u32 classIndex);
 const char* MethodName(const Vm* vm, u32 methodIndex);
 

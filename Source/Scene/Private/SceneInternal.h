@@ -310,6 +310,12 @@ typedef struct FluxionSceneRecord
     void* gameObjectViews;
     void* transformViews;
 
+    // What this scene published about its script classes to the type
+    // registry. Held here because the registry keeps pointers rather than
+    // copies, so this outliving the registration is the whole contract.
+    // Rebuilt whenever the classes can have changed.
+    void* scriptReflection;
+
     char lastError[256];
 } FluxionSceneRecord;
 
@@ -451,4 +457,26 @@ void Fluxion_SceneComponents_ReleaseScene(FluxionSceneRecord* record);
 
 #ifdef __cplusplus
 }
+
+// The part of this module's private interface that cannot be C, because
+// the halves that share it are C++ on both sides.
+namespace Fluxion::Scene
+{
+
+// The head of an object's list of scripts, which lives in a component of
+// the object's own, and the index of the one of a given class.
+u32* ScriptListHead(FluxionSceneRecord* record, FluxionSceneGameObjectRecord* entry);
+u32 FindComponentIndex(FluxionSceneRecord* record, FluxionGameObjectHandle object, u32 classIndex);
+
+// Describes every component class of the attached machine in the engine's
+// own type registry, one property per field, and takes down whatever was
+// described before.
+//
+// Called where the classes can have changed: when a machine is attached,
+// and after every reload. A description left standing across a reload
+// would describe fields that no longer exist.
+void PublishScriptReflection(FluxionSceneRecord* record);
+void ReleaseScriptReflection(FluxionSceneRecord* record);
+
+} // namespace Fluxion::Scene
 #endif

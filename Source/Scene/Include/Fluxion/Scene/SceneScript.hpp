@@ -154,4 +154,5 @@ bool RemoveComponent(FluxionSceneHandle scene, FluxionGameObjectHandle object, u
 
 u32 ComponentCount(FluxionSceneHandle scene, FluxionGameObjectHandle object);
 
+
 } // namespace Fluxion::Scene
