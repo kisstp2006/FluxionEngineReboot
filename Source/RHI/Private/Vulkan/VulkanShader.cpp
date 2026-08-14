@@ -62,6 +62,8 @@ FluxionRHIShaderHandle Fluxion_RHIVulkan_CreateShader(FluxionRHIDeviceHandle dev
         return invalid;
     }
 
+    Fluxion_RHIVulkan_SetObjectName(deviceState->device, VK_OBJECT_TYPE_SHADER_MODULE, (u64)shader->module, desc->debugName);
+
     FluxionRHIShaderHandle handle;
     handle.index = index;
     handle.generation = generation;

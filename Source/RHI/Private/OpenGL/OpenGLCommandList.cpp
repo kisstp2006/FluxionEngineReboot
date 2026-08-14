@@ -686,3 +686,46 @@ void Fluxion_RHIOpenGL_DestroyQueryPool(FluxionRHIQueryPoolHandle queryPool)
     *pool = FluxionRHIOpenGLQueryPool{};
     Fluxion_RHIOpenGL_PoolFree(s_queryPoolSlots, FLUXION_RHI_OPENGL_MAX_QUERY_POOLS, queryPool.index, queryPool.generation);
 }
+
+void Fluxion_RHIOpenGL_CommandListResetQueryPool(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount)
+{
+    // Nothing to do: a GL query object needs no reset between uses --
+    // glQueryCounter simply overwrites its value. The call exists so a
+    // caller can write one portable frame loop.
+    FLUXION_UNUSED(commandList); FLUXION_UNUSED(queryPool); FLUXION_UNUSED(firstQuery); FLUXION_UNUSED(queryCount);
+}
+
+void Fluxion_RHIOpenGL_CommandListWriteTimestamp(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 queryIndex)
+{
+    // Executes immediately, like every other command in this backend.
+    FLUXION_UNUSED(commandList);
+    if (!Fluxion_RHIOpenGL_PoolIsValid(s_queryPoolSlots, FLUXION_RHI_OPENGL_MAX_QUERY_POOLS, queryPool.index, queryPool.generation)) return;
+    FluxionRHIOpenGLQueryPool* pool = &s_queryPools[queryPool.index];
+    if (queryIndex >= pool->count || glQueryCounter == nullptr) return;
+    glQueryCounter(pool->queries[queryIndex], GL_TIMESTAMP);
+}
+
+bool Fluxion_RHIOpenGL_QueryPoolGetResults(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks)
+{
+    if (outTicks == nullptr || queryCount == 0 || glGetQueryObjectui64v == nullptr) return false;
+    if (!Fluxion_RHIOpenGL_PoolIsValid(s_queryPoolSlots, FLUXION_RHI_OPENGL_MAX_QUERY_POOLS, queryPool.index, queryPool.generation)) return false;
+    FluxionRHIOpenGLQueryPool* pool = &s_queryPools[queryPool.index];
+    if (firstQuery + queryCount > pool->count) return false;
+
+    // GL_QUERY_RESULT blocks until the value exists, which in this
+    // backend it already does by the time a caller sensibly asks -- the
+    // fence it waited on was a glFinish.
+    for (u32 i = 0; i < queryCount; ++i)
+    {
+        GLuint64 value = 0;
+        glGetQueryObjectui64v(pool->queries[firstQuery + i], GL_QUERY_RESULT, &value);
+        outTicks[i] = (u64)value;
+    }
+    return true;
+}
+
+u64 Fluxion_RHIOpenGL_GetTimestampFrequency(FluxionRHIDeviceHandle device)
+{
+    if (Fluxion_RHIOpenGL_ResolveDevice(device) == nullptr) return 0;
+    return 1000000000ull; // GL_TIMESTAMP is defined to report nanoseconds
+}

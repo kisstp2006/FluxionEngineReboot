@@ -2,6 +2,8 @@
 
 #include "RendererInternal.h"
 
+#include <Fluxion/Core/Diagnostics/ProfileScope.hpp>
+
 #include <Fluxion/Foundation/Assert.h>
 
 #include <cstdio>
@@ -202,7 +204,14 @@ extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resol
         (unsigned long long)hash);
     desc.debugName = name;
 
-    FluxionRHIPipelineHandle rhiPipeline = Fluxion_RHI_CreateGraphicsPipeline(device, &desc);
+    FluxionRHIPipelineHandle rhiPipeline;
+    {
+        // Only the miss path is inside the zone: a cache hit returned
+        // above, so every sample of this zone is a real native pipeline
+        // build -- the expensive thing worth seeing on a timeline.
+        FLUXION_PROFILE_SCOPE("RenderPipeline.BuildVariant");
+        rhiPipeline = Fluxion_RHI_CreateGraphicsPipeline(device, &desc);
+    }
 
     FluxionPipelineVariant& variant = record->variants[record->variantCount++];
     variant.used = true;

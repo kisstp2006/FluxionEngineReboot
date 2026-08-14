@@ -201,6 +201,19 @@ FluxionRHIBindGroupLayoutHandle FluxionRendererInternal_ShaderProgram_GetMateria
 // the same program, which is the whole point of reloading in place.
 const char* FluxionRendererInternal_ShaderProgram_GetDebugName(FluxionShaderProgramHandle program);
 
+// --- Memory domains ---------------------------------------------------------
+//
+// Two domains, registered lazily and only when a host actually turned
+// the memory tracker on: "Renderer" (the module's own long-lived GPU
+// buffers -- object buffer, debug vertices, mesh vertex/index data) and
+// "GPUUpload" under it (staging traffic: bytes that exist only to carry
+// data to the GPU and are freed the moment the copy lands). The bytes
+// recorded are GPU allocations, attributed explicitly -- there is no CPU
+// allocator in that path for a tracking allocator to wrap.
+void FluxionRendererInternal_EnsureMemoryDomains(void);
+void FluxionRendererInternal_RecordGpuAlloc(bool upload, usize bytes);
+void FluxionRendererInternal_RecordGpuFree(bool upload, usize bytes);
+
 // Copies up to maxParams entries of this program's MATERIAL-group
 // uniform members + textures into outParams, returning the number
 // written; *outUniformBufferSize receives the merged Material uniform

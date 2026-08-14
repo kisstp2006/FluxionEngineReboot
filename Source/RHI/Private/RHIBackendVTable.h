@@ -86,6 +86,10 @@ typedef struct FluxionRHIBackendVTable
     void (*DestroySemaphore)(FluxionRHISemaphoreHandle semaphore);
     FluxionRHIQueryPoolHandle (*CreateQueryPool)(FluxionRHIDeviceHandle device, u32 queryCount);
     void (*DestroyQueryPool)(FluxionRHIQueryPoolHandle queryPool);
+    void (*CommandListResetQueryPool)(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount);
+    void (*CommandListWriteTimestamp)(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 queryIndex);
+    bool (*QueryPoolGetResults)(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks);
+    u64 (*GetTimestampFrequency)(FluxionRHIDeviceHandle device);
 
     FluxionRHINativeHandle (*GetNativeDeviceHandle)(FluxionRHIDeviceHandle device);
     FluxionRHINativeHandle (*GetNativeBufferHandle)(FluxionRHIBufferHandle buffer);
@@ -99,3 +103,10 @@ typedef struct FluxionRHIBackendVTable
 // vtable to dispatch every subsequent call on this instance through, or
 // NULL (outInstance left invalid) if the backend failed to initialize.
 typedef const FluxionRHIBackendVTable* (*FluxionRHIBackendCreateInstanceFn)(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
+
+// The validation layer (RHIValidation.c): hands back a vtable that
+// checks and forwards into `real`. Wrap when the caller asked for
+// validation; Unwrap on instance destruction, clearing every piece of
+// shadow state so the next instance starts clean.
+const FluxionRHIBackendVTable* Fluxion_RHIValidation_Wrap(const FluxionRHIBackendVTable* real);
+void Fluxion_RHIValidation_Unwrap(void);

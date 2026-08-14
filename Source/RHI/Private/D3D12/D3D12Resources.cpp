@@ -93,6 +93,8 @@ FluxionRHIBufferHandle Fluxion_RHID3D12_CreateBuffer(FluxionRHIDeviceHandle devi
     if (heapType != D3D12_HEAP_TYPE_DEFAULT)
         buffer->resource->Map(0, nullptr, &buffer->mappedPointer); // persistently mapped, same pattern as the Vulkan backend's VMA_ALLOCATION_CREATE_MAPPED_BIT buffers
 
+    Fluxion_RHID3D12_SetName(buffer->resource.Get(), desc->debugName);
+
     FluxionRHIBufferHandle handle;
     handle.index = index;
     handle.generation = generation;
@@ -134,6 +136,16 @@ FluxionRHID3D12Buffer* Fluxion_RHID3D12_ResolveBuffer(FluxionRHIBufferHandle buf
 {
     if (!Fluxion_RHID3D12_PoolIsValid(s_bufferSlots, FLUXION_RHI_D3D12_MAX_BUFFERS, buffer.index, buffer.generation)) return nullptr;
     return &s_buffers[buffer.index];
+}
+
+void Fluxion_RHID3D12_SetName(ID3D12Object* object, const char* name)
+{
+    if (object == nullptr || name == nullptr || name[0] == '\0') return;
+    wchar_t wide[192];
+    const int written = MultiByteToWideChar(CP_UTF8, 0, name, -1, wide, 191);
+    if (written <= 0) return;
+    wide[191] = L'\0';
+    object->SetName(wide);
 }
 
 // --- Textures ------------------------------------------------------------
@@ -199,6 +211,8 @@ FluxionRHITextureHandle Fluxion_RHID3D12_CreateTexture(FluxionRHIDeviceHandle de
         Fluxion_RHID3D12_PoolFree(s_textureSlots, FLUXION_RHI_D3D12_MAX_TEXTURES, index, generation);
         return invalid;
     }
+
+    Fluxion_RHID3D12_SetName(texture->resource.Get(), desc->debugName);
 
     FluxionRHITextureHandle handle;
     handle.index = index;

@@ -15,6 +15,8 @@ typedef struct FluxionMeshBufferRecord
     FluxionRHIBufferHandle indexBuffer; // invalid if this mesh has no index data
     u32 vertexCount;
     u32 indexCount;
+    usize vertexBytes;
+    usize indexBytes;
     bool use16BitIndices;
     FluxionRHIVertexLayout vertexLayout;
     FluxionAABB bounds;
@@ -51,6 +53,7 @@ FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device,
     stagingDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
     stagingDesc.debugName = "Fluxion.MeshBuffer.Staging";
     FluxionRHIBufferHandle stagingBuffer = Fluxion_RHI_CreateBuffer(device, &stagingDesc);
+    if (FLUXION_HANDLE_IS_VALID(stagingBuffer)) FluxionRendererInternal_RecordGpuAlloc(true, stagingDesc.size);
 
     u8* mapped = (u8*)Fluxion_RHI_MapBuffer(stagingBuffer);
     memcpy(mapped, desc->vertexData, desc->vertexDataSize);
@@ -63,6 +66,7 @@ FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device,
     vertexBufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
     vertexBufferDesc.debugName = desc->debugName;
     FluxionRHIBufferHandle vertexBuffer = Fluxion_RHI_CreateBuffer(device, &vertexBufferDesc);
+    if (FLUXION_HANDLE_IS_VALID(vertexBuffer)) FluxionRendererInternal_RecordGpuAlloc(false, vertexBufferDesc.size);
 
     FluxionRHIBufferHandle indexBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     if (hasIndices)
@@ -73,14 +77,41 @@ FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device,
         indexBufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
         indexBufferDesc.debugName = desc->debugName;
         indexBuffer = Fluxion_RHI_CreateBuffer(device, &indexBufferDesc);
+        if (FLUXION_HANDLE_IS_VALID(indexBuffer)) FluxionRendererInternal_RecordGpuAlloc(false, indexBufferDesc.size);
     }
 
     FluxionRHICommandListHandle uploadCommandList = Fluxion_RHI_CreateCommandList(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
     Fluxion_RHI_CommandList_Begin(uploadCommandList);
+
+    // Into COPY_DESTINATION before the copy, explicitly. The backends in
+    // use happen to tolerate copying into a freshly created buffer (a
+    // buffer has no layout in one API and promotes from COMMON in
+    // another), so this never failed visibly -- but the post-upload
+    // barrier below then declared COPY_DESTINATION as its before-state
+    // without anything ever having put the buffer there, and a declared
+    // state that never happened is exactly the kind of lie that stays
+    // invisible until a stricter backend or tool calls it out.
+    FluxionRHITextureHandle noTexture = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    FluxionRHIBarrier preCopyBarriers[2];
+    u32 preCopyCount = 0;
+    preCopyBarriers[preCopyCount].texture = noTexture;
+    preCopyBarriers[preCopyCount].buffer = vertexBuffer;
+    preCopyBarriers[preCopyCount].before = FLUXION_RHI_RESOURCE_STATE_COMMON;
+    preCopyBarriers[preCopyCount].after = FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION;
+    ++preCopyCount;
+    if (hasIndices)
+    {
+        preCopyBarriers[preCopyCount].texture = noTexture;
+        preCopyBarriers[preCopyCount].buffer = indexBuffer;
+        preCopyBarriers[preCopyCount].before = FLUXION_RHI_RESOURCE_STATE_COMMON;
+        preCopyBarriers[preCopyCount].after = FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION;
+        ++preCopyCount;
+    }
+    Fluxion_RHI_CommandList_Barrier(uploadCommandList, preCopyBarriers, preCopyCount);
+
     Fluxion_RHI_CommandList_CopyBuffer(uploadCommandList, stagingBuffer, 0, vertexBuffer, 0, desc->vertexDataSize);
     if (hasIndices) Fluxion_RHI_CommandList_CopyBuffer(uploadCommandList, stagingBuffer, desc->vertexDataSize, indexBuffer, 0, desc->indexDataSize);
 
-    FluxionRHITextureHandle noTexture = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     FluxionRHIBarrier postUploadBarriers[2];
     u32 barrierCount = 0;
     postUploadBarriers[barrierCount].texture = noTexture;
@@ -106,6 +137,7 @@ FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device,
     Fluxion_RHI_DestroyFence(uploadFence);
     Fluxion_RHI_DestroyCommandList(uploadCommandList);
     Fluxion_RHI_DestroyBuffer(stagingBuffer);
+    FluxionRendererInternal_RecordGpuFree(true, stagingDesc.size);
     Fluxion_RHI_Device_CollectGarbage(device);
 
     FluxionMeshBufferRecord* record = &s_meshBuffers[index];
@@ -116,6 +148,8 @@ FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device,
     record->vertexBuffer = vertexBuffer;
     record->indexBuffer = indexBuffer;
     record->vertexCount = desc->vertexLayout.stride > 0 ? (u32)(desc->vertexDataSize / desc->vertexLayout.stride) : 0;
+    record->vertexBytes = desc->vertexDataSize;
+    record->indexBytes = hasIndices ? desc->indexDataSize : 0;
     record->indexCount = hasIndices ? (u32)(desc->indexDataSize / (desc->use16BitIndices ? sizeof(u16) : sizeof(u32))) : 0;
     record->use16BitIndices = desc->use16BitIndices;
     record->vertexLayout = desc->vertexLayout;
@@ -135,7 +169,12 @@ void Fluxion_MeshBuffer_Destroy(FluxionMeshBufferHandle mesh)
     }
 
     Fluxion_RHI_DestroyBuffer(record->vertexBuffer);
-    if (FLUXION_HANDLE_IS_VALID(record->indexBuffer)) Fluxion_RHI_DestroyBuffer(record->indexBuffer);
+    FluxionRendererInternal_RecordGpuFree(false, record->vertexBytes);
+    if (FLUXION_HANDLE_IS_VALID(record->indexBuffer))
+    {
+        Fluxion_RHI_DestroyBuffer(record->indexBuffer);
+        FluxionRendererInternal_RecordGpuFree(false, record->indexBytes);
+    }
 
     record->alive = false;
     ++record->generation;

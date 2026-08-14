@@ -421,6 +421,8 @@ FluxionRHIPipelineHandle Fluxion_RHID3D12_CreateGraphicsPipeline(FluxionRHIDevic
         return invalid;
     }
 
+    Fluxion_RHID3D12_SetName(pipeline->pipelineState.Get(), desc->debugName);
+
     FluxionRHIPipelineHandle handle;
     handle.index = index;
     handle.generation = generation;
@@ -464,6 +466,8 @@ FluxionRHIPipelineHandle Fluxion_RHID3D12_CreateComputePipeline(FluxionRHIDevice
         Fluxion_RHID3D12_PoolFree(s_pipelineSlots, FLUXION_RHI_D3D12_MAX_PIPELINES, index, generation);
         return invalid;
     }
+
+    Fluxion_RHID3D12_SetName(pipeline->pipelineState.Get(), desc->debugName);
 
     FluxionRHIPipelineHandle handle;
     handle.index = index;

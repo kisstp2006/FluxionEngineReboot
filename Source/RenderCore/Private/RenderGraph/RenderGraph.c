@@ -1,5 +1,7 @@
 #include "RenderGraphInternal.h"
 
+#include <Fluxion/Core/Diagnostics/Profiler.h>
+
 #include <Fluxion/Foundation/Assert.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraphPassRegistry.h>
 
@@ -102,7 +104,12 @@ FluxionRenderGraphBufferHandle Fluxion_RenderGraph_ImportBuffer(FluxionRenderGra
 bool Fluxion_RenderGraph_Compile(FluxionRenderGraph* graph)
 {
     FLUXION_ASSERT(graph != NULL);
+    // Begin/End by hand rather than a scope guard -- this is a C file.
+    // The early returns above the pair keep the pairing trivially right.
+    FluxionSourceLocation zoneLocation = { __FILE__, __func__, __LINE__ };
+    Fluxion_Profiler_ZoneBegin(&zoneLocation, "RenderGraph.Compile");
     graph->compiled = Fluxion_RenderGraphInternal_Compile(graph);
+    Fluxion_Profiler_ZoneEnd();
     return graph->compiled;
 }
 

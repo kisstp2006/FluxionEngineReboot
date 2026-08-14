@@ -415,6 +415,10 @@ static const FluxionRHIBackendVTable s_openglVTable = {
     Fluxion_RHIOpenGL_DestroySemaphore,
     Fluxion_RHIOpenGL_CreateQueryPool,
     Fluxion_RHIOpenGL_DestroyQueryPool,
+    Fluxion_RHIOpenGL_CommandListResetQueryPool,
+    Fluxion_RHIOpenGL_CommandListWriteTimestamp,
+    Fluxion_RHIOpenGL_QueryPoolGetResults,
+    Fluxion_RHIOpenGL_GetTimestampFrequency,
 
     Fluxion_RHIOpenGL_GetNativeDeviceHandle,
     Fluxion_RHIOpenGL_GetNativeBufferHandle,

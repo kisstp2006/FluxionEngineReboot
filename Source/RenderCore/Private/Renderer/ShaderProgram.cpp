@@ -7,6 +7,8 @@
 
 #include "RendererInternal.h"
 
+#include <Fluxion/Core/Diagnostics/ProfileScope.hpp>
+
 #include <Fluxion/Core/Jobs/JobSystem.h>
 #include <Fluxion/Foundation/Assert.h>
 #include <Fluxion/Foundation/Log.h>
@@ -244,6 +246,11 @@ ArtifactTarget TargetForBackend(FluxionRHIBackendType backend)
 bool CompileArtifact(FluxionRHIBackendType backend, const char* source, const char* entryPoint, const char* debugName, ShaderStage stage,
     CompiledArtifact* outArtifact)
 {
+    // Shader compilation is the demo's single largest startup cost and
+    // the whole of a hot reload's background work -- the zone is what
+    // shows whether the cache is actually being hit.
+    FLUXION_PROFILE_FUNCTION();
+
     DiagnosticList diagnostics;
 
     ArtifactRequest request;

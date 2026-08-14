@@ -473,6 +473,50 @@ void Fluxion_RHI_DestroySemaphore(FluxionRHISemaphoreHandle semaphore);
 FluxionRHIQueryPoolHandle Fluxion_RHI_CreateQueryPool(FluxionRHIDeviceHandle device, u32 queryCount);
 void Fluxion_RHI_DestroyQueryPool(FluxionRHIQueryPoolHandle queryPool);
 
+// --- GPU timestamps -------------------------------------------------------
+//
+// The pool holds timestamp queries only. The intended shape of a frame:
+// reset the queries about to be reused, write one at each point of
+// interest, submit, wait the frame's fence, then read the results back
+// and convert ticks to time with the device's timestamp frequency.
+
+// Makes [firstQuery, firstQuery+queryCount) writable again. Recorded on a
+// command list rather than done host-side, because that is the one shape
+// every backend can express: a backend whose queries need no reset simply
+// records nothing. A query must be reset on the same or an earlier
+// submission than the write that reuses it -- including its very first
+// write.
+void Fluxion_RHI_CommandList_ResetQueryPool(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount);
+
+// Records "write the GPU clock into query `queryIndex` once all work
+// recorded before this point has finished".
+void Fluxion_RHI_CommandList_WriteTimestamp(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 queryIndex);
+
+// Copies [firstQuery, firstQuery+queryCount) into outTicks, in GPU clock
+// ticks (divide by the device's timestamp frequency for seconds).
+// Returns false if the range is invalid or a backend can tell the values
+// are not ready yet. Not every backend can tell: results are only
+// defined once the submissions that wrote them have completed, which the
+// caller establishes by waiting the same fence it already waits per
+// frame -- reading earlier is a caller bug this function is allowed, but
+// not required, to catch.
+bool Fluxion_RHI_QueryPool_GetResults(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks);
+
+// Ticks per second of the clock WriteTimestamp samples. Constant for the
+// life of the device; zero only if the device is invalid.
+u64 Fluxion_RHI_Device_GetTimestampFrequency(FluxionRHIDeviceHandle device);
+
+// --- Validation -------------------------------------------------------------
+//
+// Alive only when the instance was created with enableValidation: an
+// engine-owned checking layer wraps the backend and reports (logs and
+// counts) invalid calls instead of asserting, so a test can drive
+// deliberately broken calls into it and assert on this count -- and a
+// developer sees every mistake in a frame rather than only the first.
+// With validation off, the count simply stays zero.
+u64 Fluxion_RHI_Validation_GetErrorCount(void);
+void Fluxion_RHI_Validation_ResetErrorCount(void);
+
 #ifdef __cplusplus
 }
 #endif

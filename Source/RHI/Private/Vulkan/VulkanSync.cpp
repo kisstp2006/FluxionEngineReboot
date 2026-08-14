@@ -191,6 +191,10 @@ VkSemaphore Fluxion_RHIVulkan_ResolveBinarySemaphore(FluxionRHISemaphoreHandle s
 
 // --- Query pools --------------------------------------------------------
 
+// Remembered at create time so GetResults can bound its reads -- Vulkan
+// itself has no "how big is this pool" query.
+static u32 s_queryPoolCounts[FLUXION_RHI_VULKAN_MAX_QUERY_POOLS];
+
 FluxionRHIQueryPoolHandle Fluxion_RHIVulkan_CreateQueryPool(FluxionRHIDeviceHandle device, u32 queryCount)
 {
     FluxionRHIQueryPoolHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -209,6 +213,7 @@ FluxionRHIQueryPoolHandle Fluxion_RHIVulkan_CreateQueryPool(FluxionRHIDeviceHand
         Fluxion_RHIVulkan_PoolFree(s_queryPoolSlots, FLUXION_RHI_VULKAN_MAX_QUERY_POOLS, index, generation);
         return invalid;
     }
+    s_queryPoolCounts[index] = queryCount;
 
     FluxionRHIQueryPoolHandle handle;
     handle.index = index;
@@ -229,4 +234,60 @@ void Fluxion_RHIVulkan_DestroyQueryPool(FluxionRHIQueryPoolHandle queryPool)
         s_queryPools[queryPool.index] = VK_NULL_HANDLE;
     }
     Fluxion_RHIVulkan_PoolFree(s_queryPoolSlots, FLUXION_RHI_VULKAN_MAX_QUERY_POOLS, queryPool.index, queryPool.generation);
+}
+
+void Fluxion_RHIVulkan_CommandListResetQueryPool(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount)
+{
+    VkCommandBuffer cmd = Fluxion_RHIVulkan_ResolveCommandBuffer(commandList);
+    if (cmd == VK_NULL_HANDLE) return;
+    if (!Fluxion_RHIVulkan_PoolIsValid(s_queryPoolSlots, FLUXION_RHI_VULKAN_MAX_QUERY_POOLS, queryPool.index, queryPool.generation)) return;
+    vkCmdResetQueryPool(cmd, s_queryPools[queryPool.index], firstQuery, queryCount);
+}
+
+void Fluxion_RHIVulkan_CommandListWriteTimestamp(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 queryIndex)
+{
+    VkCommandBuffer cmd = Fluxion_RHIVulkan_ResolveCommandBuffer(commandList);
+    if (cmd == VK_NULL_HANDLE) return;
+    if (!Fluxion_RHIVulkan_PoolIsValid(s_queryPoolSlots, FLUXION_RHI_VULKAN_MAX_QUERY_POOLS, queryPool.index, queryPool.generation)) return;
+    // BOTTOM_OF_PIPE: the timestamp lands once everything recorded before
+    // it has actually finished, which is what "how long did that take"
+    // needs -- TOP_OF_PIPE would measure when the GPU merely started
+    // looking at the commands.
+    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s_queryPools[queryPool.index], queryIndex);
+}
+
+bool Fluxion_RHIVulkan_QueryPoolGetResults(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks)
+{
+    if (outTicks == nullptr || queryCount == 0) return false;
+    if (!Fluxion_RHIVulkan_PoolIsValid(s_queryPoolSlots, FLUXION_RHI_VULKAN_MAX_QUERY_POOLS, queryPool.index, queryPool.generation)) return false;
+    if (firstQuery + queryCount > s_queryPoolCounts[queryPool.index]) return false;
+
+    // WITH_AVAILABILITY interleaves an availability word after each
+    // value, which is what lets this return false for a result the GPU
+    // has not produced yet instead of handing back stale bytes -- the
+    // one caller mistake this backend can actually catch.
+    u64 paired[128 * 2];
+    if (queryCount > 128) return false;
+    VkResult result = vkGetQueryPoolResults(Fluxion_RHIVulkan_GetOwningDevice(), s_queryPools[queryPool.index],
+        firstQuery, queryCount, sizeof(u64) * 2 * queryCount, paired, sizeof(u64) * 2,
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (result != VK_SUCCESS) return false;
+    for (u32 i = 0; i < queryCount; ++i)
+    {
+        if (paired[i * 2 + 1] == 0) return false; // not yet available
+        outTicks[i] = paired[i * 2];
+    }
+    return true;
+}
+
+u64 Fluxion_RHIVulkan_GetTimestampFrequency(FluxionRHIDeviceHandle device)
+{
+    FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_ResolveDevice(device);
+    if (deviceState == nullptr) return 0;
+    VkPhysicalDeviceProperties properties = {};
+    vkGetPhysicalDeviceProperties(deviceState->physicalDevice, &properties);
+    // timestampPeriod is nanoseconds per tick; the contract wants ticks
+    // per second. A period of exactly 1.0 (common) lands on 1e9.
+    if (properties.limits.timestampPeriod <= 0.0f) return 0;
+    return (u64)(1000000000.0 / (double)properties.limits.timestampPeriod);
 }

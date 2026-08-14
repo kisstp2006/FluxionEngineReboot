@@ -26,6 +26,7 @@
 #include <Fluxion/Core/Jobs/JobSystem.h>
 #include <Fluxion/Foundation/Defines.h>
 #include <Fluxion/Foundation/Log.h>
+#include <Fluxion/Foundation/Memory/MemoryTracker.h>
 #include <Fluxion/Foundation/Math.h>
 #include <Fluxion/RHI/RHI.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraph.h>
@@ -179,6 +180,10 @@ int main(int argc, char** argv)
         else if (std::strncmp(argv[i], "--frames=", 9) == 0) frameLimit = std::strtoull(argv[i] + 9, nullptr, 10);
     }
     const char* backendName = backendType == FLUXION_RHI_BACKEND_OPENGL ? "OpenGL" : backendType == FLUXION_RHI_BACKEND_D3D12 ? "D3D12" : "Vulkan";
+    // The host owns diagnostics subsystems, same as it owns the job
+    // system: modules below only offer statistics when this is on.
+    Fluxion_MemoryTracker_Init();
+
     FluxionEventQueue queue;
     Fluxion_EventQueue_Init(&queue, NULL, 256);
     Fluxion_WindowSystem_Init(NULL, &queue, 1);
@@ -632,6 +637,16 @@ int main(int argc, char** argv)
     FluxionShaderProgramReloadJob* shaderReload = nullptr;
     u64 framesDrawn = 0;
 
+    // Two timestamps a frame -- one before the graph executes, one after
+    // -- read back after the same fence wait the frame already does, so
+    // the values are certainly complete. The sum and count make a
+    // closing average: a real number a person can compare against what
+    // a frame of this scene plausibly costs.
+    FluxionRHIQueryPoolHandle gpuTimeQueries = Fluxion_RHI_CreateQueryPool(device, 2);
+    const u64 gpuTimestampFrequency = Fluxion_RHI_Device_GetTimestampFrequency(device);
+    f64 gpuTimeTotalMs = 0.0;
+    u64 gpuTimeSamples = 0;
+
     // Set for the single frame that follows a resize, when the depth
     // texture has been replaced and the new one has never been used.
     bool depthIsUndefined = false;
@@ -904,8 +919,11 @@ int main(int argc, char** argv)
             FLUXION_LOG_ERROR("ForwardRendererDemo", "Render graph compilation failed -- this is a real bug, not a transient condition.");
             std::exit(1);
         }
+        Fluxion_RHI_CommandList_ResetQueryPool(cmd, gpuTimeQueries, 0, 2);
+        Fluxion_RHI_CommandList_WriteTimestamp(cmd, gpuTimeQueries, 0);
         Fluxion_RenderGraph_Execute(graph, cmd);
         Fluxion_Renderer_EndFrame(renderer, cmd);
+        Fluxion_RHI_CommandList_WriteTimestamp(cmd, gpuTimeQueries, 1);
 
         // The render graph's own compiled barrier list ends the backbuffer
         // in whatever state "ForwardOpaquePass" last wrote it as
@@ -936,6 +954,15 @@ int main(int argc, char** argv)
             std::exit(1);
         }
         Fluxion_RHI_ResetFence(frameFences[frameIndex]); // ready for this slot's next use, FLUXION_DEMO_FRAMES_IN_FLIGHT frames from now
+
+        // The fence above covered this frame's submission, so both
+        // timestamps exist by now on every backend.
+        u64 gpuTicks[2];
+        if (gpuTimestampFrequency != 0 && Fluxion_RHI_QueryPool_GetResults(gpuTimeQueries, 0, 2, gpuTicks) && gpuTicks[1] > gpuTicks[0])
+        {
+            gpuTimeTotalMs += (f64)(gpuTicks[1] - gpuTicks[0]) * 1000.0 / (f64)gpuTimestampFrequency;
+            ++gpuTimeSamples;
+        }
         Fluxion_RHI_Swapchain_Present(swapchain, imageIndex, noSemaphore);
 
         // Safe to actually reclaim this frame's transient objects right
@@ -993,6 +1020,13 @@ int main(int argc, char** argv)
     Fluxion_Material_Destroy(cubeMaterial);
     // Applied rather than abandoned: Finish waits for the compiling and
     // then releases it, and there is no other way to let the job go.
+    if (gpuTimeSamples > 0)
+    {
+        FLUXION_LOG_INFO("ForwardRendererDemo", "GPU frame time: %.3f ms on average over %llu frames.",
+            gpuTimeTotalMs / (f64)gpuTimeSamples, (unsigned long long)gpuTimeSamples);
+    }
+    Fluxion_RHI_DestroyQueryPool(gpuTimeQueries);
+
     if (shaderReload != nullptr) Fluxion_ShaderProgram_FinishReload(shaderReload);
 
     Fluxion_ShaderProgram_Destroy(cubeProgram);
@@ -1010,6 +1044,7 @@ int main(int argc, char** argv)
 
     Fluxion_Window_Destroy(window);
     Fluxion_JobSystem_Shutdown();
+    Fluxion_MemoryTracker_Shutdown(); // logs a warning per domain with bytes still standing -- a lightweight leak signal
     Fluxion_WindowSystem_Shutdown();
     Fluxion_Time_Shutdown();
     Fluxion_Input_Shutdown();

@@ -10,6 +10,8 @@ void Test_VulkanBackend_Run(TestContext* ctx);
 void Test_OpenGLBackend_Run(TestContext* ctx);
 void Test_BindGroup_Run(TestContext* ctx);
 void Test_PipelineCacheFile_Run(TestContext* ctx);
+void Test_Timestamps_Run(TestContext* ctx);
+void Test_Validation_Run(TestContext* ctx);
 #if defined(_WIN32)
 // D3D12 doesn't exist outside Windows -- Test_D3D12Backend.c is only
 // compiled into this executable on that platform (see CMakeLists.txt),
@@ -31,6 +33,8 @@ int main(void)
     Test_OpenGLBackend_Run(&ctx);
     Test_BindGroup_Run(&ctx);
     Test_PipelineCacheFile_Run(&ctx);
+    Test_Timestamps_Run(&ctx);
+    Test_Validation_Run(&ctx);
 #if defined(_WIN32)
     Test_D3D12Backend_Run(&ctx);
 #endif

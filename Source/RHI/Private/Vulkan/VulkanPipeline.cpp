@@ -254,6 +254,8 @@ FluxionRHIPipelineHandle Fluxion_RHIVulkan_CreateGraphicsPipeline(FluxionRHIDevi
         return invalid;
     }
 
+    Fluxion_RHIVulkan_SetObjectName(deviceState->device, VK_OBJECT_TYPE_PIPELINE, (u64)pipeline->pipeline, desc->debugName);
+
     FluxionRHIPipelineHandle handle;
     handle.index = index;
     handle.generation = generation;
@@ -306,6 +308,8 @@ FluxionRHIPipelineHandle Fluxion_RHIVulkan_CreateComputePipeline(FluxionRHIDevic
         Fluxion_RHIVulkan_PoolFree(s_pipelineSlots, FLUXION_RHI_VULKAN_MAX_PIPELINES, index, generation);
         return invalid;
     }
+
+    Fluxion_RHIVulkan_SetObjectName(deviceState->device, VK_OBJECT_TYPE_PIPELINE, (u64)pipeline->pipeline, desc->debugName);
 
     FluxionRHIPipelineHandle handle;
     handle.index = index;

@@ -194,6 +194,12 @@ FluxionRHIBindGroupLayoutHandle Fluxion_RHIVulkan_CreateBindGroupLayout(FluxionR
     layout->refCount = 1;
     layout->shapeHash = shapeHash;
 
+    // Named after whoever caused it to exist. Identical-shape layouts are
+    // deduped above, so a later caller with a different name reuses this
+    // object under the first name -- acceptable for a diagnostic label,
+    // where "some name" beats "no name" and the shape is what matters.
+    Fluxion_RHIVulkan_SetObjectName(deviceState->device, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, (u64)layout->nativeLayout, desc->debugName);
+
     FluxionRHIBindGroupLayoutHandle handle;
     handle.index = index;
     handle.generation = generation;

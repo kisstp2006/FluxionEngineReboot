@@ -23,6 +23,7 @@ extern const FluxionRHIBackendVTable* Fluxion_RHI_D3D12_CreateInstance(const Flu
 // Profiler's backend slot.
 static const FluxionRHIBackendVTable* s_backend = NULL;
 static bool s_instanceActive = false;
+static bool s_validationWrapped = false;
 
 FluxionRHIInstanceHandle Fluxion_RHI_CreateInstance(FluxionRHIBackendType backend, const FluxionRHIInstanceDesc* desc)
 {
@@ -63,6 +64,17 @@ FluxionRHIInstanceHandle Fluxion_RHI_CreateInstance(FluxionRHIBackendType backen
         return invalid;
     }
 
+    // The engine's own checking layer, on top of whatever validation the
+    // backend itself enabled -- one flag turns both on, because a caller
+    // asking for validation wants every check available, not a menu.
+    // With the flag off the wrapper is not installed at all: the only
+    // cost of its existence is this branch, once, at instance creation.
+    if (desc != NULL && desc->enableValidation)
+    {
+        vtable = Fluxion_RHIValidation_Wrap(vtable);
+        s_validationWrapped = true;
+    }
+
     s_backend = vtable;
     s_instanceActive = true;
     return instance;
@@ -72,6 +84,11 @@ void Fluxion_RHI_DestroyInstance(FluxionRHIInstanceHandle instance)
 {
     if (!s_instanceActive || s_backend == NULL) return;
     s_backend->DestroyInstance(instance);
+    if (s_validationWrapped)
+    {
+        Fluxion_RHIValidation_Unwrap();
+        s_validationWrapped = false;
+    }
     s_backend = NULL;
     s_instanceActive = false;
 }
@@ -440,6 +457,30 @@ void Fluxion_RHI_DestroyQueryPool(FluxionRHIQueryPoolHandle queryPool)
 {
     if (s_backend == NULL) return;
     s_backend->DestroyQueryPool(queryPool);
+}
+
+void Fluxion_RHI_CommandList_ResetQueryPool(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount)
+{
+    if (s_backend == NULL) return;
+    s_backend->CommandListResetQueryPool(commandList, queryPool, firstQuery, queryCount);
+}
+
+void Fluxion_RHI_CommandList_WriteTimestamp(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 queryIndex)
+{
+    if (s_backend == NULL) return;
+    s_backend->CommandListWriteTimestamp(commandList, queryPool, queryIndex);
+}
+
+bool Fluxion_RHI_QueryPool_GetResults(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks)
+{
+    if (s_backend == NULL) return false;
+    return s_backend->QueryPoolGetResults(queryPool, firstQuery, queryCount, outTicks);
+}
+
+u64 Fluxion_RHI_Device_GetTimestampFrequency(FluxionRHIDeviceHandle device)
+{
+    if (s_backend == NULL) return 0;
+    return s_backend->GetTimestampFrequency(device);
 }
 
 FluxionRHINativeHandle Fluxion_RHI_GetNativeDeviceHandle(FluxionRHIDeviceHandle device)

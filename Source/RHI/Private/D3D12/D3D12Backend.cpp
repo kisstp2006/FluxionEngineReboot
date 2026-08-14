@@ -573,6 +573,10 @@ static const FluxionRHIBackendVTable s_d3d12VTable = {
     Fluxion_RHID3D12_DestroySemaphore,
     Fluxion_RHID3D12_CreateQueryPool,
     Fluxion_RHID3D12_DestroyQueryPool,
+    Fluxion_RHID3D12_CommandListResetQueryPool,
+    Fluxion_RHID3D12_CommandListWriteTimestamp,
+    Fluxion_RHID3D12_QueryPoolGetResults,
+    Fluxion_RHID3D12_GetTimestampFrequency,
 
     Fluxion_RHID3D12_GetNativeDeviceHandle,
     Fluxion_RHID3D12_GetNativeBufferHandle,

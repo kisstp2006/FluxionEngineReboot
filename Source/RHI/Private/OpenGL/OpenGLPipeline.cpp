@@ -80,6 +80,8 @@ FluxionRHIShaderHandle Fluxion_RHIOpenGL_CreateShader(FluxionRHIDeviceHandle dev
     s_shaders[index].name = shaderName;
     s_shaders[index].stage = desc->stage;
 
+    Fluxion_RHIOpenGL_LabelObject(GL_SHADER, shaderName, desc->debugName);
+
     FluxionRHIShaderHandle handle;
     handle.index = index;
     handle.generation = generation;
@@ -178,6 +180,8 @@ FluxionRHIPipelineHandle Fluxion_RHIOpenGL_CreateGraphicsPipeline(FluxionRHIDevi
     pipelineState->program = program;
     pipelineState->vao = vao;
     pipelineState->isCompute = false;
+
+    Fluxion_RHIOpenGL_LabelObject(GL_PROGRAM, program, desc->debugName);
     pipelineState->rasterState = desc->rasterState;
     pipelineState->depthState = desc->depthState;
     pipelineState->blendState = desc->blendState;
@@ -219,6 +223,8 @@ FluxionRHIPipelineHandle Fluxion_RHIOpenGL_CreateComputePipeline(FluxionRHIDevic
     *pipelineState = FluxionRHIOpenGLPipeline{};
     pipelineState->program = program;
     pipelineState->isCompute = true;
+
+    Fluxion_RHIOpenGL_LabelObject(GL_PROGRAM, program, desc->debugName);
 
     FluxionRHIPipelineHandle handle;
     handle.index = index;

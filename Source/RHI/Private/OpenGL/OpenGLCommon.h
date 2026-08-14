@@ -212,6 +212,17 @@ void* Fluxion_RHIOpenGL_MapBuffer(FluxionRHIBufferHandle buffer);
 void Fluxion_RHIOpenGL_UnmapBuffer(FluxionRHIBufferHandle buffer);
 FluxionRHIOpenGLBuffer* Fluxion_RHIOpenGL_ResolveBuffer(FluxionRHIBufferHandle buffer);
 
+// Attaches a caller-supplied name to a GL object so a capture tool shows
+// "DemoAlbedoTexture" instead of a bare object id. Quietly does nothing
+// when the name is NULL or the entry point was not loaded -- a name is
+// diagnostic freight, never something an object's creation may fail over.
+void Fluxion_RHIOpenGL_LabelObject(GLenum identifier, GLuint name, const char* label);
+
+void Fluxion_RHIOpenGL_CommandListResetQueryPool(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount);
+void Fluxion_RHIOpenGL_CommandListWriteTimestamp(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 queryIndex);
+bool Fluxion_RHIOpenGL_QueryPoolGetResults(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks);
+u64 Fluxion_RHIOpenGL_GetTimestampFrequency(FluxionRHIDeviceHandle device);
+
 // True once the default-framebuffer sentinel texture/view has been
 // handed out -- CommandList_BeginRendering
 // checks this to know when to bind FBO 0 instead of building a real FBO.

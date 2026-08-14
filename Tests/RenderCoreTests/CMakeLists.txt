@@ -10,6 +10,7 @@ engine_add_test(
         Test_ShaderReload.cpp
         Test_Material.cpp
         Test_MeshBuffer.c
+        Test_MemoryDomains.c
         Test_RenderView.c
         Test_RendererFrame.cpp
     DEPENDENCIES

@@ -36,6 +36,13 @@ void Fluxion_MemoryTracker_Shutdown(void);
 
 bool Fluxion_MemoryTracker_RegisterDomain(const FluxionMemoryDomainDesc* desc);
 
+// Whether Init has been called and Shutdown has not. Registering a
+// domain without that asserts, deliberately -- but a module that merely
+// offers statistics when a host turned the tracker on, and stays silent
+// when it did not, has to be able to ask rather than find out by
+// tripping the assert. Same reasoning as Fluxion_JobSystem_IsInitialized.
+bool Fluxion_MemoryTracker_IsInitialized(void);
+
 // Returns the name a domain was registered with, or NULL if id isn't
 // registered.
 const char* Fluxion_MemoryTracker_GetDomainName(FluxionMemoryDomainId id);
@@ -79,6 +86,8 @@ void Fluxion_MemoryTracker_ClearHook(void);
 // trackers.
 static inline void Fluxion_MemoryTracker_Init(void) {}
 static inline void Fluxion_MemoryTracker_Shutdown(void) {}
+
+static inline bool Fluxion_MemoryTracker_IsInitialized(void) { return false; }
 
 static inline bool Fluxion_MemoryTracker_RegisterDomain(const FluxionMemoryDomainDesc* desc)
 {

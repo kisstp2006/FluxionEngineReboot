@@ -321,4 +321,16 @@ void Fluxion_RHIVulkan_SwapchainPresent(FluxionRHISwapchainHandle swapchain, u32
 void Fluxion_RHIVulkan_SwapchainGetExtent(FluxionRHISwapchainHandle swapchain, u32* outWidth, u32* outHeight);
 VkQueue Fluxion_RHIVulkan_ResolvePresentQueue(FluxionRHIVulkanDevice* deviceState);
 
+// Attaches a caller-supplied name to a native object, so a capture tool
+// shows "DemoAlbedoTexture" instead of a bare hex handle. Quietly does
+// nothing when the name is NULL or debug_utils is unavailable -- a name
+// is diagnostic freight, never something an object's creation may fail
+// over.
+void Fluxion_RHIVulkan_SetObjectName(VkDevice device, VkObjectType type, u64 objectHandle, const char* name);
+
+void Fluxion_RHIVulkan_CommandListResetQueryPool(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount);
+void Fluxion_RHIVulkan_CommandListWriteTimestamp(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 queryIndex);
+bool Fluxion_RHIVulkan_QueryPoolGetResults(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks);
+u64 Fluxion_RHIVulkan_GetTimestampFrequency(FluxionRHIDeviceHandle device);
+
 #define FLUXION_RHIVULKAN_CHECK(expr) do { VkResult fluxionVkResult_ = (expr); FLUXION_ASSERT_MSG(fluxionVkResult_ == VK_SUCCESS, #expr " failed"); } while (0)

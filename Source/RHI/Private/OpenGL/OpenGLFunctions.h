@@ -98,12 +98,15 @@
     /* Queries */ \
     X(PFNGLGENQUERIESPROC, glGenQueries) \
     X(PFNGLDELETEQUERIESPROC, glDeleteQueries) \
+    X(PFNGLQUERYCOUNTERPROC, glQueryCounter) \
+    X(PFNGLGETQUERYOBJECTUI64VPROC, glGetQueryObjectui64v) \
     /* Sync */ \
     X(PFNGLFENCESYNCPROC, glFenceSync) \
     X(PFNGLCLIENTWAITSYNCPROC, glClientWaitSync) \
     X(PFNGLDELETESYNCPROC, glDeleteSync) \
     /* Debug */ \
     X(PFNGLDEBUGMESSAGECALLBACKPROC, glDebugMessageCallback) \
+    X(PFNGLOBJECTLABELPROC, glObjectLabel) \
     /* Misc / extension query (core-profile glGetString(GL_EXTENSIONS) is invalid; use glGetStringi) */ \
     X(PFNGLGETSTRINGIPROC, glGetStringi) \
     X(PFNGLGETINTEGERI_VPROC, glGetIntegeri_v)

@@ -39,6 +39,11 @@ void Fluxion_MemoryTracker_Init(void)
     s_initialized = true;
 }
 
+bool Fluxion_MemoryTracker_IsInitialized(void)
+{
+    return s_initialized;
+}
+
 void Fluxion_MemoryTracker_Shutdown(void)
 {
     FLUXION_ASSERT_MSG(s_initialized, "Fluxion_MemoryTracker_Shutdown called before Init");

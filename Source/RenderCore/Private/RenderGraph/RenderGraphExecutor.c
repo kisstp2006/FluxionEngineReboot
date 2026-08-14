@@ -1,5 +1,6 @@
 #include "RenderGraphInternal.h"
 
+#include <Fluxion/Core/Diagnostics/Profiler.h>
 #include <Fluxion/Foundation/Assert.h>
 
 void Fluxion_RenderGraph_Execute(FluxionRenderGraph* graph, FluxionRHICommandListHandle commandList)
@@ -7,6 +8,12 @@ void Fluxion_RenderGraph_Execute(FluxionRenderGraph* graph, FluxionRHICommandLis
     FLUXION_ASSERT(graph != NULL);
     FLUXION_ASSERT_MSG(graph->compiled, "Fluxion_RenderGraph_Execute called on a graph that has not been successfully Compiled");
     if (!graph->compiled) return;
+
+    // Covers every pass's Execute callback and every barrier the
+    // compiled plan emits -- the whole of command recording, which is
+    // the frame's CPU cost besides submission itself.
+    FluxionSourceLocation zoneLocation = { __FILE__, __func__, __LINE__ };
+    Fluxion_Profiler_ZoneBegin(&zoneLocation, "RenderGraph.Execute");
 
     // An imported resource's RHI handle is already resolved -- it exists
     // for the whole graph's lifetime, not just one Execute call.
@@ -99,4 +106,6 @@ void Fluxion_RenderGraph_Execute(FluxionRenderGraph* graph, FluxionRHICommandLis
             }
         }
     }
+
+    Fluxion_Profiler_ZoneEnd();
 }

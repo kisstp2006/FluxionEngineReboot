@@ -88,6 +88,8 @@ FluxionRHIBufferHandle Fluxion_RHIVulkan_CreateBuffer(FluxionRHIDeviceHandle dev
     }
     buffer->mappedPointer = allocationInfo.pMappedData; // non-null only for a CPU-visible memory class
 
+    Fluxion_RHIVulkan_SetObjectName(deviceState->device, VK_OBJECT_TYPE_BUFFER, (u64)buffer->buffer, desc->debugName);
+
     FluxionRHIBufferHandle handle;
     handle.index = index;
     handle.generation = generation;
@@ -210,6 +212,8 @@ FluxionRHITextureHandle Fluxion_RHIVulkan_CreateTexture(FluxionRHIDeviceHandle d
         Fluxion_RHIVulkan_PoolFree(s_textureSlots, FLUXION_RHI_VULKAN_MAX_TEXTURES, index, generation);
         return invalid;
     }
+
+    Fluxion_RHIVulkan_SetObjectName(deviceState->device, VK_OBJECT_TYPE_IMAGE, (u64)texture->image, desc->debugName);
 
     FluxionRHITextureHandle handle;
     handle.index = index;
@@ -385,6 +389,8 @@ FluxionRHISamplerHandle Fluxion_RHIVulkan_CreateSampler(FluxionRHIDeviceHandle d
         Fluxion_RHIVulkan_PoolFree(s_samplerSlots, FLUXION_RHI_VULKAN_MAX_SAMPLERS, index, generation);
         return invalid;
     }
+
+    Fluxion_RHIVulkan_SetObjectName(deviceState->device, VK_OBJECT_TYPE_SAMPLER, (u64)s_samplers[index], desc->debugName);
 
     FluxionRHISamplerHandle handle;
     handle.index = index;

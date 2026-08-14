@@ -593,18 +593,62 @@ void Fluxion_RHID3D12_DestroySemaphore(FluxionRHISemaphoreHandle semaphore)
 }
 
 // D3D12 query heaps aren't exercised by any caller yet (nothing resolves
-// query results) -- same minimal, real-pool-but-no-native-object shape
-// as the semaphore pool above, until something
-// actually needs GPU timestamp/occlusion queries.
+// A real ID3D12QueryHeap plus a readback buffer per pool. Unlike Vulkan,
+// a query result here is not read out of the heap: the command list has
+// to resolve it into an ordinary buffer, so each pool carries a
+// READBACK-heap buffer sized one u64 per query, persistently mapped for
+// GetResults to copy out of.
+struct FluxionRHID3D12QueryPool
+{
+    ComPtr<ID3D12QueryHeap> heap;
+    ComPtr<ID3D12Resource> readback;
+    void* mapped = nullptr;
+    u32 queryCount = 0;
+};
+
 static FluxionRHID3D12Slot s_queryPoolSlots[FLUXION_RHI_D3D12_MAX_QUERY_POOLS];
+static FluxionRHID3D12QueryPool s_queryPools[FLUXION_RHI_D3D12_MAX_QUERY_POOLS];
 
 FluxionRHIQueryPoolHandle Fluxion_RHID3D12_CreateQueryPool(FluxionRHIDeviceHandle device, u32 queryCount)
 {
-    FLUXION_UNUSED(queryCount);
     FluxionRHIQueryPoolHandle handle = { FLUXION_HANDLE_INVALID_INDEX, 0 };
-    if (Fluxion_RHID3D12_ResolveDevice(device) == nullptr) return handle;
+    FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_ResolveDevice(device);
+    if (deviceState == nullptr || queryCount == 0) return handle;
     u32 index, generation;
     if (!Fluxion_RHID3D12_PoolAllocate(s_queryPoolSlots, FLUXION_RHI_D3D12_MAX_QUERY_POOLS, &index, &generation)) return handle;
+
+    FluxionRHID3D12QueryPool* pool = &s_queryPools[index];
+    *pool = FluxionRHID3D12QueryPool{};
+
+    D3D12_QUERY_HEAP_DESC heapDesc = {};
+    heapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    heapDesc.Count = queryCount;
+    if (FAILED(deviceState->device->CreateQueryHeap(&heapDesc, IID_PPV_ARGS(&pool->heap))))
+    {
+        Fluxion_RHID3D12_PoolFree(s_queryPoolSlots, FLUXION_RHI_D3D12_MAX_QUERY_POOLS, index, generation);
+        return handle;
+    }
+
+    D3D12_HEAP_PROPERTIES readbackHeap = {};
+    readbackHeap.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC bufferDesc = {};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Width = (u64)queryCount * sizeof(u64);
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.SampleDesc.Count = 1;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (FAILED(deviceState->device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&pool->readback))))
+    {
+        *pool = FluxionRHID3D12QueryPool{};
+        Fluxion_RHID3D12_PoolFree(s_queryPoolSlots, FLUXION_RHI_D3D12_MAX_QUERY_POOLS, index, generation);
+        return handle;
+    }
+    pool->readback->Map(0, nullptr, &pool->mapped);
+    pool->queryCount = queryCount;
+
     handle.index = index;
     handle.generation = generation;
     return handle;
@@ -617,7 +661,58 @@ void Fluxion_RHID3D12_DestroyQueryPool(FluxionRHIQueryPoolHandle queryPool)
         FLUXION_ASSERT_MSG(false, "Fluxion RHI D3D12 backend: destroy called with an invalid or already-destroyed query pool handle");
         return;
     }
+    FluxionRHID3D12QueryPool* pool = &s_queryPools[queryPool.index];
+    if (pool->readback != nullptr && pool->mapped != nullptr) pool->readback->Unmap(0, nullptr);
+    *pool = FluxionRHID3D12QueryPool{};
     Fluxion_RHID3D12_PoolFree(s_queryPoolSlots, FLUXION_RHI_D3D12_MAX_QUERY_POOLS, queryPool.index, queryPool.generation);
+}
+
+void Fluxion_RHID3D12_CommandListResetQueryPool(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount)
+{
+    // Nothing to record: a D3D12 timestamp query needs no reset between
+    // uses -- EndQuery simply overwrites. The call exists so a caller can
+    // write one portable frame loop.
+    FLUXION_UNUSED(commandList); FLUXION_UNUSED(queryPool); FLUXION_UNUSED(firstQuery); FLUXION_UNUSED(queryCount);
+}
+
+void Fluxion_RHID3D12_CommandListWriteTimestamp(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 queryIndex)
+{
+    ID3D12GraphicsCommandList* cmd = Fluxion_RHID3D12_ResolveCommandList(commandList);
+    if (cmd == nullptr) return;
+    if (!Fluxion_RHID3D12_PoolIsValid(s_queryPoolSlots, FLUXION_RHI_D3D12_MAX_QUERY_POOLS, queryPool.index, queryPool.generation)) return;
+    FluxionRHID3D12QueryPool* pool = &s_queryPools[queryPool.index];
+    if (queryIndex >= pool->queryCount) return;
+
+    cmd->EndQuery(pool->heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, queryIndex);
+    // Resolved immediately, one query at a time. Batching every resolve
+    // to the end of the frame would be fewer commands, but this keeps
+    // WriteTimestamp self-contained -- there is no "frame end" hook in
+    // this contract to hang a batched resolve on.
+    cmd->ResolveQueryData(pool->heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, queryIndex, 1, pool->readback.Get(), (u64)queryIndex * sizeof(u64));
+}
+
+bool Fluxion_RHID3D12_QueryPoolGetResults(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks)
+{
+    if (outTicks == nullptr || queryCount == 0) return false;
+    if (!Fluxion_RHID3D12_PoolIsValid(s_queryPoolSlots, FLUXION_RHI_D3D12_MAX_QUERY_POOLS, queryPool.index, queryPool.generation)) return false;
+    FluxionRHID3D12QueryPool* pool = &s_queryPools[queryPool.index];
+    if (pool->mapped == nullptr || firstQuery + queryCount > pool->queryCount) return false;
+
+    // No availability tracking here -- the readback buffer holds whatever
+    // the last completed resolve wrote. The contract puts "wait the
+    // frame's fence first" on the caller, and this backend cannot check
+    // it the way the availability-bit backends can.
+    memcpy(outTicks, (const u8*)pool->mapped + (u64)firstQuery * sizeof(u64), (u64)queryCount * sizeof(u64));
+    return true;
+}
+
+u64 Fluxion_RHID3D12_GetTimestampFrequency(FluxionRHIDeviceHandle device)
+{
+    FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_ResolveDevice(device);
+    if (deviceState == nullptr || deviceState->graphicsQueue == nullptr) return 0;
+    u64 frequency = 0;
+    if (FAILED(deviceState->graphicsQueue->GetTimestampFrequency(&frequency))) return 0;
+    return frequency;
 }
 
 // --- Swapchain -----------------------------------------------------------

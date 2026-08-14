@@ -63,6 +63,31 @@ void Fluxion_RHIVulkan_PoolFinalize(FluxionRHIVulkanSlot* slots, u32 index)
 // --- Instance / adapters -----------------------------------------------------
 
 static VkInstance s_instance = VK_NULL_HANDLE;
+
+// Looked up lazily on first use rather than at instance creation, so the
+// naming path needs no init-order coupling; NULL simply means the loader
+// has no debug_utils and every name quietly evaporates.
+static PFN_vkSetDebugUtilsObjectNameEXT s_setObjectName = nullptr;
+static bool s_setObjectNameProbed = false;
+
+void Fluxion_RHIVulkan_SetObjectName(VkDevice device, VkObjectType type, u64 objectHandle, const char* name)
+{
+    if (name == nullptr || name[0] == '\0' || device == VK_NULL_HANDLE) return;
+    if (!s_setObjectNameProbed)
+    {
+        s_setObjectNameProbed = true;
+        if (s_instance != VK_NULL_HANDLE)
+            s_setObjectName = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(s_instance, "vkSetDebugUtilsObjectNameEXT");
+    }
+    if (s_setObjectName == nullptr) return;
+
+    VkDebugUtilsObjectNameInfoEXT nameInfo = {};
+    nameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+    nameInfo.objectType = type;
+    nameInfo.objectHandle = objectHandle;
+    nameInfo.pObjectName = name;
+    s_setObjectName(device, &nameInfo);
+}
 static VkDebugUtilsMessengerEXT s_debugMessenger = VK_NULL_HANDLE;
 
 static VkPhysicalDevice s_adapters[FLUXION_RHI_VULKAN_MAX_ADAPTERS];
@@ -620,6 +645,11 @@ static void Fluxion_RHIVulkan_DestroyInstance(FluxionRHIInstanceHandle instance)
         vkDestroyInstance(s_instance, nullptr);
         s_instance = VK_NULL_HANDLE;
     }
+    // The name-setting PFN was fetched from this instance; a later
+    // instance must probe again rather than call through a pointer into
+    // a loader state that no longer exists.
+    s_setObjectName = nullptr;
+    s_setObjectNameProbed = false;
     s_adapterCount = 0;
 }
 
@@ -694,6 +724,10 @@ static const FluxionRHIBackendVTable s_vulkanVTable = {
     Fluxion_RHIVulkan_DestroySemaphore,
     Fluxion_RHIVulkan_CreateQueryPool,
     Fluxion_RHIVulkan_DestroyQueryPool,
+    Fluxion_RHIVulkan_CommandListResetQueryPool,
+    Fluxion_RHIVulkan_CommandListWriteTimestamp,
+    Fluxion_RHIVulkan_QueryPoolGetResults,
+    Fluxion_RHIVulkan_GetTimestampFrequency,
 
     Fluxion_RHIVulkan_GetNativeDeviceHandle,
     Fluxion_RHIVulkan_GetNativeBufferHandle,
@@ -733,7 +767,30 @@ extern "C" const FluxionRHIBackendVTable* Fluxion_RHI_Vulkan_CreateInstance(cons
 #else
     instanceExtensions[instanceExtensionCount++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
 #endif
-    if (wantValidation) instanceExtensions[instanceExtensionCount++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    // Requested whenever the loader offers it, not only with validation:
+    // debug_utils is also what carries object names, and those are wanted
+    // in any developer run a capture tool might attach to -- a name that
+    // only exists when validation is on is a name RenderDoc never sees on
+    // an ordinary run. Availability is probed first because enabling an
+    // extension the loader does not have fails instance creation
+    // outright, which would turn a missing optional into a fatal error.
+    bool haveDebugUtils = false;
+    {
+        u32 availableCount = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, nullptr);
+        VkExtensionProperties available[256];
+        if (availableCount > 256) availableCount = 256;
+        vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, available);
+        for (u32 i = 0; i < availableCount; ++i)
+        {
+            if (strcmp(available[i].extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0)
+            {
+                haveDebugUtils = true;
+                break;
+            }
+        }
+    }
+    if (haveDebugUtils) instanceExtensions[instanceExtensionCount++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 
     const char* validationLayer = "VK_LAYER_KHRONOS_validation";
 

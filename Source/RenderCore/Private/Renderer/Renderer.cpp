@@ -7,6 +7,9 @@
 
 #include "RendererInternal.h"
 
+#include <Fluxion/Core/Diagnostics/ProfileScope.hpp>
+#include <Fluxion/Foundation/Memory/MemoryTracker.h>
+
 #include <Fluxion/Foundation/Assert.h>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraphPassRegistry.h>
@@ -238,6 +241,7 @@ void CreateDebugDrawResources(FluxionRenderer& renderer)
     vertexBufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
     vertexBufferDesc.debugName = "Fluxion.Renderer.DebugDraw.VertexBuffer";
     renderer.debugVertexBuffer = Fluxion_RHI_CreateBuffer(renderer.device, &vertexBufferDesc);
+    if (FLUXION_HANDLE_IS_VALID(renderer.debugVertexBuffer)) FluxionRendererInternal_RecordGpuAlloc(false, vertexBufferDesc.size);
 
     FluxionRHIBindGroupLayoutDesc frameLayoutDesc = FluxionRendererInternal_MakeFrameLayoutDesc();
     renderer.debugFrameBindGroupLayout = Fluxion_RHI_CreateBindGroupLayout(renderer.device, &frameLayoutDesc);
@@ -251,6 +255,45 @@ void CreateDebugDrawResources(FluxionRenderer& renderer)
 }
 
 } // namespace
+
+extern "C" void FluxionRendererInternal_EnsureMemoryDomains(void)
+{
+    // Nothing to do when no host initialised the tracker -- statistics
+    // are an offer, not a requirement, and registering would assert.
+    if (!Fluxion_MemoryTracker_IsInitialized()) return;
+
+    static bool s_registered = false;
+    if (s_registered) return;
+    s_registered = true;
+
+    FluxionMemoryDomainDesc rendererDomain = {};
+    rendererDomain.id = FLUXION_MEMORY_DOMAIN_ID_OF(Renderer);
+    rendererDomain.name = "Renderer";
+    rendererDomain.parent = FLUXION_MEMORY_DOMAIN_ID_INVALID;
+    Fluxion_MemoryTracker_RegisterDomain(&rendererDomain);
+
+    // A child, so upload bytes both stand on their own and roll up into
+    // the renderer's total.
+    FluxionMemoryDomainDesc uploadDomain = {};
+    uploadDomain.id = FLUXION_MEMORY_DOMAIN_ID_OF(GPUUpload);
+    uploadDomain.name = "GPUUpload";
+    uploadDomain.parent = rendererDomain.id;
+    Fluxion_MemoryTracker_RegisterDomain(&uploadDomain);
+}
+
+extern "C" void FluxionRendererInternal_RecordGpuAlloc(bool upload, usize bytes)
+{
+    if (!Fluxion_MemoryTracker_IsInitialized()) return;
+    FluxionRendererInternal_EnsureMemoryDomains();
+    Fluxion_MemoryTracker_RecordAlloc(upload ? FLUXION_MEMORY_DOMAIN_ID_OF(GPUUpload) : FLUXION_MEMORY_DOMAIN_ID_OF(Renderer), bytes);
+}
+
+extern "C" void FluxionRendererInternal_RecordGpuFree(bool upload, usize bytes)
+{
+    if (!Fluxion_MemoryTracker_IsInitialized()) return;
+    FluxionRendererInternal_EnsureMemoryDomains();
+    Fluxion_MemoryTracker_RecordFree(upload ? FLUXION_MEMORY_DOMAIN_ID_OF(GPUUpload) : FLUXION_MEMORY_DOMAIN_ID_OF(Renderer), bytes);
+}
 
 extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle device, FluxionRHIQueueHandle queue)
 {
@@ -329,7 +372,11 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
 
     Fluxion_RenderGraphPassRegistry_Unregister("ForwardOpaquePass");
 
-    if (FLUXION_HANDLE_IS_VALID(renderer->objectBuffer)) Fluxion_RHI_DestroyBuffer(renderer->objectBuffer);
+    if (FLUXION_HANDLE_IS_VALID(renderer->objectBuffer))
+    {
+        Fluxion_RHI_DestroyBuffer(renderer->objectBuffer);
+        FluxionRendererInternal_RecordGpuFree(false, (usize)renderer->objectBufferCapacity * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE);
+    }
     if (FLUXION_HANDLE_IS_VALID(renderer->objectBindGroupLayout)) Fluxion_RHI_DestroyBindGroupLayout(renderer->objectBindGroupLayout);
     if (FLUXION_HANDLE_IS_VALID(renderer->debugVertexBuffer)) Fluxion_RHI_DestroyBuffer(renderer->debugVertexBuffer);
     if (FLUXION_HANDLE_IS_VALID(renderer->debugPipeline)) Fluxion_RHI_DestroyPipeline(renderer->debugPipeline);
@@ -398,7 +445,11 @@ extern "C" void Fluxion_Renderer_DrawMesh(FluxionRendererHandle rendererHandle, 
         u32 newCapacity = (renderer->objectBufferCapacity == 0) ? 64u : renderer->objectBufferCapacity;
         while (newCapacity < renderer->packetCount) newCapacity *= 2;
 
-        if (FLUXION_HANDLE_IS_VALID(renderer->objectBuffer)) Fluxion_RHI_DestroyBuffer(renderer->objectBuffer);
+        if (FLUXION_HANDLE_IS_VALID(renderer->objectBuffer))
+        {
+            Fluxion_RHI_DestroyBuffer(renderer->objectBuffer);
+            FluxionRendererInternal_RecordGpuFree(false, (usize)renderer->objectBufferCapacity * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE);
+        }
 
         FluxionRHIBufferDesc bufferDesc;
         bufferDesc.size = (usize)newCapacity * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE;
@@ -406,6 +457,7 @@ extern "C" void Fluxion_Renderer_DrawMesh(FluxionRendererHandle rendererHandle, 
         bufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
         bufferDesc.debugName = "Fluxion.Renderer.ObjectBuffer";
         renderer->objectBuffer = Fluxion_RHI_CreateBuffer(renderer->device, &bufferDesc);
+        if (FLUXION_HANDLE_IS_VALID(renderer->objectBuffer)) FluxionRendererInternal_RecordGpuAlloc(false, bufferDesc.size);
         renderer->objectBufferCapacity = newCapacity;
     }
 
@@ -422,6 +474,10 @@ extern "C" void Fluxion_Renderer_DrawMesh(FluxionRendererHandle rendererHandle, 
 
 extern "C" void Fluxion_Renderer_EndFrame(FluxionRendererHandle rendererHandle, FluxionRHICommandListHandle commandList)
 {
+    // The frame's CPU-side tail: object-buffer upload, debug-draw flush,
+    // everything between the last draw call and the caller's submit.
+    FLUXION_PROFILE_FUNCTION();
+
     FluxionRenderer* renderer = Resolve(rendererHandle);
     if (renderer == nullptr || !renderer->inFrame) return;
 

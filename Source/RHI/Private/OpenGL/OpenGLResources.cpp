@@ -69,6 +69,8 @@ FluxionRHIBufferHandle Fluxion_RHIOpenGL_CreateBuffer(FluxionRHIDeviceHandle dev
         bufferState->mappedPointer = glMapNamedBufferRange(bufferState->name, 0, (GLsizeiptr)bufferState->size, mapFlags);
     }
 
+    Fluxion_RHIOpenGL_LabelObject(GL_BUFFER, bufferState->name, desc->debugName);
+
     FluxionRHIBufferHandle handle;
     handle.index = index;
     handle.generation = generation;
@@ -90,6 +92,13 @@ void Fluxion_RHIOpenGL_DestroyBuffer(FluxionRHIBufferHandle buffer)
     if (bufferState->name != 0) glDeleteBuffers(1, &bufferState->name);
     *bufferState = FluxionRHIOpenGLBuffer{};
     Fluxion_RHIOpenGL_PoolFree(s_bufferSlots, FLUXION_RHI_OPENGL_MAX_BUFFERS, buffer.index, buffer.generation);
+}
+
+void Fluxion_RHIOpenGL_LabelObject(GLenum identifier, GLuint name, const char* label)
+{
+    if (label == nullptr || label[0] == '\0' || name == 0 || glObjectLabel == nullptr) return;
+    // -1: the label is null-terminated, so GL measures it itself.
+    glObjectLabel(identifier, name, -1, label);
 }
 
 // A CPU-visible buffer is mapped persistently at creation time
@@ -161,6 +170,8 @@ FluxionRHITextureHandle Fluxion_RHIOpenGL_CreateTexture(FluxionRHIDeviceHandle d
     {
         glTextureStorage3D(textureState->name, (GLsizei)textureState->mipLevels, internalFormat, (GLsizei)textureState->width, (GLsizei)textureState->height, (GLsizei)textureState->depth);
     }
+
+    Fluxion_RHIOpenGL_LabelObject(GL_TEXTURE, textureState->name, desc->debugName);
 
     FluxionRHITextureHandle handle;
     handle.index = index;
@@ -337,6 +348,8 @@ FluxionRHISamplerHandle Fluxion_RHIOpenGL_CreateSampler(FluxionRHIDeviceHandle d
     {
         glSamplerParameterf(samplerState->name, GL_TEXTURE_MAX_ANISOTROPY, desc->maxAnisotropy);
     }
+
+    Fluxion_RHIOpenGL_LabelObject(GL_SAMPLER, samplerState->name, desc->debugName);
 
     FluxionRHISamplerHandle handle;
     handle.index = index;

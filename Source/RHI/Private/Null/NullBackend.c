@@ -118,7 +118,7 @@ FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHISamplerHandle, s_samplerPool, FLUX
 FLUXION_RHI_NULL_DEFINE_VALIDATABLE_POOL(FluxionRHIShaderHandle, s_shaderPool, FLUXION_RHI_NULL_MAX_SHADERS)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIPipelineHandle, s_pipelinePool, FLUXION_RHI_NULL_MAX_PIPELINES)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHISemaphoreHandle, s_semaphorePool, FLUXION_RHI_NULL_MAX_SEMAPHORES)
-FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIQueryPoolHandle, s_queryPoolPool, FLUXION_RHI_NULL_MAX_QUERY_POOLS)
+FLUXION_RHI_NULL_DEFINE_VALIDATABLE_POOL(FluxionRHIQueryPoolHandle, s_queryPoolPool, FLUXION_RHI_NULL_MAX_QUERY_POOLS)
 FLUXION_RHI_NULL_DEFINE_VALIDATABLE_POOL(FluxionRHIBindGroupLayoutHandle, s_bindGroupLayoutPool, FLUXION_RHI_NULL_MAX_BIND_GROUP_LAYOUTS)
 FLUXION_RHI_NULL_DEFINE_SIMPLE_POOL(FluxionRHIBindGroupHandle, s_bindGroupPool, FLUXION_RHI_NULL_MAX_BIND_GROUPS)
 
@@ -792,16 +792,57 @@ static FluxionRHISemaphoreHandle Fluxion_RHI_Null_CreateSemaphore(FluxionRHIDevi
 
 static void Fluxion_RHI_Null_DestroySemaphore(FluxionRHISemaphoreHandle semaphore) { s_semaphorePool_Free(semaphore); }
 
+#define FLUXION_RHI_NULL_MAX_QUERIES_PER_POOL 64
+static u64 s_queryValues[FLUXION_RHI_NULL_MAX_QUERY_POOLS][FLUXION_RHI_NULL_MAX_QUERIES_PER_POOL];
+static u32 s_queryPoolCounts[FLUXION_RHI_NULL_MAX_QUERY_POOLS];
+static u64 s_fakeGpuClock = 1;
+
 static FluxionRHIQueryPoolHandle Fluxion_RHI_Null_CreateQueryPool(FluxionRHIDeviceHandle device, u32 queryCount)
 {
-    FLUXION_UNUSED(queryCount);
     FluxionRHIQueryPoolHandle handle = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     if (!Fluxion_RHINull_IsValid(s_deviceSlots, FLUXION_RHI_NULL_MAX_DEVICES, device.index, device.generation)) return handle;
-    s_queryPoolPool_Allocate(&handle);
+    if (queryCount == 0 || queryCount > FLUXION_RHI_NULL_MAX_QUERIES_PER_POOL) return handle;
+    if (!s_queryPoolPool_Allocate(&handle)) return handle;
+    s_queryPoolCounts[handle.index] = queryCount;
     return handle;
 }
 
 static void Fluxion_RHI_Null_DestroyQueryPool(FluxionRHIQueryPoolHandle queryPool) { s_queryPoolPool_Free(queryPool); }
+
+// Timestamps that never touch a GPU, but still behave like the real
+// thing: monotonically increasing, written only by WriteTimestamp, gone
+// after a reset. Enough behavior for a test to tell "wrote, then read
+// back what was written" apart from "read back zeroes and nobody
+// noticed".
+
+static void Fluxion_RHI_Null_CommandListResetQueryPool(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount)
+{
+    FLUXION_UNUSED(commandList);
+    if (!s_queryPoolPool_IsValid(queryPool)) return;
+    for (u32 i = 0; i < queryCount && firstQuery + i < FLUXION_RHI_NULL_MAX_QUERIES_PER_POOL; ++i)
+        s_queryValues[queryPool.index][firstQuery + i] = 0;
+}
+
+static void Fluxion_RHI_Null_CommandListWriteTimestamp(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 queryIndex)
+{
+    FLUXION_UNUSED(commandList);
+    if (!s_queryPoolPool_IsValid(queryPool) || queryIndex >= FLUXION_RHI_NULL_MAX_QUERIES_PER_POOL) return;
+    s_queryValues[queryPool.index][queryIndex] = s_fakeGpuClock++;
+}
+
+static bool Fluxion_RHI_Null_QueryPoolGetResults(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks)
+{
+    if (!s_queryPoolPool_IsValid(queryPool) || outTicks == NULL) return false;
+    if (firstQuery + queryCount > s_queryPoolCounts[queryPool.index]) return false;
+    for (u32 i = 0; i < queryCount; ++i) outTicks[i] = s_queryValues[queryPool.index][firstQuery + i];
+    return true;
+}
+
+static u64 Fluxion_RHI_Null_GetTimestampFrequency(FluxionRHIDeviceHandle device)
+{
+    if (!Fluxion_RHINull_IsValid(s_deviceSlots, FLUXION_RHI_NULL_MAX_DEVICES, device.index, device.generation)) return 0;
+    return 1000000000ull; // one fake tick per fake nanosecond
+}
 
 // --- Native handle escape hatch -----------------------------------------
 
@@ -901,6 +942,10 @@ static const FluxionRHIBackendVTable s_nullVTable = {
     Fluxion_RHI_Null_DestroySemaphore,
     Fluxion_RHI_Null_CreateQueryPool,
     Fluxion_RHI_Null_DestroyQueryPool,
+    Fluxion_RHI_Null_CommandListResetQueryPool,
+    Fluxion_RHI_Null_CommandListWriteTimestamp,
+    Fluxion_RHI_Null_QueryPoolGetResults,
+    Fluxion_RHI_Null_GetTimestampFrequency,
 
     Fluxion_RHI_Null_GetNativeDeviceHandle,
     Fluxion_RHI_Null_GetNativeBufferHandle,

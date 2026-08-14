@@ -184,6 +184,14 @@ FluxionRHID3D12Device* Fluxion_RHID3D12_ResolveDevice(FluxionRHIDeviceHandle dev
 IDXGIFactory6* Fluxion_RHID3D12_GetFactory(void);
 IDXGIAdapter1* Fluxion_RHID3D12_ResolveAdapter(FluxionRHIAdapterHandle adapter);
 
+// Attaches a caller-supplied name to a native object, so PIX shows
+// "DemoAlbedoTexture" instead of a bare pointer. NULL or empty names are
+// quietly ignored -- a name is diagnostic freight, never something an
+// object's creation may fail over. Samplers and shaders have no
+// ID3D12Object of their own in this API (a sampler is a descriptor, a
+// shader is bytecode), so those two names have nowhere to go here.
+void Fluxion_RHID3D12_SetName(ID3D12Object* object, const char* name);
+
 // This backend only ever has one active device at a time (mirrors
 // VulkanCommon.h's identical "one active device" assumption) -- these
 // let a resource pool that outlives any one CreateDevice/DestroyDevice
@@ -388,5 +396,9 @@ u32 Fluxion_RHID3D12_SwapchainAcquireNextImage(FluxionRHISwapchainHandle swapcha
 FluxionRHITextureHandle Fluxion_RHID3D12_SwapchainGetTexture(FluxionRHISwapchainHandle swapchain, u32 imageIndex);
 void Fluxion_RHID3D12_SwapchainPresent(FluxionRHISwapchainHandle swapchain, u32 imageIndex, FluxionRHISemaphoreHandle waitSemaphore);
 void Fluxion_RHID3D12_SwapchainGetExtent(FluxionRHISwapchainHandle swapchain, u32* outWidth, u32* outHeight);
+void Fluxion_RHID3D12_CommandListResetQueryPool(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount);
+void Fluxion_RHID3D12_CommandListWriteTimestamp(FluxionRHICommandListHandle commandList, FluxionRHIQueryPoolHandle queryPool, u32 queryIndex);
+bool Fluxion_RHID3D12_QueryPoolGetResults(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks);
+u64 Fluxion_RHID3D12_GetTimestampFrequency(FluxionRHIDeviceHandle device);
 
 #define FLUXION_RHID3D12_CHECK(expr) do { HRESULT fluxionHr_ = (expr); FLUXION_ASSERT_MSG(SUCCEEDED(fluxionHr_), #expr " failed"); } while (0)

@@ -10,6 +10,7 @@ void Test_ShaderProgram_Run(TestContext* ctx);
 void Test_ShaderReload_Run(TestContext* ctx);
 void Test_Material_Run(TestContext* ctx);
 void Test_MeshBuffer_Run(TestContext* ctx);
+void Test_MemoryDomains_Run(TestContext* ctx);
 void Test_RenderView_Run(TestContext* ctx);
 void Test_RendererFrame_Run(TestContext* ctx);
 
@@ -27,6 +28,7 @@ int main(void)
     Test_ShaderReload_Run(&ctx);
     Test_Material_Run(&ctx);
     Test_MeshBuffer_Run(&ctx);
+    Test_MemoryDomains_Run(&ctx);
     Test_RenderView_Run(&ctx);
     Test_RendererFrame_Run(&ctx);
 
