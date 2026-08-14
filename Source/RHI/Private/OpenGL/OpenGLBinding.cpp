@@ -1,5 +1,5 @@
-// BindGroupLayout / BindGroup + CommandList_SetBindGroup. See design
-// decision #3 in the orchestrating task description: bindings are
+// BindGroupLayout / BindGroup + CommandList_SetBindGroup:
+// bindings are
 // partitioned into the global GL binding-point namespace with a fixed
 // per-group stride, and a small binding cache skips redundant glBind*
 // calls.
@@ -7,8 +7,7 @@
 #include "OpenGLCommon.h"
 #include "OpenGLFunctions.h"
 
-// --- BindGroupLayout (CPU-side desc only, no real GL object -- see design
-// decision #3: "BindGroupLayout objects don't need a real GL object") ------
+// --- BindGroupLayout (CPU-side desc only, no real GL object) ---------------
 
 static FluxionRHIOpenGLSlot s_bindGroupLayoutSlots[FLUXION_RHI_OPENGL_MAX_BIND_GROUP_LAYOUTS];
 static FluxionRHIBindGroupLayoutDesc s_bindGroupLayouts[FLUXION_RHI_OPENGL_MAX_BIND_GROUP_LAYOUTS];
@@ -82,7 +81,7 @@ void Fluxion_RHIOpenGL_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup)
 
 void Fluxion_RHIOpenGL_CommandListSetBindGroup(FluxionRHICommandListHandle commandList, u32 groupIndex, FluxionRHIBindGroupHandle bindGroup)
 {
-    FLUXION_UNUSED(commandList); // GL binding state is process-global (single implicit context), see design decision #1
+    FLUXION_UNUSED(commandList); // GL binding state is process-global (single implicit context)
     FluxionRHIOpenGLDevice* deviceState = Fluxion_RHIOpenGL_SoleDevice();
     if (deviceState == nullptr || groupIndex >= FLUXION_RHI_MAX_BIND_GROUPS) return;
 

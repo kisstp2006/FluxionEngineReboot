@@ -47,7 +47,7 @@ void Fluxion_RHIOpenGL_LoadFunctions(void)
 #undef FLUXION_GL_LOAD
 }
 
-// --- KHR_debug callback (design decision #10) -------------------------------
+// --- KHR_debug callback -----------------------------------------------------
 
 static void APIENTRY Fluxion_RHIOpenGL_DebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
     GLsizei length, const GLchar* message, const void* userParam)

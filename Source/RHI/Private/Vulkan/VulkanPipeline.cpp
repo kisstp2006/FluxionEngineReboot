@@ -11,6 +11,10 @@
 
 #include "VulkanCommon.h"
 
+#include "../PipelineCacheFile.h"
+
+#include <Fluxion/Foundation/Hashing.h>
+
 #include <cstdio>
 #include <vector>
 
@@ -371,6 +375,25 @@ static bool Fluxion_RHIVulkan_EnsurePipelineCache(FluxionRHIVulkanDevice* device
     return vkCreatePipelineCache(deviceState->device, &cacheInfo, nullptr, &deviceState->pipelineCache) == VK_SUCCESS;
 }
 
+// What a saved blob has to have come from to be worth handing back to
+// this driver. pipelineCacheUUID is the important one: a driver update
+// can change the blob's internal format without moving driverVersion in a
+// way this code could interpret, and that UUID is precisely the value the
+// driver itself changes when that happens.
+static FluxionRHIPipelineCacheIdentity Fluxion_RHIVulkan_PipelineCacheIdentity(FluxionRHIVulkanDevice* deviceState)
+{
+    VkPhysicalDeviceProperties properties = {};
+    vkGetPhysicalDeviceProperties(deviceState->physicalDevice, &properties);
+
+    FluxionRHIPipelineCacheIdentity identity = {};
+    identity.backend = FLUXION_RHI_BACKEND_VULKAN;
+    identity.vendorId = properties.vendorID;
+    identity.deviceId = properties.deviceID;
+    identity.driverVersion = properties.driverVersion;
+    identity.extra = Fluxion_HashBytes64(properties.pipelineCacheUUID, VK_UUID_SIZE);
+    return identity;
+}
+
 bool Fluxion_RHIVulkan_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, const char* path)
 {
     FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_ResolveDevice(device);
@@ -382,16 +405,7 @@ bool Fluxion_RHIVulkan_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, co
     std::vector<u8> data(dataSize);
     if (vkGetPipelineCacheData(deviceState->device, deviceState->pipelineCache, &dataSize, data.data()) != VK_SUCCESS) return false;
 
-    FILE* file = nullptr;
-#if defined(_MSC_VER)
-    if (fopen_s(&file, path, "wb") != 0 || file == nullptr) return false;
-#else
-    file = fopen(path, "wb");
-    if (file == nullptr) return false;
-#endif
-    usize written = fwrite(data.data(), 1, dataSize, file);
-    fclose(file);
-    return written == dataSize;
+    return Fluxion_RHIPipelineCacheFile_Write(path, Fluxion_RHIVulkan_PipelineCacheIdentity(deviceState), data.data(), dataSize);
 }
 
 bool Fluxion_RHIVulkan_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, const char* path)
@@ -399,30 +413,14 @@ bool Fluxion_RHIVulkan_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, 
     FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_ResolveDevice(device);
     if (deviceState == nullptr || path == nullptr) return false;
 
-    FILE* file = nullptr;
-#if defined(_MSC_VER)
-    if (fopen_s(&file, path, "rb") != 0 || file == nullptr) return false;
-#else
-    file = fopen(path, "rb");
-    if (file == nullptr) return false;
-#endif
-    fseek(file, 0, SEEK_END);
-    long fileSize = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    if (fileSize <= 0)
-    {
-        fclose(file);
-        return false;
-    }
+    // Vulkan will accept a blob it cannot use: a mismatched header is
+    // ignored per spec and vkCreatePipelineCache still succeeds, so a
+    // caller that trusted this function's result could not tell a warm
+    // start from a cold one. The header check above is what makes the
+    // answer mean something -- reaching the driver at all now implies the
+    // bytes came from this backend, this adapter, and this driver.
+    std::vector<u8> data;
+    if (!Fluxion_RHIPipelineCacheFile_Read(path, Fluxion_RHIVulkan_PipelineCacheIdentity(deviceState), &data)) return false;
 
-    std::vector<u8> data((usize)fileSize);
-    usize readBytes = fread(data.data(), 1, data.size(), file);
-    fclose(file);
-    if (readBytes != data.size()) return false;
-
-    // A driver/version-mismatched blob is silently rejected by Vulkan
-    // itself (VkPipelineCacheCreateInfo's header-validation rules) --
-    // vkCreatePipelineCache still succeeds in that case, just with an
-    // effectively empty cache, so there is nothing extra to validate here.
     return Fluxion_RHIVulkan_EnsurePipelineCache(deviceState, data.data(), data.size());
 }

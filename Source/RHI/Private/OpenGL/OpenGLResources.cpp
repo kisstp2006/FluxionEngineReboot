@@ -1,6 +1,5 @@
-// Buffer / Texture / TextureView / Sampler -- see design decision #6 in the
-// orchestrating task description for the storage-flag and persistent-
-// mapping choices made here.
+// Buffer / Texture / TextureView / Sampler. The storage-flag and
+// persistent-mapping choices are explained at their use sites below.
 
 #include "OpenGLCommon.h"
 #include "OpenGLFunctions.h"
@@ -93,8 +92,8 @@ void Fluxion_RHIOpenGL_DestroyBuffer(FluxionRHIBufferHandle buffer)
     Fluxion_RHIOpenGL_PoolFree(s_bufferSlots, FLUXION_RHI_OPENGL_MAX_BUFFERS, buffer.index, buffer.generation);
 }
 
-// A CPU-visible buffer is mapped persistently at creation time (design
-// decision #6) -- Map just hands back the pointer already returned by
+// A CPU-visible buffer is mapped persistently at creation time
+// -- Map just hands back the pointer already returned by
 // glMapNamedBufferRange, and Unmap (below) is a no-op for the buffer's
 // lifetime; a GPU_ONLY/TRANSIENT buffer returns NULL, matching the
 // documented contract.
@@ -228,7 +227,7 @@ FluxionRHITextureViewHandle Fluxion_RHIOpenGL_CreateTextureView(FluxionRHIDevice
     if (textureState->isDefaultFramebufferSentinel)
     {
         // The default-framebuffer sentinel has no real GL texture object
-        // (see design decision #2) -- its view is likewise a sentinel,
+        // -- its view is likewise a sentinel,
         // recognized the same way by CommandListBeginRendering.
         viewState->name = 0;
         viewState->target = 0;

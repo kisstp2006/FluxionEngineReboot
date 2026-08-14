@@ -7,6 +7,7 @@ set(RHITESTS_SOURCES
     Test_VulkanBackend.c
     Test_OpenGLBackend.c
     Test_BindGroup.c
+    Test_PipelineCacheFile.cpp
 )
 if(WIN32)
     # D3D12 doesn't exist outside Windows -- same reasoning as

@@ -11,6 +11,8 @@
 
 #include "D3D12Common.h"
 
+#include "../PipelineCacheFile.h"
+
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -190,13 +192,30 @@ static bool Fluxion_RHID3D12_BuildRootSignature(FluxionRHID3D12Device* deviceSta
 // found again across a save/load cycle -- a caller that wants its
 // pipelines to benefit from a loaded cache should pass a debugName).
 
-static bool Fluxion_RHID3D12_EnsurePipelineLibrary(FluxionRHID3D12Device* deviceState, const void* initialData, usize initialDataSize)
+// outSeeded, where the caller passed one, says whether the library
+// actually came up on the supplied bytes. Falling back to an empty
+// library is the right behaviour -- a rejected blob must not fail
+// pipeline creation -- but reporting that fallback as success is what
+// made a load of an unusable file indistinguishable from a load of a good
+// one. The two answers are now separate: the function still succeeds, and
+// the caller still learns it started cold.
+static bool Fluxion_RHID3D12_EnsurePipelineLibrary(FluxionRHID3D12Device* deviceState, const void* initialData, usize initialDataSize, bool* outSeeded = nullptr)
 {
+    if (outSeeded != nullptr) *outSeeded = false;
     if (deviceState->pipelineLibrary != nullptr) return initialData == nullptr; // same "can't reseed an existing library" contract as the Vulkan backend
-    HRESULT hr = deviceState->device->CreatePipelineLibrary(initialData, initialDataSize, IID_PPV_ARGS(&deviceState->pipelineLibrary));
-    if (SUCCEEDED(hr)) return true;
-    // A driver/version-mismatched or corrupt blob is rejected here --
-    // fall back to an empty library rather than failing pipeline creation.
+
+    if (initialData != nullptr)
+    {
+        // The runtime does its own driver-version and adapter check on
+        // these bytes, on top of the header check the caller already did.
+        HRESULT hr = deviceState->device->CreatePipelineLibrary(initialData, initialDataSize, IID_PPV_ARGS(&deviceState->pipelineLibrary));
+        if (SUCCEEDED(hr))
+        {
+            if (outSeeded != nullptr) *outSeeded = true;
+            return true;
+        }
+    }
+
     return SUCCEEDED(deviceState->device->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&deviceState->pipelineLibrary)));
 }
 
@@ -210,6 +229,25 @@ static std::wstring Fluxion_RHID3D12_PipelineCacheKey(const char* debugName, u32
     return wide;
 }
 
+// D3D12 exposes no driver version through DXGI, so driverVersion stays
+// zero here and the runtime's own check inside CreatePipelineLibrary
+// covers that case instead -- which is now reported rather than swallowed
+// (see EnsurePipelineLibrary above). The adapter ids still have to match
+// before the runtime is asked at all.
+static FluxionRHIPipelineCacheIdentity Fluxion_RHID3D12_PipelineCacheIdentity(FluxionRHID3D12Device* deviceState)
+{
+    FluxionRHIPipelineCacheIdentity identity = {};
+    identity.backend = FLUXION_RHI_BACKEND_D3D12;
+
+    DXGI_ADAPTER_DESC1 desc = {};
+    if (deviceState->adapter != nullptr && SUCCEEDED(deviceState->adapter->GetDesc1(&desc)))
+    {
+        identity.vendorId = desc.VendorId;
+        identity.deviceId = desc.DeviceId;
+    }
+    return identity;
+}
+
 bool Fluxion_RHID3D12_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, const char* path)
 {
     FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_ResolveDevice(device);
@@ -220,11 +258,7 @@ bool Fluxion_RHID3D12_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, con
     std::vector<u8> data(size);
     if (FAILED(deviceState->pipelineLibrary->Serialize(data.data(), size))) return false;
 
-    FILE* file = nullptr;
-    if (fopen_s(&file, path, "wb") != 0 || file == nullptr) return false;
-    usize written = fwrite(data.data(), 1, size, file);
-    fclose(file);
-    return written == size;
+    return Fluxion_RHIPipelineCacheFile_Write(path, Fluxion_RHID3D12_PipelineCacheIdentity(deviceState), data.data(), size);
 }
 
 bool Fluxion_RHID3D12_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, const char* path)
@@ -232,19 +266,12 @@ bool Fluxion_RHID3D12_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, c
     FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_ResolveDevice(device);
     if (deviceState == nullptr || path == nullptr) return false;
 
-    FILE* file = nullptr;
-    if (fopen_s(&file, path, "rb") != 0 || file == nullptr) return false;
-    fseek(file, 0, SEEK_END);
-    long fileSize = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    if (fileSize <= 0) { fclose(file); return false; }
+    std::vector<u8> data;
+    if (!Fluxion_RHIPipelineCacheFile_Read(path, Fluxion_RHID3D12_PipelineCacheIdentity(deviceState), &data)) return false;
 
-    std::vector<u8> data((usize)fileSize);
-    usize readBytes = fread(data.data(), 1, data.size(), file);
-    fclose(file);
-    if (readBytes != data.size()) return false;
-
-    return Fluxion_RHID3D12_EnsurePipelineLibrary(deviceState, data.data(), data.size());
+    bool seeded = false;
+    if (!Fluxion_RHID3D12_EnsurePipelineLibrary(deviceState, data.data(), data.size(), &seeded)) return false;
+    return seeded;
 }
 
 // --- Pipelines -----------------------------------------------------------

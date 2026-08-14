@@ -1,16 +1,19 @@
-// Shader / graphics+compute pipeline (one linked GL program per pipeline,
-// design decision #4), the raster/depth/blend state cache (design decision
-// #5), and pipeline-cache save/load via glGetProgramBinary/glProgramBinary
-// (design decision #4's "minimal, correct" custom file format).
+// Shader / graphics+compute pipeline (one linked GL program per pipeline),
+// the raster/depth/blend state cache, and pipeline-cache save/load via
+// glGetProgramBinary/glProgramBinary.
 
 #include "OpenGLCommon.h"
 #include "OpenGLFunctions.h"
 
+#include "../PipelineCacheFile.h"
+
+#include <Fluxion/Foundation/Hashing.h>
 #include <Fluxion/Foundation/Log.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 // --- Shaders -------------------------------------------------------------
@@ -40,7 +43,7 @@ FluxionRHIShaderHandle Fluxion_RHIOpenGL_CreateShader(FluxionRHIDeviceHandle dev
     FluxionRHIShaderHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     if (Fluxion_RHIOpenGL_ResolveDevice(device) == nullptr || desc == nullptr || desc->bytecode == nullptr) return invalid;
 
-    // `bytecode` is GLSL source text for this backend (design decision #4)
+    // `bytecode` is GLSL source text for this backend
     // -- bytecodeSize may or may not include a null terminator, so a
     // temporary null-terminated copy is built for glShaderSource.
     std::vector<char> source(desc->bytecodeSize + 1);
@@ -237,7 +240,7 @@ void Fluxion_RHIOpenGL_DestroyPipeline(FluxionRHIPipelineHandle pipeline)
     Fluxion_RHIOpenGL_PoolFree(s_pipelineSlots, FLUXION_RHI_OPENGL_MAX_PIPELINES, pipeline.index, pipeline.generation);
 }
 
-// --- State cache (design decision #5) ---------------------------------------
+// --- State cache ------------------------------------------------------------
 
 static GLenum Fluxion_RHIOpenGL_MapCompareOp(FluxionRHICompareOp op)
 {
@@ -323,19 +326,45 @@ void Fluxion_RHIOpenGL_ApplyPipelineState(FluxionRHIOpenGLDevice* deviceState, c
     cache->valid = true;
 }
 
-// --- Pipeline cache (design decision #4) ------------------------------------
+// --- Pipeline cache ---------------------------------------------------------
 //
-// A minimal custom file format: [u32 magic][u32 programCount] then, per
-// program, [u32 nameHashPlaceholder][GLenum binaryFormat][u32 blobSize]
-// [blob bytes]. Loading only ever primes the driver's own internal shader
-// cache as a side effect of calling glProgramBinary on scratch program
-// objects that are immediately deleted -- there is no way to retroactively
-// attach a loaded binary to a *future* Fluxion_RHI_CreateGraphicsPipeline
-// call without a stable cache key the RHI contract doesn't provide, so
-// this follows the same "prime the driver cache, let it do the real work"
-// approach most OpenGL engines use for GL_ARB_get_program_binary.
+// The payload is [u32 programCount] then, per program, [u32 binaryFormat]
+// [u32 blobSize][blob bytes] -- wrapped by the shared engine header that
+// records which backend, adapter, and driver produced it. Loading only
+// ever primes the driver's own internal shader cache, as a side effect of
+// calling glProgramBinary on scratch program objects that are immediately
+// deleted: there is no way to retroactively attach a loaded binary to a
+// *future* Fluxion_RHI_CreateGraphicsPipeline call without a stable cache
+// key the RHI contract doesn't provide.
+//
+// That side-effect-only design is exactly why the identity check matters
+// here. A program binary is only meaningful to the driver that produced
+// it; glProgramBinary is required to fail cleanly on a foreign one, so
+// feeding it a whole file's worth would be slow and silent rather than
+// dangerous. Refusing the file up front turns that into nothing at all.
 
-static constexpr u32 FLUXION_RHIOPENGL_PIPELINE_CACHE_MAGIC = 0x464C5847u; // "FLXG"
+// GL exposes no adapter ids, only strings, so the strings are what
+// identifies the device here.
+static FluxionRHIPipelineCacheIdentity Fluxion_RHIOpenGL_PipelineCacheIdentity()
+{
+    FluxionRHIPipelineCacheIdentity identity = {};
+    identity.backend = FLUXION_RHI_BACKEND_OPENGL;
+
+    // Joined with a separator and hashed once, rather than combining
+    // three hashes by hand: a separator keeps two different splits of the
+    // same characters from colliding, and there is no second hash
+    // construction here to get subtly wrong.
+    std::string description;
+    const GLenum names[] = { GL_VENDOR, GL_RENDERER, GL_VERSION };
+    for (GLenum name : names)
+    {
+        const char* text = (const char*)glGetString(name);
+        description += text != nullptr ? text : "";
+        description += '\n';
+    }
+    identity.extra = Fluxion_HashBytes64(description.data(), description.size());
+    return identity;
+}
 
 bool Fluxion_RHIOpenGL_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, const char* path)
 {
@@ -349,19 +378,16 @@ bool Fluxion_RHIOpenGL_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, co
     }
     if (programs.empty()) return false;
 
-    FILE* file = nullptr;
-#if defined(_MSC_VER)
-    if (fopen_s(&file, path, "wb") != 0 || file == nullptr) return false;
-#else
-    file = fopen(path, "wb");
-    if (file == nullptr) return false;
-#endif
+    std::vector<u8> payload;
+    const auto appendU32 = [&payload](u32 value)
+    {
+        payload.push_back((u8)(value & 0xFFu));
+        payload.push_back((u8)((value >> 8) & 0xFFu));
+        payload.push_back((u8)((value >> 16) & 0xFFu));
+        payload.push_back((u8)((value >> 24) & 0xFFu));
+    };
 
-    u32 magic = FLUXION_RHIOPENGL_PIPELINE_CACHE_MAGIC;
-    u32 count = (u32)programs.size();
-    fwrite(&magic, sizeof(magic), 1, file);
-    fwrite(&count, sizeof(count), 1, file);
-
+    appendU32((u32)programs.size());
     for (GLuint program : programs)
     {
         GLint binaryLength = 0;
@@ -371,15 +397,12 @@ bool Fluxion_RHIOpenGL_SavePipelineCacheToFile(FluxionRHIDeviceHandle device, co
         GLsizei written = 0;
         if (!blob.empty()) glGetProgramBinary(program, (GLsizei)blob.size(), &written, &binaryFormat, blob.data());
 
-        u32 formatValue = (u32)binaryFormat;
-        u32 blobSize = (u32)written;
-        fwrite(&formatValue, sizeof(formatValue), 1, file);
-        fwrite(&blobSize, sizeof(blobSize), 1, file);
-        if (blobSize > 0) fwrite(blob.data(), 1, blobSize, file);
+        appendU32((u32)binaryFormat);
+        appendU32((u32)written);
+        payload.insert(payload.end(), blob.begin(), blob.begin() + (written > 0 ? written : 0));
     }
 
-    fclose(file);
-    return true;
+    return Fluxion_RHIPipelineCacheFile_Write(path, Fluxion_RHIOpenGL_PipelineCacheIdentity(), payload.data(), payload.size());
 }
 
 bool Fluxion_RHIOpenGL_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, const char* path)
@@ -387,51 +410,48 @@ bool Fluxion_RHIOpenGL_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, 
     FluxionRHIOpenGLDevice* deviceState = Fluxion_RHIOpenGL_ResolveDevice(device);
     if (deviceState == nullptr || path == nullptr || !deviceState->hasProgramBinary) return false;
 
-    FILE* file = nullptr;
-#if defined(_MSC_VER)
-    if (fopen_s(&file, path, "rb") != 0 || file == nullptr) return false;
-#else
-    file = fopen(path, "rb");
-    if (file == nullptr) return false;
-#endif
+    std::vector<u8> payload;
+    if (!Fluxion_RHIPipelineCacheFile_Read(path, Fluxion_RHIOpenGL_PipelineCacheIdentity(), &payload)) return false;
 
-    u32 magic = 0, count = 0;
-    if (fread(&magic, sizeof(magic), 1, file) != 1 || magic != FLUXION_RHIOPENGL_PIPELINE_CACHE_MAGIC ||
-        fread(&count, sizeof(count), 1, file) != 1)
+    // Every read is bounded by what is actually left, and a short read
+    // stops the walk rather than trusting a count the file supplied. The
+    // hash check above means damage is normally caught before reaching
+    // here; these checks are what keep a file that hashes correctly but
+    // frames incorrectly from walking off the end.
+    usize cursor = 0;
+    const auto takeU32 = [&payload, &cursor](u32* out) -> bool
     {
-        fclose(file);
-        return false;
-    }
+        if (payload.size() - cursor < 4) return false;
+        *out = (u32)payload[cursor] | ((u32)payload[cursor + 1] << 8) | ((u32)payload[cursor + 2] << 16) | ((u32)payload[cursor + 3] << 24);
+        cursor += 4;
+        return true;
+    };
+
+    u32 count = 0;
+    if (!takeU32(&count)) return false;
 
     bool anyLoaded = false;
     for (u32 i = 0; i < count; ++i)
     {
         u32 formatValue = 0, blobSize = 0;
-        if (fread(&formatValue, sizeof(formatValue), 1, file) != 1 || fread(&blobSize, sizeof(blobSize), 1, file) != 1)
-        {
-            fclose(file);
-            return anyLoaded;
-        }
-        std::vector<u8> blob((usize)blobSize);
-        if (blobSize > 0 && fread(blob.data(), 1, blobSize, file) != blobSize)
-        {
-            fclose(file);
-            return anyLoaded;
-        }
+        if (!takeU32(&formatValue) || !takeU32(&blobSize)) return anyLoaded;
+        if (payload.size() - cursor < blobSize) return anyLoaded;
+
+        const u8* blob = payload.data() + cursor;
+        cursor += blobSize;
         if (blobSize == 0) continue;
 
         // Prime the driver's own program-binary cache: load into a
         // scratch program object, then discard it -- this only helps a
         // driver that keys its shader cache off the binary content
-        // itself (most desktop drivers do), matching the comment above.
+        // itself (most desktop drivers do).
         GLuint scratchProgram = glCreateProgram();
-        glProgramBinary(scratchProgram, (GLenum)formatValue, blob.data(), (GLsizei)blobSize);
+        glProgramBinary(scratchProgram, (GLenum)formatValue, blob, (GLsizei)blobSize);
         GLint linkStatus = GL_FALSE;
         glGetProgramiv(scratchProgram, GL_LINK_STATUS, &linkStatus);
         if (linkStatus == GL_TRUE) anyLoaded = true;
         glDeleteProgram(scratchProgram);
     }
 
-    fclose(file);
     return anyLoaded;
 }

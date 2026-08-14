@@ -18,8 +18,8 @@
 // later just makes the SAME context current against ITS drawable instead
 // (wglMakeCurrent/glXMakeCurrent both allow retargeting an existing
 // context onto a different, pixel-format-compatible drawable) -- there is
-// still only ever one GL context for the process, matching design
-// decision #1 (immediate/synchronous CommandList execution on the
+// still only ever one GL context for the process, matching this
+// backend's immediate/synchronous CommandList execution on the
 // context's owning thread).
 
 #include "../RHIBackendVTable.h"
@@ -87,7 +87,7 @@
 #define FLUXION_RHI_OPENGL_MAX_FRAMEBUFFERS 64
 
 // Fixed per-group stride partitioning every BindGroup binding point into
-// the global OpenGL binding-point namespace -- see design decision #3:
+// the global OpenGL binding-point namespace:
 // actualBinding = groupIndex * FLUXION_RHIOPENGL_BINDINGS_PER_GROUP + entry.binding,
 // applied identically to UBO binding points, SSBO binding points, and
 // texture/sampler units (each of those is already an independent
@@ -108,7 +108,7 @@ bool Fluxion_RHIOpenGL_PoolAllocate(FluxionRHIOpenGLSlot* slots, u32 capacity, u
 bool Fluxion_RHIOpenGL_PoolIsValid(const FluxionRHIOpenGLSlot* slots, u32 capacity, u32 index, u32 generation);
 void Fluxion_RHIOpenGL_PoolFree(FluxionRHIOpenGLSlot* slots, u32 capacity, u32 index, u32 generation);
 
-// --- State cache (design decision #5) --------------------------------------
+// --- State cache ----------------------------------------------------------
 
 struct FluxionRHIOpenGLStateCache
 {
@@ -122,7 +122,7 @@ struct FluxionRHIOpenGLStateCache
     bool blendEnable = false;
 };
 
-// --- Resource-binding cache (design decision #3) ---------------------------
+// --- Resource-binding cache ------------------------------------------------
 
 struct FluxionRHIOpenGLBindingCache
 {
@@ -202,7 +202,7 @@ struct FluxionRHIOpenGLBuffer
 {
     GLuint name = 0;
     usize size = 0;
-    void* mappedPointer = nullptr; // persistently mapped for CPU-visible memory classes, see design decision #6
+    void* mappedPointer = nullptr; // persistently mapped for CPU-visible memory classes
     bool cpuVisible = false;
 };
 
@@ -213,7 +213,7 @@ void Fluxion_RHIOpenGL_UnmapBuffer(FluxionRHIBufferHandle buffer);
 FluxionRHIOpenGLBuffer* Fluxion_RHIOpenGL_ResolveBuffer(FluxionRHIBufferHandle buffer);
 
 // True once the default-framebuffer sentinel texture/view has been
-// handed out (see design decision #2) -- CommandList_BeginRendering
+// handed out -- CommandList_BeginRendering
 // checks this to know when to bind FBO 0 instead of building a real FBO.
 struct FluxionRHIOpenGLTexture
 {

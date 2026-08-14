@@ -1,10 +1,9 @@
-// Command lists (direct/immediate execution -- design decision #1: every
+// Command lists (direct/immediate execution: every
 // Fluxion_RHI_CommandList_* call issues its GL call synchronously, right
 // here, rather than recording into a real command-buffer object; Begin/
 // End/BeginRendering/EndRendering only perform the same recording-order
 // state-machine validation the Null backend does), the default-framebuffer
-// swapchain (design decision #2), and Fence/Semaphore/QueryPool (design
-// decision #9).
+// swapchain, and Fence/Semaphore/QueryPool.
 
 #include "OpenGLCommon.h"
 #include "OpenGLFunctions.h"
@@ -121,8 +120,8 @@ void Fluxion_RHIOpenGL_CommandListBeginRendering(FluxionRHICommandListHandle com
     FluxionRHIOpenGLDevice* deviceState = Fluxion_RHIOpenGL_SoleDevice();
     if (deviceState == nullptr) return;
 
-    // If the first color attachment is the default-framebuffer sentinel
-    // (design decision #2), this frame renders straight to FBO 0 -- no
+    // If the first color attachment is the default-framebuffer sentinel,
+    // this frame renders straight to FBO 0 -- no
     // real GL framebuffer object is built.
     bool usesDefaultFramebuffer = false;
     if (desc->colorAttachmentCount > 0)
@@ -389,10 +388,10 @@ void Fluxion_RHIOpenGL_CommandListBarrier(FluxionRHICommandListHandle commandLis
 
 // --- Submission --------------------------------------------------------------
 //
-// Every CommandList_* call above already issued its GL call immediately
-// (design decision #1) -- QueueSubmit only validates the command lists
+// Every CommandList_* call above already issued its GL call immediately --
+// QueueSubmit only validates the command lists
 // were properly ended and, since nothing is deferred, immediately marks
-// the signal fence as signaled (design decision #9).
+// the signal fence as signaled.
 
 void Fluxion_RHIOpenGL_QueueSubmit(FluxionRHIQueueHandle queue, const FluxionRHICommandListHandle* commandLists, u32 commandListCount, FluxionRHIFenceHandle signalFence)
 {
@@ -410,7 +409,7 @@ void Fluxion_RHIOpenGL_QueueSubmit(FluxionRHIQueueHandle queue, const FluxionRHI
     Fluxion_RHIOpenGL_SignalFenceIfValid(signalFence);
 }
 
-// --- Swapchain (design decision #2) -----------------------------------------
+// --- Swapchain --------------------------------------------------------------
 
 struct FluxionRHIOpenGLSwapchain
 {
@@ -511,7 +510,7 @@ void Fluxion_RHIOpenGL_DestroySwapchain(FluxionRHISwapchainHandle swapchain)
 
 u32 Fluxion_RHIOpenGL_SwapchainAcquireNextImage(FluxionRHISwapchainHandle swapchain, FluxionRHISemaphoreHandle signalSemaphore)
 {
-    FLUXION_UNUSED(signalSemaphore); // no real acquire semantics (design decision #2) -- semaphores are no-op placeholders in this backend
+    FLUXION_UNUSED(signalSemaphore); // no real acquire semantics -- semaphores are no-op placeholders in this backend
     if (!Fluxion_RHIOpenGL_PoolIsValid(s_swapchainSlots, FLUXION_RHI_OPENGL_MAX_SWAPCHAINS, swapchain.index, swapchain.generation)) return 0;
     return 0; // WGL/GLX double-buffer automatically; there is only ever one logical "image"
 }
@@ -550,9 +549,9 @@ void Fluxion_RHIOpenGL_SwapchainGetExtent(FluxionRHISwapchainHandle swapchain, u
         if (outHeight) *outHeight = 0;
         return;
     }
-    // Tracks the live window size on every query (design decision #2:
-    // "glViewport/render target size just needs to track the current
-    // window size") -- WGL/GLX need no swapchain object recreation on
+    // Tracks the live window size on every query -- the render target
+    // size only needs to track the current window size, and
+    // WGL/GLX need no swapchain object recreation on
     // resize, unlike a real Vulkan swapchain.
     FluxionRHIOpenGLSwapchain* sc = &s_swapchains[swapchain.index];
     u32 width = 0, height = 0;
@@ -566,7 +565,7 @@ void Fluxion_RHIOpenGL_SwapchainGetExtent(FluxionRHISwapchainHandle swapchain, u
     if (outHeight) *outHeight = sc->height;
 }
 
-// --- Synchronization (design decision #9) -----------------------------------
+// --- Synchronization --------------------------------------------------------
 
 static FluxionRHIOpenGLSlot s_fenceSlots[FLUXION_RHI_OPENGL_MAX_FENCES];
 static bool s_fenceSignaled[FLUXION_RHI_OPENGL_MAX_FENCES];
@@ -607,7 +606,7 @@ bool Fluxion_RHIOpenGL_WaitForFence(FluxionRHIFenceHandle fence)
         return false;
     }
     // Every GL call up to and including the Submit that would signal this
-    // fence has already been issued synchronously (design decision #1) --
+    // fence has already been issued synchronously --
     // a glFinish ensures the driver has actually completed them GPU-side
     // before this call returns, matching what a caller expects "wait"
     // to mean.

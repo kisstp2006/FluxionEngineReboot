@@ -146,7 +146,7 @@ static bool Fluxion_RHIOpenGL_IsPlaceholderAdapter(FluxionRHIAdapterHandle adapt
 
 static void Fluxion_RHIOpenGL_QueryLimitsAndCapabilities(FluxionRHICapabilityFlags* outCaps, FluxionRHILimits* outLimits)
 {
-    // Design decision #7: compute/tessellation/geometry are core in GL
+    // Compute/tessellation/geometry are core in GL
     // 4.5, so they're unconditionally reported; async compute/transfer,
     // timeline sync, bindless/descriptor-indexing, buffer-device-address,
     // ray tracing/query, mesh shaders, VRS, sparse resources, and
@@ -272,9 +272,9 @@ static void Fluxion_RHIOpenGL_DestroyDevice(FluxionRHIDeviceHandle device)
 }
 
 // This backend never has anything genuinely GPU-timeline-deferred to
-// reclaim (design decision #1: CommandList execution is immediate/
+// reclaim: CommandList execution is immediate/
 // synchronous, and Destroy* frees the underlying GL object right away in
-// every OpenGL*.cpp file) -- CollectGarbage is a no-op, same as the Null
+// every OpenGL*.cpp file -- CollectGarbage is a no-op, same as the Null
 // backend.
 static void Fluxion_RHIOpenGL_CollectGarbage(FluxionRHIDeviceHandle device)
 {
@@ -291,7 +291,7 @@ static FluxionRHIQueueHandle Fluxion_RHIOpenGL_GetQueue(FluxionRHIDeviceHandle d
 {
     FluxionRHIQueueHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     if (Fluxion_RHIOpenGL_ResolveDevice(device) == nullptr) return invalid;
-    // Design decision #8: Graphics/Compute/Transfer all resolve to the
+    // Graphics/Compute/Transfer all resolve to the
     // same underlying GL context -- the *3+type encoding is kept purely
     // so the handle still round-trips through the same "index / 3 = which
     // device" decoding every other backend uses, even though every queue

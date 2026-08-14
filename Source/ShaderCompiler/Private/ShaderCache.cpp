@@ -18,11 +18,27 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace Fluxion::ShaderCompiler
 {
 namespace
 {
+
+unsigned long FluxionShaderCache_CurrentProcessId()
+{
+#if defined(_WIN32)
+    return (unsigned long)_getpid();
+#else
+    return (unsigned long)getpid();
+#endif
+}
 
 // Raised when the bytes on disk stop meaning what they used to. Separate
 // from the compiler's own versions: those say what a source is allowed to
@@ -380,12 +396,25 @@ bool WriteWholeFileAtomically(const std::filesystem::path& path, const std::vect
     std::error_code error;
     std::filesystem::create_directories(path.parent_path(), error);
 
+    // The temporary carries the writing process's own id: two builds
+    // caching the same shader at once would otherwise pick the same
+    // temporary name and rename each other's half-written file into
+    // place, which is precisely the outcome writing to a temporary is
+    // supposed to prevent.
     std::filesystem::path temporary = path;
-    temporary += ".writing";
+    temporary += ".writing.";
+    temporary += std::to_string(FluxionShaderCache_CurrentProcessId());
     {
         std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
         if (!file) return false;
         if (!bytes.empty()) file.write((const char*)bytes.data(), (std::streamsize)bytes.size());
+
+        // Checking the stream before flushing only reports what the
+        // buffer accepted, not what reached the disk -- a full volume
+        // surfaces at the flush and nowhere earlier. Without this, a
+        // short file gets renamed over a good one and the failure is
+        // never reported.
+        file.flush();
         if (!file) return false;
     }
 
