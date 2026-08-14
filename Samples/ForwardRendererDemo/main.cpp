@@ -23,6 +23,7 @@
 #include <Fluxion/Application/Input/Input.h>
 #include <Fluxion/Application/Time/Time.h>
 #include <Fluxion/Application/Window/Window.h>
+#include <Fluxion/Core/Jobs/JobSystem.h>
 #include <Fluxion/Foundation/Defines.h>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/Foundation/Math.h>
@@ -173,6 +174,11 @@ int main(int argc, char** argv)
     // The clock is started before the window is made, so the long, unrepresentative
     // stretch of work between here and the first frame is not mistaken for one.
     Fluxion_Time_Init();
+
+    // Workers, so that recompiling a shader does not stop the picture.
+    // Zero means "as many as this machine has, less the one running the
+    // frame" -- the frame thread keeps its core to itself.
+    Fluxion_JobSystem_Init(0, false);
 
     // The backend is otherwise only visible in the startup log line below
     // ("Using adapter: ...") -- putting it in the title too means it's
@@ -573,6 +579,11 @@ int main(int argc, char** argv)
     bool running = true;
     u32 frameIndex = 0;
 
+    // The reload being compiled right now, if any. One at a time: a
+    // second F while the first is still going would leave the first with
+    // nobody to apply it.
+    FluxionShaderProgramReloadJob* shaderReload = nullptr;
+
     while (running)
     {
         // Whatever was pressed or released during the last frame stops
@@ -637,6 +648,62 @@ int main(int argc, char** argv)
                     FLUXION_LOG_ERROR("ForwardRendererDemo", "The scripts were not reloaded (%s); the cube is still running the old ones.",
                         Fluxion_Scene_GetLastError(scene));
                 }
+            }
+        }
+
+        // Edit a shader in Shaders/, press F, and the cube keeps drawing
+        // while it compiles -- the compiling happens on a worker, and only
+        // the swap waits for here, which is the one place the GPU is known
+        // to be finished with the last frame.
+        //
+        // Two things are refused rather than half-done: source that does
+        // not compile, and source whose material parameters changed. The
+        // second is not a limitation of the reloading but of what a
+        // material is -- it holds byte offsets from the shader it was
+        // built against, and there is no honest way to reinterpret its
+        // contents against a different set.
+        if (shaderReload == nullptr && Fluxion_Input_WasKeyPressed(FLUXION_KEY_F))
+        {
+            const std::string vertexSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.vert.jsl");
+            const std::string fragmentSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.frag.jsl");
+            if (vertexSource.empty() || fragmentSource.empty())
+            {
+                FLUXION_LOG_ERROR("ForwardRendererDemo", "Nothing was read from %s, so the shaders were left as they are.",
+                    FLUXION_DEMO_SHADER_DIR);
+            }
+            else
+            {
+                FluxionShaderProgramDesc reloadDesc{};
+                reloadDesc.debugName = "ForwardRendererDemo.CubeProgram";
+                reloadDesc.vertexSource = vertexSource.c_str();
+                reloadDesc.fragmentSource = fragmentSource.c_str();
+
+                // The sources are copied by this call, so letting the two
+                // strings above go out of scope here is fine.
+                shaderReload = Fluxion_ShaderProgram_BeginReload(device, cubeProgram, &reloadDesc);
+                if (shaderReload == nullptr)
+                    FLUXION_LOG_ERROR("ForwardRendererDemo", "The shader reload could not be started; the cube is still running the old shaders.");
+            }
+        }
+
+        // Asked every frame and answered without waiting, so a compile
+        // that takes a while costs nothing until it is done.
+        if (shaderReload != nullptr && Fluxion_ShaderProgram_IsReloadReady(shaderReload))
+        {
+            const FluxionShaderProgramReloadOutcome outcome = Fluxion_ShaderProgram_FinishReload(shaderReload);
+            shaderReload = nullptr;
+
+            switch (outcome)
+            {
+                case FLUXION_SHADER_PROGRAM_RELOAD_OK:
+                    FLUXION_LOG_INFO("ForwardRendererDemo", "Shaders reloaded.");
+                    break;
+                case FLUXION_SHADER_PROGRAM_RELOAD_LAYOUT_CHANGED:
+                    FLUXION_LOG_ERROR("ForwardRendererDemo", "The shaders were not reloaded: their material parameters changed, which needs a restart.");
+                    break;
+                default:
+                    FLUXION_LOG_ERROR("ForwardRendererDemo", "The shaders were not reloaded; the cube is still running the old ones.");
+                    break;
             }
         }
 
@@ -807,6 +874,10 @@ int main(int argc, char** argv)
     Fluxion_RenderPipeline_Destroy(cubePipeline);
     Fluxion_MeshBuffer_Destroy(cubeMesh);
     Fluxion_Material_Destroy(cubeMaterial);
+    // Applied rather than abandoned: Finish waits for the compiling and
+    // then releases it, and there is no other way to let the job go.
+    if (shaderReload != nullptr) Fluxion_ShaderProgram_FinishReload(shaderReload);
+
     Fluxion_ShaderProgram_Destroy(cubeProgram);
     Fluxion_RenderGraphPassRegistry_Shutdown();
 
@@ -821,6 +892,7 @@ int main(int argc, char** argv)
     Fluxion_RHI_DestroyInstance(instance);
 
     Fluxion_Window_Destroy(window);
+    Fluxion_JobSystem_Shutdown();
     Fluxion_WindowSystem_Shutdown();
     Fluxion_Time_Shutdown();
     Fluxion_Input_Shutdown();

@@ -89,7 +89,30 @@ FluxionShaderProgramDesc MakeDesc(const char* fragment)
     return desc;
 }
 
+FluxionRHIVertexLayout MakePositionOnlyLayout()
+{
+    FluxionRHIVertexLayout layout = {};
+    layout.attributeCount = 1;
+    layout.attributes[0].location = 0;
+    layout.attributes[0].format = FLUXION_RHI_FORMAT_R32G32B32_FLOAT;
+    layout.attributes[0].offset = 0;
+    layout.stride = 12;
+    return layout;
+}
+
+bool SameHandle(FluxionRHIPipelineHandle a, FluxionRHIPipelineHandle b)
+{
+    return a.index == b.index && a.generation == b.generation;
+}
+
 } // namespace
+
+// The lazily-built pipeline cache has no public reader -- resolving is
+// something a draw does, not something a caller asks for. Declared here
+// rather than published in a header, because nothing outside RenderCore
+// should be building pipelines out of band; the checks below only need to
+// observe which object a resolve hands back.
+extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resolve(FluxionRenderPipelineHandle pipeline, FluxionRHIDeviceHandle device, const FluxionRHIVertexLayout* vertexLayout);
 
 extern "C" void Test_ShaderReload_Run(TestContext* ctx)
 {
@@ -160,6 +183,37 @@ extern "C" void Test_ShaderReload_Run(TestContext* ctx)
         FluxionRenderPipelineHandle pipeline = Fluxion_RenderPipeline_Create(fixture.device, program,
             FLUXION_RENDER_PIPELINE_CATEGORY_OPAQUE, FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, FLUXION_RHI_FORMAT_D32_FLOAT);
         TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(pipeline));
+
+        // A pipeline object bakes in the shaders it was built from and
+        // never consults them again, so one that outlives a reload is
+        // drawing with shaders that have been destroyed. Nothing about
+        // that is visible from the outside -- the handle stays valid and
+        // the draw still submits -- so the only way to catch it is to
+        // watch which object a resolve returns.
+        const FluxionRHIVertexLayout layout = MakePositionOnlyLayout();
+        const FluxionRHIPipelineHandle built = FluxionRendererInternal_RenderPipeline_Resolve(pipeline, fixture.device, &layout);
+        TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(built));
+
+        // Same layout, no reload in between: the cache is doing its job
+        // and hands back the object it already built. Without this the
+        // check below would pass just as well against a cache that
+        // rebuilds on every single draw.
+        TEST_CHECK(ctx, SameHandle(FluxionRendererInternal_RenderPipeline_Resolve(pipeline, fixture.device, &layout), built));
+
+        FluxionShaderProgramDesc afterReload = MakeDesc(kFragmentDifferentBody);
+        TEST_CHECK(ctx, Fluxion_ShaderProgram_Reload(fixture.device, program, &afterReload) == FLUXION_SHADER_PROGRAM_RELOAD_OK);
+
+        const FluxionRHIPipelineHandle rebuilt = FluxionRendererInternal_RenderPipeline_Resolve(pipeline, fixture.device, &layout);
+        TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(rebuilt));
+        TEST_CHECK(ctx, !SameHandle(rebuilt, built));
+
+        // The other half of the contract: a reload that was refused must
+        // not cost anything either. Throwing the variants away on a
+        // refusal would be silently wasteful rather than wrong, which is
+        // exactly the kind of thing that survives unnoticed.
+        FluxionShaderProgramDesc refused = MakeDesc(kFragmentExtraUniform);
+        TEST_CHECK(ctx, Fluxion_ShaderProgram_Reload(fixture.device, program, &refused) == FLUXION_SHADER_PROGRAM_RELOAD_LAYOUT_CHANGED);
+        TEST_CHECK(ctx, SameHandle(FluxionRendererInternal_RenderPipeline_Resolve(pipeline, fixture.device, &layout), rebuilt));
 
         // Reloading over and over must leave nothing behind. Each reload
         // builds two new shaders and lets two go; if the old ones were
