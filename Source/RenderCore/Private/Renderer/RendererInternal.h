@@ -223,6 +223,17 @@ bool FluxionRendererInternal_RenderView_GetViewport(FluxionRenderViewHandle view
 // with the program's own MATERIAL layout.
 FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resolve(FluxionRenderPipelineHandle pipeline, FluxionRHIDeviceHandle device, const FluxionRHIVertexLayout* vertexLayout);
 
+// Throws away every pipeline built from this program, across every
+// FluxionRenderPipeline that names it. Resolve above bakes the program's
+// shaders into a native pipeline object once and never looks at them
+// again, so a program whose shaders have been replaced leaves every one
+// of those objects describing shaders that no longer exist. They are
+// rebuilt on next use, at the cost of one build each.
+//
+// Called by Fluxion_ShaderProgram_Reload, which is the only thing that
+// can replace a live program's shaders.
+void FluxionRendererInternal_RenderPipeline_InvalidateVariantsUsingProgram(FluxionShaderProgramHandle program);
+
 // --- "ForwardOpaquePass" registered pass type (ForwardOpaquePass.c) --------
 //
 // Registered once per FluxionRenderer instance (see Fluxion_Renderer_Create)

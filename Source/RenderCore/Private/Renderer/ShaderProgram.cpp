@@ -7,12 +7,14 @@
 
 #include "RendererInternal.h"
 
+#include <Fluxion/Core/Jobs/JobSystem.h>
 #include <Fluxion/Foundation/Assert.h>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/ShaderCompiler/Backends/DXC/DXCAdapter.hpp>
 #include <Fluxion/ShaderCompiler/ShaderCache.hpp>
 #include <Fluxion/ShaderCompiler/ShaderCompiler.hpp>
 
+#include <atomic>
 #include <cstring>
 #include <string>
 
@@ -226,7 +228,15 @@ ArtifactTarget TargetForBackend(FluxionRHIBackendType backend)
     return ArtifactTarget::Spirv; // Vulkan, Null, and anything else
 }
 
-bool CompileStage(FluxionRHIDeviceHandle device, FluxionRHIBackendType backend, const char* source, const char* entryPoint, const char* debugName, ShaderStage stage, ShaderIRModule* outIR, FluxionRHIShaderHandle* outShader)
+// The half of the work that touches no device.
+//
+// Split out from the half that does, because this is the slow half and
+// the only one that may run anywhere other than the thread that owns the
+// device. An OpenGL context belongs to exactly one thread, so a shader
+// object may only ever be created on that thread -- what a worker is
+// allowed to produce is bytes, and nothing else.
+bool CompileArtifact(FluxionRHIBackendType backend, const char* source, const char* entryPoint, const char* debugName, ShaderStage stage,
+    CompiledArtifact* outArtifact)
 {
     DiagnosticList diagnostics;
 
@@ -253,12 +263,18 @@ bool CompileStage(FluxionRHIDeviceHandle device, FluxionRHIBackendType backend, 
         return false;
     }
 
-    *outIR = artifact.Value().reflection;
+    *outArtifact = std::move(artifact.Value());
+    return true;
+}
 
+// The half that does. Always on the thread that owns the device.
+bool CreateShaderFromArtifact(FluxionRHIDeviceHandle device, const CompiledArtifact& artifact, ShaderStage stage, const char* debugName,
+    FluxionRHIShaderHandle* outShader)
+{
     FluxionRHIShaderDesc shaderDesc;
     shaderDesc.stage = ToRHIStage(stage);
-    shaderDesc.bytecode = artifact.Value().bytes.data();
-    shaderDesc.bytecodeSize = artifact.Value().bytes.size();
+    shaderDesc.bytecode = artifact.bytes.data();
+    shaderDesc.bytecodeSize = artifact.bytes.size();
     // Always literally `main`: the HLSL backend emits a function by that
     // name whatever the source called its own, and the GLSL backend does
     // the same.
@@ -269,7 +285,234 @@ bool CompileStage(FluxionRHIDeviceHandle device, FluxionRHIBackendType backend, 
     return FLUXION_HANDLE_IS_VALID(*outShader);
 }
 
+bool CompileStage(FluxionRHIDeviceHandle device, FluxionRHIBackendType backend, const char* source, const char* entryPoint, const char* debugName, ShaderStage stage, ShaderIRModule* outIR, FluxionRHIShaderHandle* outShader)
+{
+    CompiledArtifact artifact;
+    if (!CompileArtifact(backend, source, entryPoint, debugName, stage, &artifact)) return false;
+
+    *outIR = artifact.reflection;
+    return CreateShaderFromArtifact(device, artifact, stage, debugName, outShader);
+}
+
+// Whether two programs present the same material side. This is exactly
+// the set of things a material copies out of a program and then relies on
+// forever: how many parameters there are, what each is called, where in
+// the buffer it sits, how big it is, and which bindings a texture
+// occupies -- plus the total buffer size, which is what the material
+// allocated.
+//
+// Anything outside that set may differ freely: the shader body, the
+// stage IO, the order the parameters were declared in. What matters is
+// only whether a material built against one can go on being used against
+// the other.
+bool SameMaterialLayout(const FluxionShaderProgramRecord& a, const FluxionShaderProgramRecord& b)
+{
+    if (a.materialParamCount != b.materialParamCount) return false;
+    if (a.materialUniformBufferSize != b.materialUniformBufferSize) return false;
+
+    for (u32 i = 0; i < a.materialParamCount; ++i)
+    {
+        const FluxionMaterialParameterInfo& x = a.materialParams[i];
+        const FluxionMaterialParameterInfo& y = b.materialParams[i];
+        if (std::strcmp(x.name, y.name) != 0) return false;
+        if (x.kind != y.kind) return false;
+        if (x.offset != y.offset || x.size != y.size) return false;
+        if (x.binding != y.binding || x.samplerBinding != y.samplerBinding) return false;
+    }
+    return true;
+}
+
+// One reload, in three steps that can be taken at three different times
+// and, for the middle one, on a different thread.
+//
+// Splitting it this way is what lets the slow part happen off the frame:
+// describing is cheap and needs the record, compiling is slow and needs
+// nothing, applying is quick and needs the device. Only the first and
+// last touch anything shared.
+struct ReloadRequest
+{
+    FluxionRHIDeviceHandle device{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    FluxionShaderProgramHandle program{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    FluxionRHIBackendType backend = FLUXION_RHI_BACKEND_NULL;
+    bool isCompute = false;
+
+    // Copied, so a caller's strings need not outlive the call that
+    // started this -- a reload begun from a key press is applied frames
+    // later, long after whatever held the source has moved on.
+    std::string debugName;
+    std::string vertexSource, vertexEntry;
+    std::string fragmentSource, fragmentEntry;
+    std::string computeSource, computeEntry;
+
+    CompiledArtifact vertexArtifact, fragmentArtifact, computeArtifact;
+    bool compiled = false;
+};
+
+const char* OrNull(const std::string& value) { return value.empty() ? nullptr : value.c_str(); }
+
+// Step one: is this a reload at all, and of what. Reads the record, so
+// it belongs on the thread that owns it.
+bool DescribeReload(FluxionRHIDeviceHandle device, FluxionShaderProgramHandle program, const FluxionShaderProgramDesc* desc, ReloadRequest& out)
+{
+    if (desc == nullptr) return false;
+    if (program.index >= FLUXION_RENDERER_MAX_SHADER_PROGRAMS) return false;
+
+    const FluxionShaderProgramRecord* record = &s_programs[program.index];
+    if (!record->alive || record->generation != program.generation) return false;
+
+    const bool wantsGraphics = desc->vertexSource != nullptr && desc->fragmentSource != nullptr;
+    const bool wantsCompute = desc->computeSource != nullptr;
+    if (wantsGraphics == wantsCompute) return false;
+
+    // A program does not change shape. A graphics program reloaded from a
+    // compute source would need a different pipeline entirely, and every
+    // pipeline built from it assumes otherwise.
+    if (wantsCompute != record->isCompute) return false;
+
+    out.device = device;
+    out.program = program;
+    out.backend = Fluxion_RHI_GetDeviceBackendType(device);
+    out.isCompute = wantsCompute;
+    out.debugName = desc->debugName != nullptr ? desc->debugName : "";
+    if (wantsCompute)
+    {
+        out.computeSource = desc->computeSource;
+        out.computeEntry = desc->computeEntryPoint != nullptr ? desc->computeEntryPoint : "";
+    }
+    else
+    {
+        out.vertexSource = desc->vertexSource;
+        out.vertexEntry = desc->vertexEntryPoint != nullptr ? desc->vertexEntryPoint : "";
+        out.fragmentSource = desc->fragmentSource;
+        out.fragmentEntry = desc->fragmentEntryPoint != nullptr ? desc->fragmentEntryPoint : "";
+    }
+    return true;
+}
+
+// Step two: the slow half. Touches no device and no shared record, which
+// is exactly why it may run on a worker.
+bool CompileReload(ReloadRequest& request)
+{
+    const char* name = OrNull(request.debugName);
+    bool ok;
+    if (request.isCompute)
+    {
+        ok = CompileArtifact(request.backend, request.computeSource.c_str(), OrNull(request.computeEntry), name, ShaderStage::Compute, &request.computeArtifact);
+    }
+    else
+    {
+        ok = CompileArtifact(request.backend, request.vertexSource.c_str(), OrNull(request.vertexEntry), name, ShaderStage::Vertex, &request.vertexArtifact);
+        ok = ok && CompileArtifact(request.backend, request.fragmentSource.c_str(), OrNull(request.fragmentEntry), name, ShaderStage::Fragment, &request.fragmentArtifact);
+    }
+    request.compiled = ok;
+    return ok;
+}
+
+// Step three: makes the shader objects and swaps them in. Back on the
+// thread that owns the device, and between frames.
+FluxionShaderProgramReloadOutcome ApplyReload(const ReloadRequest& request)
+{
+    // The record is re-checked rather than remembered: a reload begun
+    // frames ago may have outlived the program it was for.
+    if (request.program.index >= FLUXION_RENDERER_MAX_SHADER_PROGRAMS) return FLUXION_SHADER_PROGRAM_RELOAD_INVALID_REQUEST;
+    FluxionShaderProgramRecord* record = &s_programs[request.program.index];
+    if (!record->alive || record->generation != request.program.generation) return FLUXION_SHADER_PROGRAM_RELOAD_INVALID_REQUEST;
+    if (!request.compiled) return FLUXION_SHADER_PROGRAM_RELOAD_COMPILE_FAILED;
+
+    const char* name = OrNull(request.debugName);
+
+    // Everything new is built beside the live program, and only swapped
+    // in once it is known to be both good and compatible. Until the swap,
+    // a failure costs nothing: what was rendering is still rendering.
+    FluxionShaderProgramRecord candidate;
+    candidate.isCompute = record->isCompute;
+
+    bool ok;
+    if (request.isCompute)
+    {
+        ok = CreateShaderFromArtifact(request.device, request.computeArtifact, ShaderStage::Compute, name, &candidate.computeShader);
+    }
+    else
+    {
+        ok = CreateShaderFromArtifact(request.device, request.vertexArtifact, ShaderStage::Vertex, name, &candidate.vertexShader);
+        ok = ok && CreateShaderFromArtifact(request.device, request.fragmentArtifact, ShaderStage::Fragment, name, &candidate.fragmentShader);
+    }
+
+    auto discardCandidate = [&candidate]
+    {
+        if (FLUXION_HANDLE_IS_VALID(candidate.vertexShader)) Fluxion_RHI_DestroyShader(candidate.vertexShader);
+        if (FLUXION_HANDLE_IS_VALID(candidate.fragmentShader)) Fluxion_RHI_DestroyShader(candidate.fragmentShader);
+        if (FLUXION_HANDLE_IS_VALID(candidate.computeShader)) Fluxion_RHI_DestroyShader(candidate.computeShader);
+    };
+
+    if (!ok)
+    {
+        discardCandidate();
+        return FLUXION_SHADER_PROGRAM_RELOAD_COMPILE_FAILED;
+    }
+
+    // What the new source says the material side looks like, compared
+    // against what is in use. Only the derived answer is compared, not
+    // the reflection it came from: two sources that describe the same
+    // parameters in a different order are the same thing to a material.
+    if (request.isCompute) CollectMaterialParameters(candidate, nullptr, nullptr, &request.computeArtifact.reflection);
+    else CollectMaterialParameters(candidate, &request.vertexArtifact.reflection, &request.fragmentArtifact.reflection, nullptr);
+
+    if (!SameMaterialLayout(*record, candidate))
+    {
+        discardCandidate();
+        FLUXION_LOG_ERROR("ShaderProgram",
+            "'%s' was not reloaded: its material parameters changed, and every material built from it holds offsets from the old ones",
+            name != nullptr ? name : "<unnamed>");
+        return FLUXION_SHADER_PROGRAM_RELOAD_LAYOUT_CHANGED;
+    }
+
+    // Past this point nothing can fail, which is what makes the swap
+    // safe to do in pieces.
+    //
+    // The bind group layout is deliberately kept rather than rebuilt. It
+    // describes a shape that was just proven unchanged, and every
+    // material holds this exact handle -- replacing it would leave all of
+    // them pointing at a destroyed object for no gain. The material
+    // parameter table is kept for the same reason.
+    const FluxionRHIShaderHandle oldVertex = record->vertexShader;
+    const FluxionRHIShaderHandle oldFragment = record->fragmentShader;
+    const FluxionRHIShaderHandle oldCompute = record->computeShader;
+
+    record->vertexShader = candidate.vertexShader;
+    record->fragmentShader = candidate.fragmentShader;
+    record->computeShader = candidate.computeShader;
+
+    // Every pipeline built from this program baked the old shader handles
+    // into a native pipeline object at build time and never re-reads
+    // them, so each one has to go. They are rebuilt on next use.
+    FluxionRendererInternal_RenderPipeline_InvalidateVariantsUsingProgram(request.program);
+
+    if (FLUXION_HANDLE_IS_VALID(oldVertex)) Fluxion_RHI_DestroyShader(oldVertex);
+    if (FLUXION_HANDLE_IS_VALID(oldFragment)) Fluxion_RHI_DestroyShader(oldFragment);
+    if (FLUXION_HANDLE_IS_VALID(oldCompute)) Fluxion_RHI_DestroyShader(oldCompute);
+
+    return FLUXION_SHADER_PROGRAM_RELOAD_OK;
+}
+
 } // namespace
+
+// The middle step, wrapped so a worker can run it and the thread that
+// started it can tell when it is over without waiting.
+struct FluxionShaderProgramReloadJob
+{
+    ReloadRequest request;
+
+    // Explicitly nothing, not a zeroed handle: index zero is a perfectly
+    // good slot, so a default-constructed handle reads as valid and would
+    // send a wait to a job that was never submitted.
+    FluxionJobHandle handle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    // Released by the worker, acquired by whoever asks. Everything the
+    // worker wrote into `request` is visible to a reader that has seen
+    // this as true, and to no one before that.
+    std::atomic<bool> done{ false };
+};
 
 extern "C" void Fluxion_ShaderProgram_SetCacheDirectory(const char* directory)
 {
@@ -342,6 +585,82 @@ extern "C" FluxionShaderProgramHandle Fluxion_ShaderProgram_Create(FluxionRHIDev
 
     FluxionShaderProgramHandle handle = { index, s_programs[index].generation };
     return handle;
+}
+
+extern "C" FluxionShaderProgramReloadOutcome Fluxion_ShaderProgram_Reload(FluxionRHIDeviceHandle device, FluxionShaderProgramHandle program,
+    const FluxionShaderProgramDesc* desc)
+{
+    ReloadRequest request;
+    if (!DescribeReload(device, program, desc, request)) return FLUXION_SHADER_PROGRAM_RELOAD_INVALID_REQUEST;
+    if (!CompileReload(request)) return FLUXION_SHADER_PROGRAM_RELOAD_COMPILE_FAILED;
+    return ApplyReload(request);
+}
+
+namespace
+{
+
+void RunReloadJob(void* data)
+{
+    FluxionShaderProgramReloadJob* job = *static_cast<FluxionShaderProgramReloadJob**>(data);
+    CompileReload(job->request);
+    job->done.store(true, std::memory_order_release);
+}
+
+} // namespace
+
+extern "C" FluxionShaderProgramReloadJob* Fluxion_ShaderProgram_BeginReload(FluxionRHIDeviceHandle device, FluxionShaderProgramHandle program,
+    const FluxionShaderProgramDesc* desc)
+{
+    auto* job = new FluxionShaderProgramReloadJob();
+    if (!DescribeReload(device, program, desc, job->request))
+    {
+        delete job;
+        return nullptr;
+    }
+
+    // Asked rather than attempted: submitting to a job system that was
+    // never started asserts, and rightly so -- handing work to something
+    // that does not exist is a mistake. But a host that never started one
+    // is not making a mistake by reloading a shader, so the question is
+    // asked first and the work simply done here if the answer is no.
+    if (Fluxion_JobSystem_IsInitialized())
+    {
+        FluxionShaderProgramReloadJob* payload = job;
+
+        FluxionJobDesc jobDesc = {};
+        jobDesc.function = RunReloadJob;
+        std::memcpy(jobDesc.data, &payload, sizeof(payload));
+        jobDesc.dataSize = sizeof(payload);
+
+        job->handle = Fluxion_JobSystem_Submit(&jobDesc);
+    }
+
+    if (!FLUXION_HANDLE_IS_VALID(job->handle))
+    {
+        // Either there was no job system, or it had no room, or it is
+        // running everything inline. None of those is a failure: the work
+        // gets done here and now, and the only difference the caller sees
+        // is that the answer is already waiting the first time it asks.
+        CompileReload(job->request);
+        job->done.store(true, std::memory_order_release);
+    }
+    return job;
+}
+
+extern "C" bool Fluxion_ShaderProgram_IsReloadReady(const FluxionShaderProgramReloadJob* job)
+{
+    return job != nullptr && job->done.load(std::memory_order_acquire);
+}
+
+extern "C" FluxionShaderProgramReloadOutcome Fluxion_ShaderProgram_FinishReload(FluxionShaderProgramReloadJob* job)
+{
+    if (job == nullptr) return FLUXION_SHADER_PROGRAM_RELOAD_INVALID_REQUEST;
+
+    if (!job->done.load(std::memory_order_acquire)) Fluxion_JobSystem_Wait(job->handle);
+
+    const FluxionShaderProgramReloadOutcome outcome = ApplyReload(job->request);
+    delete job;
+    return outcome;
 }
 
 extern "C" void Fluxion_ShaderProgram_Destroy(FluxionShaderProgramHandle program)

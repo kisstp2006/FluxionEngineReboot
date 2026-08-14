@@ -7,6 +7,7 @@ engine_add_test(
         Test_JsonLoader.c
         Test_DumpDot.c
         Test_ShaderProgram.cpp
+        Test_ShaderReload.cpp
         Test_Material.cpp
         Test_MeshBuffer.c
         Test_RenderView.c
@@ -15,6 +16,10 @@ engine_add_test(
         Fluxion::RenderCore
         Fluxion::RHI
         Fluxion::ShaderCompiler
+        # The shader reload checks start and stop a job system, to cover
+        # both the arrangement a real host has and the one where nobody
+        # started any workers at all.
+        Fluxion::Core
 )
 
 engine_add_header_selfcontained_test(

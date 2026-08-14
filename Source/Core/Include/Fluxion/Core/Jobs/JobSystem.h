@@ -21,6 +21,16 @@ void Fluxion_JobSystem_Init(u32 workerCount, bool singleThreaded);
 // worker threads. Asserts nothing is still in flight (a clean drain).
 void Fluxion_JobSystem_Shutdown(void);
 
+// Whether Init has been called and Shutdown has not. Submitting without
+// that asserts, deliberately -- handing work to a system that was never
+// started is a mistake, not a runtime condition to be tolerated.
+//
+// This exists for the caller that genuinely has both paths: work it would
+// hand to a worker if there is one, and would otherwise simply do itself.
+// Such a caller has to be able to ask, rather than find out by tripping
+// the assert.
+bool Fluxion_JobSystem_IsInitialized(void);
+
 // Copies *desc into the job pool and makes it runnable once every
 // dependency in desc->dependencies has finished (immediately, if there
 // are none, or if they've already finished). Returns an invalid handle

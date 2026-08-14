@@ -430,6 +430,11 @@ void Fluxion_JobSystem_Init(u32 workerCount, bool singleThreaded)
     s_jobSystemInitialized = true;
 }
 
+bool Fluxion_JobSystem_IsInitialized(void)
+{
+    return s_jobSystemInitialized;
+}
+
 void Fluxion_JobSystem_Shutdown(void)
 {
     FLUXION_ASSERT_MSG(s_jobSystemInitialized, "Fluxion_JobSystem_Shutdown called before Init");

@@ -113,6 +113,30 @@ extern "C" void Fluxion_RenderPipeline_Destroy(FluxionRenderPipelineHandle pipel
     ++record->generation;
 }
 
+extern "C" void FluxionRendererInternal_RenderPipeline_InvalidateVariantsUsingProgram(FluxionShaderProgramHandle program)
+{
+    for (u32 p = 0; p < FLUXION_RENDERER_MAX_RENDER_PIPELINES; ++p)
+    {
+        FluxionRenderPipelineRecord* record = &s_pipelines[p];
+        if (!record->alive) continue;
+        if (record->program.index != program.index || record->program.generation != program.generation) continue;
+
+        for (u32 i = 0; i < record->variantCount; ++i)
+        {
+            if (!record->variants[i].used) continue;
+            if (FLUXION_HANDLE_IS_VALID(record->variants[i].pipeline)) Fluxion_RHI_DestroyPipeline(record->variants[i].pipeline);
+            if (FLUXION_HANDLE_IS_VALID(record->variants[i].frameLayout)) Fluxion_RHI_DestroyBindGroupLayout(record->variants[i].frameLayout);
+            if (FLUXION_HANDLE_IS_VALID(record->variants[i].objectLayout)) Fluxion_RHI_DestroyBindGroupLayout(record->variants[i].objectLayout);
+            record->variants[i] = FluxionPipelineVariant{};
+        }
+
+        // Back to none rather than to holes: Resolve appends, and a
+        // partially reused array would keep the old count forever while
+        // the same handful of vertex layouts are asked for again.
+        record->variantCount = 0;
+    }
+}
+
 extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resolve(FluxionRenderPipelineHandle pipeline, FluxionRHIDeviceHandle device, const FluxionRHIVertexLayout* vertexLayout)
 {
     FluxionRHIPipelineHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
