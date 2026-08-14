@@ -3,6 +3,7 @@ engine_add_test(
     SOURCES
         main.c
         Test_Types.c
+        Test_Abi.c
         Test_Assert.c
         Test_Memory.c
         Test_Containers.c

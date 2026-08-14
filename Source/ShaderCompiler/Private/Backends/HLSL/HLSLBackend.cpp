@@ -85,8 +85,8 @@ const char* GroupName(BindingGroup group)
 class HLSLEmitter
 {
 public:
-    HLSLEmitter(const Program& program, const ShaderIRModule& module, DiagnosticList& diagnostics)
-        : m_program(program), m_module(module), m_diagnostics(diagnostics)
+    HLSLEmitter(const Program& program, const ShaderIRModule& module)
+        : m_program(program), m_module(module)
     {
     }
 
@@ -122,7 +122,6 @@ public:
 private:
     const Program& m_program;
     const ShaderIRModule& m_module;
-    DiagnosticList& m_diagnostics;
     std::ostringstream m_out;
     bool m_inEntryFunction = false;
 
@@ -418,7 +417,13 @@ private:
 
 std::string EmitHLSL(const Program& program, const ShaderIRModule& module, DiagnosticList& diagnostics)
 {
-    HLSLEmitter emitter(program, module, diagnostics);
+    // Taken and not used, for the same reason EmitGLSL does not use it:
+    // everything this walks over was decided to be valid before emission
+    // began, and the parameter stays so that every backend is asked the
+    // same way.
+    (void)diagnostics;
+
+    HLSLEmitter emitter(program, module);
     return emitter.Run();
 }
 

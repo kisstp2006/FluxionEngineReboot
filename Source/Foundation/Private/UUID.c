@@ -1,6 +1,7 @@
 #include <Fluxion/Foundation/UUID.h>
 
 #include <Fluxion/Foundation/Atomic.h>
+#include <Fluxion/Foundation/Defines.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -79,7 +80,18 @@ static void Fluxion_UUID_EnsureSeeded(void)
 
     now.tv_sec = 0;
     now.tv_nsec = 0;
+
+    // Two ways of asking the same clock the same question. clock_gettime
+    // is the POSIX one and has been in every POSIX C library including
+    // Android's from the start; timespec_get is the ISO C one, which is
+    // what Windows offers and what Android's only gained at API level 29.
+    // Taking the POSIX one wherever POSIX exists means one fewer platform
+    // level to care about.
+#if FLUXION_PLATFORM_WINDOWS
     (void)timespec_get(&now, TIME_UTC);
+#else
+    (void)clock_gettime(CLOCK_REALTIME, &now);
+#endif
 
     // Where this frame sits differs between runs wherever the loader
     // places things differently each time, and costs nothing to read.

@@ -59,5 +59,12 @@ function(engine_add_test)
         target_precompile_headers(${ENGINE_TEST_NAME} PRIVATE ${ENGINE_TEST_PCH_SCOPED})
     endif()
 
-    add_test(NAME ${ENGINE_TEST_NAME} COMMAND ${ENGINE_TEST_NAME})
+    # Built either way -- compiling the tests is itself a check that the
+    # engine's headers and this target's toolchain agree -- but only
+    # registered with CTest when the result can actually be started here.
+    # A cross build produces binaries for another machine, and running
+    # them would fail for a reason that has nothing to do with the code.
+    if(NOT CMAKE_CROSSCOMPILING)
+        add_test(NAME ${ENGINE_TEST_NAME} COMMAND ${ENGINE_TEST_NAME})
+    endif()
 endfunction()

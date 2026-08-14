@@ -19,6 +19,28 @@ wrappers as possible, to support at least the scenes of the original
 Fluxion, and to be faster than the current C#/C++ version. Its architecture
 and extensibility model draw ideas from established AAA engines.
 
+## Building
+
+Every target is a CMake preset — `cmake --list-presets` shows the ones your
+host can run.
+
+| Preset | Builds for | Needs |
+|---|---|---|
+| `windows-msvc` | Windows x64 | Visual Studio, the Vulkan SDK |
+| `linux-gcc`, `linux-gcc-release` | Linux x64 | GCC, Ninja, the Vulkan SDK, `libx11-dev` and `libxrandr-dev` |
+| `linux-aarch64` | 64-bit ARM Linux, cross-compiled | `gcc-aarch64-linux-gnu`, `g++-aarch64-linux-gnu`, and the target's own libraries under the sysroot |
+| `android-arm64` | Android ARM64, cross-compiled | the Android NDK, with `ANDROID_NDK_ROOT` naming it |
+
+The two cross targets build what exists for them and stop, with a message
+naming what does not: the window, display, input and clipboard backend for
+Android has not been written, so anything above it — the renderer and the
+scene — cannot be built there yet. Everything below it can, and is.
+
+Their tests are compiled but not registered with CTest, because a binary for
+another machine cannot be started on this one. Compiling them is still worth
+doing on its own: it is what checks that the engine's headers and that
+toolchain agree.
+
 ## Third party
 
 | Library | Used for | License |

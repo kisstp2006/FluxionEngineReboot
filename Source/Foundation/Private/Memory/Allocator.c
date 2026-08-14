@@ -39,8 +39,20 @@ static void* Fluxion_DefaultAlloc(FluxionAllocator* self, usize size, usize alig
 #if FLUXION_PLATFORM_WINDOWS
     return _aligned_malloc(size, effectiveAlignment);
 #else
-    usize roundedSize = ((size + effectiveAlignment - 1) / effectiveAlignment) * effectiveAlignment;
-    return aligned_alloc(effectiveAlignment, roundedSize);
+    // posix_memalign rather than aligned_alloc: the latter is missing
+    // from Android's C library below API level 28, and where it does
+    // exist under C11 rules it additionally requires the size to be a
+    // whole number of alignments -- a rounding step this had to do by
+    // hand, and one that quietly asks the allocator for more than the
+    // caller wanted. posix_memalign has neither problem and has been in
+    // every POSIX C library, Android's included, from the start. Blocks
+    // from it are released with plain free(), which is what the matching
+    // path below already does.
+    {
+        void* block = NULL;
+        if (posix_memalign(&block, effectiveAlignment, size) != 0) return NULL;
+        return block;
+    }
 #endif
 }
 

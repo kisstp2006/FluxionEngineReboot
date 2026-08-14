@@ -23,6 +23,20 @@ typedef enum FluxionRHIBackendType
     FLUXION_RHI_BACKEND_D3D12,
 } FluxionRHIBackendType;
 
+// Whether this build has the named backend in it at all.
+//
+// Which backends exist is settled when the engine is built, not when it
+// runs: D3D12 is a Windows API, and the OpenGL backend here is desktop GL
+// reached through WGL or GLX, so neither is compiled for a target that
+// has no such thing. Asking for one that was left out is refused, and a
+// caller that means to fall back to another needs to know before it asks
+// rather than after.
+//
+// True is not a promise that creating the instance will succeed -- the
+// driver may still be missing or too old. It is the narrower statement
+// that this build knows how to try.
+bool Fluxion_RHI_IsBackendAvailable(FluxionRHIBackendType backend);
+
 typedef struct FluxionRHIInstanceDesc
 {
     const char* applicationName;

@@ -2,6 +2,7 @@
 
 #include <Fluxion/Foundation/Log.h>
 
+void Test_BackendAvailability_Run(TestContext* ctx);
 void Test_Handles_Run(TestContext* ctx);
 void Test_Capabilities_Run(TestContext* ctx);
 void Test_NullBackend_Run(TestContext* ctx);
@@ -25,6 +26,7 @@ int main(void)
 
     FLUXION_LOG_INFO("RHITests", "Running RHITests...");
 
+    Test_BackendAvailability_Run(&ctx);
     Test_Handles_Run(&ctx);
     Test_Capabilities_Run(&ctx);
     Test_NullBackend_Run(&ctx);

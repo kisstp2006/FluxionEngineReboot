@@ -92,8 +92,8 @@ const char* GroupName(BindingGroup group)
 class GLSLEmitter
 {
 public:
-    GLSLEmitter(const Program& program, const ShaderIRModule& module, DiagnosticList& diagnostics, const GLSLOptions& options)
-        : m_program(program), m_module(module), m_diagnostics(diagnostics), m_options(options)
+    GLSLEmitter(const Program& program, const ShaderIRModule& module, const GLSLOptions& options)
+        : m_program(program), m_module(module), m_options(options)
     {
     }
 
@@ -116,7 +116,6 @@ public:
 private:
     const Program& m_program;
     const ShaderIRModule& m_module;
-    DiagnosticList& m_diagnostics;
     GLSLOptions m_options;
     std::ostringstream m_out;
     bool m_inEntryFunction = false;
@@ -351,7 +350,17 @@ private:
 
 std::string EmitGLSL(const Program& program, const ShaderIRModule& module, DiagnosticList& diagnostics, const GLSLOptions& options)
 {
-    GLSLEmitter emitter(program, module, diagnostics, options);
+    // Taken and not used. Emission happens after the analysis that
+    // decides whether the program is valid at all, so by this point there
+    // is nothing left to refuse -- every text this walks over has already
+    // been checked. The parameter stays because a backend is entitled to
+    // report something the others cannot (a target that cannot express a
+    // construct the language allows), and a signature that differed
+    // between backends would make the caller pick which one it was
+    // talking to.
+    (void)diagnostics;
+
+    GLSLEmitter emitter(program, module, options);
     return emitter.Run();
 }
 

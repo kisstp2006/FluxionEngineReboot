@@ -1,12 +1,14 @@
-set(PLATFORM_SOURCES "")
-
-if(WIN32)
-    file(GLOB PLATFORM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Private/Windows/*.c")
-elseif(UNIX)
-    file(GLOB PLATFORM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Private/Linux/*.c")
-else()
-    message(FATAL_ERROR "Fluxion Platform module: no backend for this host (only Windows/Linux exist so far)")
-endif()
+# Every function this module declares is an OS service, so without a
+# backend there is nothing to build at all -- hence REQUIRED.
+#
+# Android falls back to the Linux backend because that is what it is:
+# threads, timing, files, dynamic loading and the two reads of /proc are
+# the same system calls there, and its C library declares them the same
+# way. Compiling the Linux sources with the Android NDK toolchain for
+# aarch64 was checked and produces no diagnostic at the warning level
+# this project builds at. Whether each of them BEHAVES the same on a
+# device is a separate question, and one that only a device answers.
+engine_platform_sources(PLATFORM_SOURCES Platform REQUIRED FALLBACK Linux)
 
 engine_add_module(
     NAME Platform
@@ -24,5 +26,11 @@ if(UNIX)
     # pthread_setname_np, ...) behind feature-test macros. _GNU_SOURCE
     # covers all of that in one shot for the whole Linux backend.
     target_compile_definitions(Platform PRIVATE _GNU_SOURCE)
-    target_link_libraries(Platform PRIVATE ${CMAKE_DL_LIBS} pthread)
+
+    # Android's C library has the threading and dynamic-loading entry
+    # points built in rather than in libpthread/libdl, and asking for
+    # those two by name there fails to find them.
+    if(NOT ANDROID)
+        target_link_libraries(Platform PRIVATE ${CMAKE_DL_LIBS} pthread)
+    endif()
 endif()

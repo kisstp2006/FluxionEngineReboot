@@ -8,17 +8,11 @@ file(GLOB APPLICATION_COMMON_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/Private/Time/*.c"
 )
 
-set(APPLICATION_SOURCES ${APPLICATION_COMMON_SOURCES})
+# A window, a display, a clipboard and an input device all come from the
+# OS, so this module cannot stand without a backend either.
+engine_platform_sources(APPLICATION_PLATFORM_SOURCES Application REQUIRED)
 
-if(WIN32)
-    file(GLOB APPLICATION_PLATFORM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Private/Windows/*.c")
-elseif(UNIX)
-    file(GLOB APPLICATION_PLATFORM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Private/Linux/*.c")
-else()
-    message(FATAL_ERROR "Fluxion Application module: no backend for this host (only Windows/Linux exist so far)")
-endif()
-
-list(APPEND APPLICATION_SOURCES ${APPLICATION_PLATFORM_SOURCES})
+set(APPLICATION_SOURCES ${APPLICATION_COMMON_SOURCES} ${APPLICATION_PLATFORM_SOURCES})
 
 engine_add_module(
     NAME Application
@@ -39,7 +33,11 @@ if(WIN32)
     # XInputGetState (Input_Windows.c) in Xinput — neither is part of the
     # default link set.
     target_link_libraries(Application PRIVATE Shcore Xinput)
-elseif(UNIX)
+elseif(FLUXION_PLATFORM_NAME STREQUAL "Linux")
+    # Asked for by name rather than by "is this UNIX": Android is UNIX too
+    # and has no X server, so an X11 search there would either fail or --
+    # worse, on a host with the headers lying around -- succeed against
+    # libraries that will not exist on the device.
     find_package(X11 REQUIRED)
     if(NOT X11_Xrandr_FOUND)
         message(FATAL_ERROR "Fluxion Application module needs the Xrandr X11 extension (libxrandr-dev)")

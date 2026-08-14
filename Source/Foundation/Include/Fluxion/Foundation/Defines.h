@@ -97,8 +97,45 @@
     #define FLUXION_ARCH_ARM32 0
 #endif
 
-#if (FLUXION_ARCH_X64 + FLUXION_ARCH_X86 + FLUXION_ARCH_ARM64 + FLUXION_ARCH_ARM32) != 1
+#if defined(__wasm__) || defined(__wasm32__) || defined(__wasm64__)
+    #define FLUXION_ARCH_WASM 1
+#else
+    #define FLUXION_ARCH_WASM 0
+#endif
+
+#if (FLUXION_ARCH_X64 + FLUXION_ARCH_X86 + FLUXION_ARCH_ARM64 + FLUXION_ARCH_ARM32 + FLUXION_ARCH_WASM) != 1
     #error "Fluxion: unsupported or ambiguous architecture"
+#endif
+
+// How wide a pointer is, as a number rather than as a set of
+// architectures to enumerate. Anything that has to know -- a serialised
+// layout, a handle packed into a word -- asks this instead of asking
+// which CPU it is on.
+#if FLUXION_ARCH_X64 || FLUXION_ARCH_ARM64
+    #define FLUXION_POINTER_BITS 64
+#else
+    #define FLUXION_POINTER_BITS 32
+#endif
+
+// ---------------------------------------------------------------------
+// Byte order
+// ---------------------------------------------------------------------
+//
+// Every architecture this engine targets runs little-endian: x86 and x64
+// have no other mode, ARM64 is configurable in principle but runs
+// little-endian on every operating system that ships on it, and WebAssembly
+// fixes its memory as little-endian in the specification.
+//
+// This is detected rather than assumed all the same, so that code which
+// writes bytes to a file or a socket can say which order it means and be
+// checked on it, instead of being right only for as long as nobody ports
+// the engine anywhere new.
+#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+    #define FLUXION_LITTLE_ENDIAN 0
+    #define FLUXION_BIG_ENDIAN 1
+#else
+    #define FLUXION_LITTLE_ENDIAN 1
+    #define FLUXION_BIG_ENDIAN 0
 #endif
 
 // ---------------------------------------------------------------------

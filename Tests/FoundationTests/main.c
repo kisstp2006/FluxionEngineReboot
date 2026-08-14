@@ -3,6 +3,7 @@
 #include <Fluxion/Foundation/Log.h>
 
 void Test_Types_Run(TestContext* ctx);
+void Test_Abi_Run(TestContext* ctx);
 void Test_Assert_Run(TestContext* ctx);
 void Test_Memory_Run(TestContext* ctx);
 void Test_Containers_Run(TestContext* ctx);
@@ -28,6 +29,7 @@ int main(void)
     FLUXION_LOG_INFO("FoundationTests", "Running FoundationTests...");
 
     Test_Types_Run(&ctx);
+    Test_Abi_Run(&ctx);
     Test_Assert_Run(&ctx);
     Test_Memory_Run(&ctx);
     Test_Containers_Run(&ctx);

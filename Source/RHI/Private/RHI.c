@@ -4,15 +4,47 @@
 
 #include <Fluxion/Foundation/Assert.h>
 
+// Which backends this build contains. Set by the build (see
+// Source/RHI/CMakeLists.txt), which is the only place that knows which
+// source directories were compiled in -- these are defaulted here so that
+// reading this file does not require reading that one, and so that a
+// build which forgets to set them still produces something that links.
+#if !defined(FLUXION_RHI_HAS_VULKAN)
+    #define FLUXION_RHI_HAS_VULKAN 1
+#endif
+#if !defined(FLUXION_RHI_HAS_OPENGL)
+    #define FLUXION_RHI_HAS_OPENGL 1
+#endif
+#if !defined(FLUXION_RHI_HAS_D3D12)
+    #define FLUXION_RHI_HAS_D3D12 0
+#endif
+
+// The null backend is always there. It talks to nothing, so there is no
+// platform on which it could be absent, and having one backend that
+// always exists is what lets a headless run -- a test, a tool -- go
+// through the same interface as a real one.
 extern const FluxionRHIBackendVTable* Fluxion_RHI_Null_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
+#if FLUXION_RHI_HAS_VULKAN
 extern const FluxionRHIBackendVTable* Fluxion_RHI_Vulkan_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
+#endif
+#if FLUXION_RHI_HAS_OPENGL
 extern const FluxionRHIBackendVTable* Fluxion_RHI_OpenGL_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
-#if defined(_WIN32)
-// D3D12 is a Windows-only API -- Private/D3D12 is only compiled into the
-// RHI module on Windows (see Source/RHI/CMakeLists.txt), so this
-// declaration (and the switch case below) is guarded the same way.
+#endif
+#if FLUXION_RHI_HAS_D3D12
 extern const FluxionRHIBackendVTable* Fluxion_RHI_D3D12_CreateInstance(const FluxionRHIInstanceDesc* desc, FluxionRHIInstanceHandle* outInstance);
 #endif
+
+bool Fluxion_RHI_IsBackendAvailable(FluxionRHIBackendType backend)
+{
+    switch (backend)
+    {
+        case FLUXION_RHI_BACKEND_NULL:   return true;
+        case FLUXION_RHI_BACKEND_VULKAN: return FLUXION_RHI_HAS_VULKAN != 0;
+        case FLUXION_RHI_BACKEND_OPENGL: return FLUXION_RHI_HAS_OPENGL != 0;
+        case FLUXION_RHI_BACKEND_D3D12:  return FLUXION_RHI_HAS_D3D12 != 0;
+        default:                         return false;
+    }
+}
 
 // One active backend at a time (a shipping run picks one backend via
 // --graphics=X, not several simultaneously) -- this keeps every object
@@ -37,24 +69,40 @@ FluxionRHIInstanceHandle Fluxion_RHI_CreateInstance(FluxionRHIBackendType backen
     FluxionRHIInstanceHandle instance = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     const FluxionRHIBackendVTable* vtable = NULL;
 
+    // Asked before the switch rather than left to fall through it: a
+    // backend this build does not contain and a backend that does not
+    // exist at all are different mistakes, and only the first has an
+    // answer the caller can act on.
+    FLUXION_ASSERT_MSG(Fluxion_RHI_IsBackendAvailable(backend),
+        "Fluxion_RHI_CreateInstance: this build does not contain the requested backend -- ask Fluxion_RHI_IsBackendAvailable first");
+    if (!Fluxion_RHI_IsBackendAvailable(backend))
+    {
+        FluxionRHIInstanceHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+        return invalid;
+    }
+
     switch (backend)
     {
         case FLUXION_RHI_BACKEND_NULL:
             vtable = Fluxion_RHI_Null_CreateInstance(desc, &instance);
             break;
+#if FLUXION_RHI_HAS_VULKAN
         case FLUXION_RHI_BACKEND_VULKAN:
             vtable = Fluxion_RHI_Vulkan_CreateInstance(desc, &instance);
             break;
+#endif
+#if FLUXION_RHI_HAS_OPENGL
         case FLUXION_RHI_BACKEND_OPENGL:
             vtable = Fluxion_RHI_OpenGL_CreateInstance(desc, &instance);
             break;
-#if defined(_WIN32)
+#endif
+#if FLUXION_RHI_HAS_D3D12
         case FLUXION_RHI_BACKEND_D3D12:
             vtable = Fluxion_RHI_D3D12_CreateInstance(desc, &instance);
             break;
 #endif
         default:
-            FLUXION_ASSERT_MSG(false, "Fluxion_RHI_CreateInstance: unknown or not-yet-implemented backend");
+            FLUXION_ASSERT_MSG(false, "Fluxion_RHI_CreateInstance: unknown backend");
             break;
     }
 

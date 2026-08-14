@@ -1,5 +1,6 @@
 set(RHITESTS_SOURCES
     main.c
+    Test_BackendAvailability.c
     Test_Handles.c
     Test_Capabilities.c
     Test_NullBackend.c
