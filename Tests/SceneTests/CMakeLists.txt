@@ -9,6 +9,7 @@ engine_add_test(
         Test_EngineApi.cpp
         Test_Reload.cpp
         Test_DataComponents.cpp
+        Test_Archetype.cpp
         Test_EntityUUID.cpp
         Test_CommandBuffer.cpp
         Test_World.cpp
@@ -28,6 +29,7 @@ engine_add_header_selfcontained_test(
     HEADERS
         Fluxion/Scene/Scene.h
         Fluxion/Scene/EntityCommandBuffer.h
+        Fluxion/Scene/EntityQuery.h
         Fluxion/Scene/World.hpp
         Fluxion/Scene/SceneScript.hpp
         Fluxion/Scene/EngineScript.hpp

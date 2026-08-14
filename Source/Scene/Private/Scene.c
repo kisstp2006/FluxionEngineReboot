@@ -82,6 +82,12 @@ FluxionSceneHandle Fluxion_Scene_Create(void)
     record->alive = true;
     record->firstRoot = Fluxion_GameObject_InvalidHandle();
 
+    // Set by hand rather than left to the clearing above: zero is a
+    // perfectly good composition index, so "none yet" has to be said
+    // explicitly or the first object would join a composition that does
+    // not exist.
+    record->emptyArchetype = FLUXION_SCENE_NO_ARCHETYPE;
+
     handle.index = index;
     handle.generation = record->generation;
     record->self = handle;
@@ -106,7 +112,7 @@ void Fluxion_Scene_Destroy(FluxionSceneHandle scene)
     }
 
     Fluxion_SceneComponents_ReleaseScene(record);
-    Fluxion_SceneComponentPool_ReleaseScene(record);
+    Fluxion_SceneArchetype_ReleaseScene(record);
     Fluxion_SceneInternal_ReleaseCommandBuffer(record);
     record->alive = false;
 }
@@ -266,9 +272,22 @@ static FluxionGameObjectHandle Fluxion_SceneInternal_CreateGameObject(FluxionSce
     entry->worldMatrix = Fluxion_Mat4_Identity();
     entry->worldDirty = true;
     entry->firstComponent = FLUXION_SCENE_NO_COMPONENT;
+    entry->archetypeIndex = FLUXION_SCENE_NO_ARCHETYPE;
 
     handle.index = index;
     handle.generation = entry->generation;
+
+    // An object carrying nothing still has a place in the storage -- the
+    // composition that carries nothing. Giving it one here rather than
+    // waiting for its first component is what keeps "a live object is
+    // somewhere" true without exceptions, and it is why nothing below has
+    // to ask whether an object has a row yet.
+    if (!Fluxion_SceneArchetype_PlaceNewObject(record, handle))
+    {
+        entry->alive = false;
+        Fluxion_SceneInternal_SetError(record, "this scene has no room to store another object's components");
+        return Fluxion_GameObject_InvalidHandle();
+    }
 
     Fluxion_SceneInternal_Link(record, handle, Fluxion_GameObject_InvalidHandle());
     ++record->objectCount;
@@ -352,9 +371,9 @@ void Fluxion_SceneInternal_FreeObject(FluxionSceneRecord* record, FluxionGameObj
     if (!entry->alive || entry->generation != object.generation) return;
 
     // Here rather than where destruction was asked for: this index is
-    // about to be free to hand out again, and a data component still
-    // standing on it would be found by whoever gets it next.
-    Fluxion_SceneComponentPool_RemoveAllOf(record, object.index);
+    // about to be free to hand out again, and a row still standing in a
+    // block would be found as components on whoever gets it next.
+    Fluxion_SceneArchetype_RemoveObject(record, object);
 
     entry->alive = false;
     entry->pendingDestroy = false;

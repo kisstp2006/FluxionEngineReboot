@@ -13,6 +13,7 @@ extern "C" {
 // Nothing here is public: a caller reaches all of it through the handles.
 
 #define FLUXION_SCENE_NO_COMPONENT 0xFFFFFFFFu
+#define FLUXION_SCENE_NO_ARCHETYPE 0xFFFFFFFFu
 
 // Which lifecycle method a cached index belongs to. Resolved once when a
 // component is attached, so a turn of the scene costs no name lookup at
@@ -88,30 +89,72 @@ typedef struct FluxionSceneGameObjectRecord
     bool worldDirty;
 
     u32 firstComponent;
+
+    // Where this object's data components live: which composition, which
+    // of that composition's blocks, and which row of it. Every live object
+    // has all three, because an object carrying nothing still belongs to
+    // the empty composition -- that is what keeps "an object is somewhere"
+    // free of exceptions.
+    //
+    // All three change whenever the object gains or loses a component, and
+    // the last two change when another object is removed from the same
+    // block. They are the sparse half of the storage; the dense half is
+    // the blocks themselves.
+    u32 archetypeIndex;
+    u32 chunkIndex;
+    u32 rowInChunk;
 } FluxionSceneGameObjectRecord;
 
-// One data-component type's storage. `dense` null means this slot of the
-// table stands for no type at all -- that, rather than a separate flag, is
-// what tells a used pool from a free one, because storage is what a pool
-// is.
-typedef struct FluxionSceneComponentPool
+// --- Storage grouped by composition -------------------------------------
+//
+// One composition -- one particular set of component types -- and the
+// blocks holding the objects that carry exactly that set.
+//
+// The type list is kept SORTED. That is what makes {A,B} and {B,A} the
+// same composition rather than two, and it also fixes the column order,
+// so two objects with the same set always find their components in the
+// same place.
+//
+// Column offsets are worked out once, when the composition first arises,
+// and are the same in every block of it. Column 0 is always the entities;
+// every composition has that one, including the empty composition an
+// object starts in.
+
+typedef struct FluxionSceneChunk
 {
-    FluxionTypeId type;
-    usize elementSize;
-
-    // The components themselves, packed, and the object each belongs to in
-    // the same order. Both hold `count` entries and have room for one per
-    // object record.
-    u8* dense;
-    FluxionGameObjectHandle* owners;
-
-    // Object index -> which row of `dense`, or FLUXION_SCENE_NO_COMPONENT
-    // for an object carrying none of this type. One entry per object
-    // record, so the answer costs no search.
-    u32* rowOf;
+    // One allocation of FLUXION_SCENE_CHUNK_BYTES holding every column
+    // back to back. Nothing else points into it, so it can be given back
+    // whole.
+    u8* bytes;
 
     u32 count;
-} FluxionSceneComponentPool;
+} FluxionSceneChunk;
+
+typedef struct FluxionSceneArchetype
+{
+    bool inUse;
+
+    FluxionTypeId types[FLUXION_SCENE_MAX_COMPONENT_TYPES];
+    u32 typeCount;
+
+    // Per type, parallel to `types`: how wide one value is, and where its
+    // column starts inside a block. Sizes come from the reflection
+    // registry when the composition arises, so a later change to a type's
+    // registration cannot silently reinterpret storage already laid out.
+    usize elementSizes[FLUXION_SCENE_MAX_COMPONENT_TYPES];
+    usize columnOffsets[FLUXION_SCENE_MAX_COMPONENT_TYPES];
+
+    // Where the entity column starts, and how many rows a block holds.
+    usize entityColumnOffset;
+    u32 capacity;
+
+    // Blocks, in order, all full except possibly the last. Grown as
+    // objects need them; the array of them grows, the blocks themselves
+    // never move.
+    FluxionSceneChunk* chunks;
+    u32 chunkCount;
+    u32 chunkCapacity;
+} FluxionSceneArchetype;
 
 typedef struct FluxionSceneRecord
 {
@@ -129,10 +172,16 @@ typedef struct FluxionSceneRecord
 
     FluxionSceneComponentRecord components[FLUXION_SCENE_MAX_COMPONENTS];
 
-    // The data components, one pool per type in use. Unlike the script
-    // components above, these are not records in a shared table: each type
-    // keeps its own.
-    FluxionSceneComponentPool componentPools[FLUXION_SCENE_MAX_COMPONENT_TYPES];
+    // The data components, grouped by composition. Unlike the script
+    // components above, these are not records in a shared table: they are
+    // columns in blocks, and which block an object is in is decided by
+    // what it carries.
+    FluxionSceneArchetype archetypes[FLUXION_SCENE_MAX_ARCHETYPES];
+
+    // The composition carrying nothing at all, which every object joins
+    // when it is made. Held here so that making an object does not have to
+    // search for it. FLUXION_SCENE_NO_ARCHETYPE until the first object.
+    u32 emptyArchetype;
 
     // The scene's own place to write structural change down, made the
     // first time something asks for it and played back at the end of every
@@ -210,18 +259,25 @@ void Fluxion_SceneInternal_FreePendingObjects(FluxionSceneRecord* record);
 
 // --- Data components ----------------------------------------------------
 
-// Takes one component out of one pool, closing the gap by moving the last
-// row into it. False when that object carried none of this type.
-bool Fluxion_SceneComponentPool_RemoveByIndex(FluxionSceneComponentPool* pool, u32 objectIndex);
+// Puts a newly made object into the composition that carries nothing.
+// False when there is no room, in which case the object must not be
+// considered made -- an object with no place to be is one that every
+// later call would have to check for.
+bool Fluxion_SceneArchetype_PlaceNewObject(FluxionSceneRecord* record, FluxionGameObjectHandle object);
 
-// Takes every data component off one object record, whatever their types.
-// Called where the record is actually released rather than where
-// destruction is asked for: object indices are handed out again, so a
-// component left behind would surface on whoever gets the index next.
-void Fluxion_SceneComponentPool_RemoveAllOf(FluxionSceneRecord* record, u32 objectIndex);
+// Takes an object out of its block entirely, closing the gap. Called
+// where the record is actually released rather than where destruction is
+// asked for: object indices are handed out again, so a row left behind
+// would surface as components on whoever gets the index next.
+void Fluxion_SceneArchetype_RemoveObject(FluxionSceneRecord* record, FluxionGameObjectHandle object);
 
-// Gives back the storage every pool of this scene took.
-void Fluxion_SceneComponentPool_ReleaseScene(FluxionSceneRecord* record);
+// Gives back every block of every composition in this scene.
+void Fluxion_SceneArchetype_ReleaseScene(FluxionSceneRecord* record);
+
+// Where one type's column starts in one block, or null when this
+// composition does not carry that type. Shared by the per-object lookups
+// and by the query.
+void* Fluxion_SceneArchetype_ColumnAt(const FluxionSceneArchetype* archetype, u32 chunkIndex, FluxionTypeId type);
 
 // --- The scene's own command buffer -------------------------------------
 

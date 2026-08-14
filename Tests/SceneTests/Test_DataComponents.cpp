@@ -2,6 +2,7 @@
 
 #include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/Scene/EntityCommandBuffer.h>
+#include <Fluxion/Scene/EntityQuery.h>
 #include <Fluxion/Scene/Scene.h>
 #include <Fluxion/Scene/World.hpp>
 
@@ -11,9 +12,9 @@ namespace
 {
 
 // Two component types rather than one, and of different sizes, because a
-// single type cannot show whether the pools are actually separate: a bug
-// that put everything in one pool would pass every test written against
-// one type.
+// single type cannot show whether the columns are actually separate: a
+// bug that overlapped them would pass every test written against one
+// type.
 struct TestPosition
 {
     static constexpr auto Name = "TestPosition";
@@ -79,19 +80,16 @@ bool SameObject(FluxionGameObjectHandle a, FluxionGameObjectHandle b)
 }
 
 // Every object that should be carrying a position still finds its own,
-// and the packed array agrees with the objects it says own it. This is
-// the check a swap-remove bug shows up in: nothing crashes when a row and
-// its owner disagree, the numbers are simply somebody else's.
-void CheckPoolAgrees(TestContext& ctx, FluxionSceneHandle scene, const FluxionGameObjectHandle* objects, const f32* expected, u32 count)
+// and the storage agrees with the objects it says the values belong to.
+//
+// Both directions are checked on purpose. A storage that hands an object
+// the wrong row does not crash and does not lose the value -- it returns
+// somebody else's, which the object-by-object half can miss entirely when
+// the wrong row happens to hold the right number. Only reading it the
+// other way round, from the stored rows back to their owners, catches
+// that.
+void CheckStorageAgrees(TestContext& ctx, FluxionSceneHandle scene, const FluxionGameObjectHandle* objects, const f32* expected, u32 count)
 {
-    u32 arrayCount = 0;
-    const TestPosition* positions = (const TestPosition*)Fluxion_Scene_GetComponentArray(scene, PositionType(), &arrayCount);
-    u32 ownerCount = 0;
-    const FluxionGameObjectHandle* owners = Fluxion_Scene_GetComponentOwners(scene, PositionType(), &ownerCount);
-
-    TEST_CHECK(ctx, arrayCount == count);
-    TEST_CHECK(ctx, ownerCount == count);
-
     // Asked object by object: each still finds the value it was given.
     for (u32 i = 0; i < count; ++i)
     {
@@ -100,20 +98,43 @@ void CheckPoolAgrees(TestContext& ctx, FluxionSceneHandle scene, const FluxionGa
         TEST_CHECK(ctx, found != nullptr && found->x == expected[i]);
     }
 
-    // And read the other way round: every row of the packed array belongs
-    // to the object beside it, and holds that object's value.
-    for (u32 row = 0; row < arrayCount && row < ownerCount; ++row)
+    // And read the other way round: every stored row belongs to the entity
+    // beside it, and holds that entity's value.
     {
-        bool matched = false;
-        for (u32 i = 0; i < count; ++i)
+        const FluxionTypeId required = PositionType();
+        FluxionEntityQueryDesc desc{};
+        desc.required = &required;
+        desc.requiredCount = 1;
+
+        FluxionEntityQuery query = Fluxion_Scene_Query(scene, &desc);
+        FluxionEntityChunkView chunk;
+        u32 seen = 0;
+
+        while (Fluxion_EntityQuery_Next(&query, &chunk))
         {
-            if (!SameObject(owners[row], objects[i])) continue;
-            matched = true;
-            TEST_CHECK(ctx, positions[row].x == expected[i]);
-            break;
+            const TestPosition* positions = (const TestPosition*)Fluxion_EntityChunk_Column(&chunk, PositionType());
+            TEST_CHECK(ctx, positions != nullptr);
+            if (positions == nullptr) continue;
+
+            for (u32 row = 0; row < chunk.count; ++row)
+            {
+                bool matched = false;
+                for (u32 i = 0; i < count; ++i)
+                {
+                    if (!SameObject(chunk.entities[row], objects[i])) continue;
+                    matched = true;
+                    TEST_CHECK(ctx, positions[row].x == expected[i]);
+                    break;
+                }
+                TEST_CHECK(ctx, matched);
+                ++seen;
+            }
         }
-        TEST_CHECK(ctx, matched);
+
+        TEST_CHECK(ctx, seen == count);
     }
+
+    TEST_CHECK(ctx, Fluxion_Scene_ComponentCount(scene, PositionType()) == count);
 }
 
 } // namespace
@@ -150,23 +171,52 @@ void Test_DataComponents_Run(TestContext& ctx)
         fresh->x = 1.0f;
         fresh->y = 2.0f;
         fresh->z = 3.0f;
-        const TestPosition* read = (const TestPosition*)Fluxion_GameObject_GetComponent(scene, object, PositionType());
-        TEST_CHECK(ctx, read != nullptr && read->y == 2.0f);
+        {
+            const TestPosition* read = (const TestPosition*)Fluxion_GameObject_GetComponent(scene, object, PositionType());
+            TEST_CHECK(ctx, read != nullptr && read->y == 2.0f);
+        }
 
-        // A second type on the same object is its own storage, and does
-        // not disturb the first.
+        // A second type on the same object is its own storage, and the
+        // value already written survives the object moving to where
+        // objects carrying both are kept.
+        //
+        // The pointers taken above are deliberately NOT reused past this
+        // point: adding a component moves everything the object carries,
+        // so `fresh` names storage that is no longer this object's. That
+        // is the contract, and a test that quietly relied on the old one
+        // still working would be testing nothing.
         TestTag seed;
         seed.value = 77u;
         TestTag* tag = (TestTag*)Fluxion_GameObject_AddComponent(scene, object, TagType(), &seed);
         TEST_CHECK(ctx, tag != nullptr && tag->value == 77u);
         TEST_CHECK(ctx, Fluxion_Scene_ComponentCount(scene, TagType()) == 1);
-        TEST_CHECK(ctx, read != nullptr && read->y == 2.0f);
+        TEST_CHECK(ctx, Fluxion_Scene_ComponentCount(scene, PositionType()) == 1);
+        {
+            const TestPosition* moved = (const TestPosition*)Fluxion_GameObject_GetComponent(scene, object, PositionType());
+            TEST_CHECK(ctx, moved != nullptr);
+            TEST_CHECK(ctx, moved != nullptr && moved->x == 1.0f && moved->y == 2.0f && moved->z == 3.0f);
+        }
 
-        // A type nothing was ever attached for answers empty rather than
-        // refusing.
-        u32 unusedCount = 99u;
-        TEST_CHECK(ctx, Fluxion_Scene_GetComponentArray(scene, Fluxion_TypeId_FromName(Fluxion_StringView_FromCStr(TestUnused::Name)), &unusedCount) == nullptr);
-        TEST_CHECK(ctx, unusedCount == 0);
+        // Both types are reported as this object's, and nothing else is.
+        {
+            FluxionTypeId carried[FLUXION_SCENE_MAX_COMPONENT_TYPES];
+            const u32 carriedCount = Fluxion_GameObject_GetComponentTypes(scene, object, carried, FLUXION_SCENE_MAX_COMPONENT_TYPES);
+            bool sawPosition = false;
+            bool sawTag = false;
+
+            TEST_CHECK(ctx, carriedCount == 2);
+            TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, object, nullptr, 0) == 2);
+            for (u32 i = 0; i < carriedCount; ++i)
+            {
+                if (carried[i] == PositionType()) sawPosition = true;
+                if (carried[i] == TagType()) sawTag = true;
+            }
+            TEST_CHECK(ctx, sawPosition && sawTag);
+        }
+
+        // A type nothing was ever attached for is carried by nobody,
+        // rather than refusing the question.
+        TEST_CHECK(ctx, Fluxion_Scene_ComponentCount(scene, Fluxion_TypeId_FromName(Fluxion_StringView_FromCStr(TestUnused::Name))) == 0);
 
         // A type the registry has never heard of cannot be attached: its
         // size is not knowable, and guessing one would corrupt whatever
@@ -197,7 +247,7 @@ void Test_DataComponents_Run(TestContext& ctx)
             Fluxion_GameObject_AddComponent(scene, objects[i], PositionType(), &seed);
             values[i] = seed.x;
         }
-        CheckPoolAgrees(ctx, scene, objects, values, 5);
+        CheckStorageAgrees(ctx, scene, objects, values, 5);
 
         // From the middle: the last row moves up into the gap, so the
         // object that owned the last row must be found at its new place.
@@ -206,7 +256,7 @@ void Test_DataComponents_Run(TestContext& ctx)
         {
             FluxionGameObjectHandle rest[4] = { objects[0], objects[1], objects[3], objects[4] };
             f32 restValues[4] = { values[0], values[1], values[3], values[4] };
-            CheckPoolAgrees(ctx, scene, rest, restValues, 4);
+            CheckStorageAgrees(ctx, scene, rest, restValues, 4);
         }
 
         // Taking away what is not there is nothing to do, not a mistake,
@@ -215,7 +265,7 @@ void Test_DataComponents_Run(TestContext& ctx)
         {
             FluxionGameObjectHandle rest[4] = { objects[0], objects[1], objects[3], objects[4] };
             f32 restValues[4] = { values[0], values[1], values[3], values[4] };
-            CheckPoolAgrees(ctx, scene, rest, restValues, 4);
+            CheckStorageAgrees(ctx, scene, rest, restValues, 4);
         }
 
         // From the very end: nothing moves, which is the case a swap
@@ -225,7 +275,7 @@ void Test_DataComponents_Run(TestContext& ctx)
         {
             FluxionGameObjectHandle rest[3] = { objects[0], objects[1], objects[3] };
             f32 restValues[3] = { values[0], values[1], values[3] };
-            CheckPoolAgrees(ctx, scene, rest, restValues, 3);
+            CheckStorageAgrees(ctx, scene, rest, restValues, 3);
         }
 
         // And from the front.
@@ -233,7 +283,7 @@ void Test_DataComponents_Run(TestContext& ctx)
         {
             FluxionGameObjectHandle rest[2] = { objects[1], objects[3] };
             f32 restValues[2] = { values[1], values[3] };
-            CheckPoolAgrees(ctx, scene, rest, restValues, 2);
+            CheckStorageAgrees(ctx, scene, rest, restValues, 2);
         }
 
         // Down to none, then back up again on the same pool.

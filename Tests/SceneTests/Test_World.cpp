@@ -100,25 +100,43 @@ void Test_World_Run(TestContext& ctx)
 
         TEST_CHECK(ctx, first.Has<TestVelocity>());
         TEST_CHECK(ctx, world.ComponentCount<TestVelocity>() == 2);
+        TEST_CHECK(ctx, world.CountWith<TestVelocity>() == 2);
 
-        // The typed view and the owners beside it are the same set the
-        // objects report one by one, position for position.
-        std::span<TestVelocity> view = world.View<TestVelocity>();
-        TEST_CHECK(ctx, view.size() == 2);
-        for (usize i = 0; i < view.size(); ++i)
+        // Walked one entity at a time: every entity seen reaches the same
+        // storage the entity itself reports, so the walk and the per-entity
+        // lookup cannot be reading two different things.
         {
-            Entity owner = world.OwnerAt<TestVelocity>(i);
-            TEST_CHECK(ctx, owner.IsValid());
-            TEST_CHECK(ctx, owner.Get<TestVelocity>() == &view[i]);
+            u32 seen = 0;
+            world.Each<TestVelocity>([&](Entity entity, TestVelocity& velocity)
+            {
+                ++seen;
+                TEST_CHECK(ctx, entity.IsValid());
+                TEST_CHECK(ctx, entity.Get<TestVelocity>() == &velocity);
+            });
+            TEST_CHECK(ctx, seen == 2);
         }
-        TEST_CHECK(ctx, world.Owners<TestVelocity>().size() == 2);
 
-        // Writing through the view is writing the component.
-        view[0].x = 11.0f;
-        TEST_CHECK(ctx, world.OwnerAt<TestVelocity>(0).Get<TestVelocity>()->x == 11.0f);
+        // Walked a block at a time: the spans line up entry for entry, and
+        // writing through one is writing the component.
+        {
+            u32 seen = 0;
+            world.EachChunk<TestVelocity>([&](std::span<const FluxionEntityHandle> entities, std::span<TestVelocity> velocities)
+            {
+                TEST_CHECK(ctx, entities.size() == velocities.size());
+                for (usize i = 0; i < entities.size(); ++i)
+                {
+                    Entity owner(world.Handle(), entities[i]);
+                    TEST_CHECK(ctx, owner.Get<TestVelocity>() == &velocities[i]);
+                    velocities[i].x = 11.0f;
+                    ++seen;
+                }
+            });
+            TEST_CHECK(ctx, seen == 2);
+            TEST_CHECK(ctx, first.Get<TestVelocity>()->x == 11.0f);
+            TEST_CHECK(ctx, second.Get<TestVelocity>()->x == 11.0f);
+        }
 
-        // Past the end names nothing rather than reading off the end.
-        TEST_CHECK(ctx, !world.OwnerAt<TestVelocity>(2).IsValid());
+        second.Get<TestVelocity>()->x = 3.0f;
 
         TEST_CHECK(ctx, first.Remove<TestVelocity>());
         TEST_CHECK(ctx, !first.Has<TestVelocity>());
@@ -126,11 +144,15 @@ void Test_World_Run(TestContext& ctx)
         TEST_CHECK(ctx, second.Get<TestVelocity>() != nullptr);
         TEST_CHECK(ctx, second.Get<TestVelocity>()->x == 3.0f);
 
-        // A type nothing carries is an empty view, not a null one to be
-        // checked for.
+        // A type nothing carries yields no blocks at all, rather than one
+        // empty block a caller would have to test for.
         World empty;
-        TEST_CHECK(ctx, empty.View<TestVelocity>().empty());
-        TEST_CHECK(ctx, empty.Owners<TestVelocity>().empty());
+        {
+            u32 blocks = 0;
+            empty.EachChunk<TestVelocity>([&](std::span<const FluxionEntityHandle>, std::span<TestVelocity>) { ++blocks; });
+            TEST_CHECK(ctx, blocks == 0);
+            TEST_CHECK(ctx, empty.CountWith<TestVelocity>() == 0);
+        }
     }
 
     // --- Who destroys the scene and who does not ------------------------

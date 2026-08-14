@@ -19,13 +19,35 @@ extern "C" {
 #define FLUXION_SCENE_MAX_COMPONENTS 2048
 #define FLUXION_SCENE_MAX_NAME_LENGTH 64
 
-// How many distinct data-component types one scene may hold. Only the
-// table of pools is fixed at this; the storage behind each pool is taken
-// when the type is first used and given back when the scene goes.
+// How many distinct data-component types one scene may hold, and
+// therefore also the most one object can carry at once.
 #define FLUXION_SCENE_MAX_COMPONENT_TYPES 32
+
+// How many distinct component compositions one scene may hold at once.
+// Only the table of them is fixed at this; the storage each one holds is
+// taken as entities need it and given back when the scene goes.
+//
+// This is a table of descriptors, not of data, so the number is generous
+// on purpose: compositions arise on their own from what objects are
+// given, and running out is a refusal a caller cannot easily predict.
+#define FLUXION_SCENE_MAX_ARCHETYPES 128
+
+// How much memory one block of component storage takes.
+//
+// Large enough that the per-block bookkeeping is spread over many
+// entities, small enough that walking one block's columns stays in cache.
+// How many entities fit in a block is not this number but a consequence
+// of it: it depends on how wide the composition is.
+#define FLUXION_SCENE_CHUNK_BYTES (16u * 1024u)
 
 FLUXION_DEFINE_HANDLE(FluxionSceneHandle);
 FLUXION_DEFINE_HANDLE(FluxionGameObjectHandle);
+
+// The same handle under the name the component-oriented half of this
+// interface uses. One concept, two vocabularies -- the older half calls
+// an object a game object, the newer half calls it an entity -- and a
+// typedef rather than a second type, so the two cannot drift apart.
+typedef FluxionGameObjectHandle FluxionEntityHandle;
 
 // An invalid handle of either kind, so a caller answering "there is none"
 // never has to write the two numbers out.
@@ -167,19 +189,41 @@ FluxionMat4 Fluxion_GameObject_GetLocalMatrix(FluxionSceneHandle scene, FluxionG
 // comes from -- there is no second place to state it, and a type that was
 // never registered cannot be attached.
 //
-// Every one of these hands back a pointer into the scene's own storage.
-// That pointer is good until the next call that adds or removes a
-// component OF THE SAME TYPE in the SAME scene, or until the object is
-// destroyed; anything else leaves it alone. Hold the handle across such a
-// call and ask again, rather than holding the pointer.
+// Objects are stored by WHICH components they carry: every object with the
+// same set of component types sits together, its components side by side
+// in blocks. That grouping is not something anyone writes down -- it is
+// the answer to "what does this object carry", and it comes into being on
+// its own when the first object carries that set. Introducing a new
+// component type therefore takes no work here at all beyond registering
+// the type for reflection.
+//
+// WHAT THIS COSTS THE CALLER, and it is the one thing to remember: every
+// call below hands back a pointer into that storage, and the storage
+// MOVES. Giving an object any component, or taking any away, physically
+// relocates all of that object's components -- including the ones the
+// call did not name, because the object now belongs with a different set
+// of objects. Destroying any object can move another object's components
+// too.
+//
+// So a pointer from here is good only until the next structural change
+// anywhere in this scene. Hold the object handle across such a change and
+// ask again; never hold the pointer. Code that has to change things while
+// walking over them records the change into an entity command buffer (see
+// EntityCommandBuffer.h) and lets it land afterwards.
+//
+// A component type's alignment must be no stricter than
+// FLUXION_DEFAULT_ALIGNMENT, which is what the storage aligns its columns
+// to. The C++ layer checks this when the type is named; C callers are
+// asked to honour it.
 
 // Attaches a component of `type` and hands back the storage for it. With
 // `initialValue` null the component starts as all zero bytes; otherwise
-// that many bytes are copied from it. An object already carrying this type
-// gets its existing component back untouched -- one of a type per object.
+// the type's registered size in bytes is copied from it. An object
+// already carrying this type gets its existing component back untouched
+// -- one of a type per object -- and nothing moves in that case.
 //
-// Null when the object is not live, when the type was never registered for
-// reflection, or when the scene has no room for another type.
+// Null when the object is not live, when the type was never registered
+// for reflection, or when the scene has no room for another composition.
 void* Fluxion_GameObject_AddComponent(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionTypeId type, const void* initialValue);
 
 // The object's component of this type, or null when it carries none.
@@ -191,17 +235,20 @@ bool Fluxion_GameObject_HasComponent(FluxionSceneHandle scene, FluxionGameObject
 // an error -- removing what is not there is simply nothing to do.
 bool Fluxion_GameObject_RemoveComponent(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionTypeId type);
 
-// Every component of one type in the scene, packed with no gaps, and the
-// object each belongs to in the same order -- element i of the array is
-// owned by element i of the owners. Both are null with a count of zero
-// when the scene holds none of this type.
+// Which component types this object carries, written into `outTypes`, and
+// how many there are. Passing a null `outTypes` (with `maxTypes` zero)
+// asks only for the count.
 //
-// The order is not stated and does not stay put: removing a component
-// moves the last one into its place. Read them as a set, not as a
-// sequence.
-void* Fluxion_Scene_GetComponentArray(FluxionSceneHandle scene, FluxionTypeId type, u32* outCount);
-const FluxionGameObjectHandle* Fluxion_Scene_GetComponentOwners(FluxionSceneHandle scene, FluxionTypeId type, u32* outCount);
+// This is what writing an object out needs: the types say which entries
+// to write, and asking the reflection registry about each one says how.
+// Nothing else can answer it -- asking type by type would mean knowing
+// the list of types in advance, which is the very thing being asked for.
+//
+// The order is the storage's own and is not promised to stay the same
+// between runs. Anything that needs a stable order sorts what it gets.
+u32 Fluxion_GameObject_GetComponentTypes(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionTypeId* outTypes, u32 maxTypes);
 
+// How many objects in this scene carry a component of this type.
 u32 Fluxion_Scene_ComponentCount(FluxionSceneHandle scene, FluxionTypeId type);
 
 #ifdef __cplusplus

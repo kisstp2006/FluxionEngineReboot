@@ -2,6 +2,7 @@
 
 #include <Fluxion/Core/Reflection/Reflection.hpp>
 #include <Fluxion/Scene/EntityCommandBuffer.h>
+#include <Fluxion/Scene/EntityQuery.h>
 #include <Fluxion/Scene/Scene.h>
 
 #include <span>
@@ -24,8 +25,20 @@ namespace Fluxion::Scene
 
 // A component type: a plain struct that declares the name it is reflected
 // under, the same way every other reflectable type in the engine does.
+//
+// Trivially copyable because the storage moves components with a plain
+// byte copy when an entity changes which components it carries -- a type
+// with a copy constructor to run would be moved without running it.
+//
+// The alignment limit is what the storage aligns its columns to. A type
+// wanting more would be handed a pointer that does not meet its own
+// requirement, which on some architectures is a fault and on others is a
+// silent slowdown; either way it is caught here, when the type is named,
+// rather than at the first read.
 template<typename T>
-concept ComponentType = Core::ReflectableType<T> && std::is_trivially_copyable_v<T>;
+concept ComponentType = Core::ReflectableType<T>
+    && std::is_trivially_copyable_v<T>
+    && (alignof(T) <= FLUXION_DEFAULT_ALIGNMENT);
 
 class Entity
 {
@@ -92,9 +105,11 @@ public:
     // --- Components -----------------------------------------------------
 
     // The reference is good until the next call that adds or removes a
-    // component of this same type in this same scene -- the same rule the
+    // component ANYWHERE in this scene, of any type -- the same rule the
     // interface underneath states for its pointer, and for the same
-    // reason. Take a copy, or ask again.
+    // reason: an entity's components are stored with those of every other
+    // entity carrying the same set, so changing that set moves all of
+    // them. Take a copy, or ask again.
     template<ComponentType T>
     T* Add(const T& value)
     {
@@ -126,6 +141,17 @@ public:
     {
         return Fluxion_GameObject_RemoveComponent(m_scene, m_handle, Core::TypeIdOf<T>());
     }
+
+    // Which component types this entity carries, written into `outTypes`,
+    // and how many there are. What writing an entity out needs, and the
+    // only way to ask: every other question here needs the type named in
+    // advance, which is the thing being asked for.
+    u32 ComponentTypes(FluxionTypeId* outTypes, u32 maxTypes) const
+    {
+        return Fluxion_GameObject_GetComponentTypes(m_scene, m_handle, outTypes, maxTypes);
+    }
+
+    u32 ComponentCount() const { return Fluxion_GameObject_GetComponentTypes(m_scene, m_handle, nullptr, 0); }
 
 private:
     FluxionSceneHandle m_scene;
@@ -187,36 +213,84 @@ public:
     // World stands for no live scene.
     FluxionEntityCommandBuffer* Commands() { return Fluxion_Scene_GetCommandBuffer(m_handle); }
 
-    // Every component of one type, and the entity each belongs to at the
-    // same position. Both are empty when the scene holds none.
+    // --- Reading many entities at once ----------------------------------
+
+    // Every entity carrying all of these component types, a block at a
+    // time. The callable is handed the entities of one block and, for each
+    // named type, that block's values for exactly those entities -- laid
+    // out one after another with nothing in between:
     //
-    // Adding or removing a component of this type makes both stale --
-    // storage may have moved and the order certainly has. Finish with them
-    // before changing what is in them, or record the change into the
-    // command buffer above and let it land afterwards.
-    template<ComponentType T>
-    std::span<T> View() const
+    //   world.EachChunk<Position, Velocity>(
+    //       [](std::span<const FluxionEntityHandle> entities,
+    //          std::span<Position> positions,
+    //          std::span<Velocity> velocities) { ... });
+    //
+    // All the spans of one call have the same length, and entry i of each
+    // belongs to entry i of the entities. An entity carrying more than the
+    // named types still matches: a query says what it needs, not what an
+    // entity is allowed to be.
+    //
+    // This is the shape worth reaching for when the work per entity is
+    // small, because it is where the storage's whole purpose shows up --
+    // the values are already next to each other and the loop is a straight
+    // run over them.
+    //
+    // NOTHING STRUCTURAL MAY HAPPEN INSIDE THE CALLABLE. Adding a
+    // component, removing one, or destroying an entity moves the very
+    // values being read. Record such changes into Commands() and let them
+    // land after the walk.
+    template<ComponentType... Ts, typename Fn>
+    void EachChunk(Fn&& fn) const
     {
-        u32 count = 0;
-        void* data = Fluxion_Scene_GetComponentArray(m_handle, Core::TypeIdOf<T>(), &count);
-        return std::span<T>(static_cast<T*>(data), count);
+        const FluxionTypeId required[] = { Core::TypeIdOf<Ts>()... };
+
+        FluxionEntityQueryDesc desc{};
+        desc.required = required;
+        desc.requiredCount = (u32)sizeof...(Ts);
+
+        FluxionEntityQuery query = Fluxion_Scene_Query(m_handle, &desc);
+        FluxionEntityChunkView chunk;
+        while (Fluxion_EntityQuery_Next(&query, &chunk))
+        {
+            fn(std::span<const FluxionEntityHandle>(chunk.entities, chunk.count),
+               std::span<Ts>(static_cast<Ts*>(Fluxion_EntityChunk_Column(&chunk, Core::TypeIdOf<Ts>())), chunk.count)...);
+        }
     }
 
-    template<ComponentType T>
-    std::span<const FluxionGameObjectHandle> Owners() const
+    // The same set of entities, one at a time:
+    //
+    //   world.Each<Position, Velocity>(
+    //       [](Entity e, Position& p, Velocity& v) { ... });
+    //
+    // Easier to write and easier to get right; the block form above is
+    // what to reach for when the per-entity work is small enough that the
+    // call around it would dominate.
+    //
+    // The same rule holds: nothing structural inside the callable.
+    template<ComponentType... Ts, typename Fn>
+    void Each(Fn&& fn) const
     {
-        u32 count = 0;
-        const FluxionGameObjectHandle* owners = Fluxion_Scene_GetComponentOwners(m_handle, Core::TypeIdOf<T>(), &count);
-        return std::span<const FluxionGameObjectHandle>(owners, count);
+        const FluxionSceneHandle scene = m_handle;
+        EachChunk<Ts...>([&fn, scene](std::span<const FluxionEntityHandle> entities, std::span<Ts>... columns)
+        {
+            for (usize i = 0; i < entities.size(); ++i)
+            {
+                fn(Entity(scene, entities[i]), columns[i]...);
+            }
+        });
     }
 
-    // The entity owning the component at this position of View<T>().
-    template<ComponentType T>
-    Entity OwnerAt(usize index) const
+    // How many entities carry all of these types, without reading any of
+    // their values.
+    template<ComponentType... Ts>
+    u32 CountWith() const
     {
-        const std::span<const FluxionGameObjectHandle> owners = Owners<T>();
-        if (index >= owners.size()) return Entity();
-        return Entity(m_handle, owners[index]);
+        const FluxionTypeId required[] = { Core::TypeIdOf<Ts>()... };
+
+        FluxionEntityQueryDesc desc{};
+        desc.required = required;
+        desc.requiredCount = (u32)sizeof...(Ts);
+        return Fluxion_Scene_CountMatching(m_handle, &desc);
     }
 
     template<ComponentType T>

@@ -3,6 +3,7 @@
 #include <Fluxion/Core/Reflection/Reflection.hpp>
 #include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/Scene/EntityCommandBuffer.h>
+#include <Fluxion/Scene/EntityQuery.h>
 #include <Fluxion/Scene/Scene.h>
 
 #include <cstdio>
@@ -284,38 +285,53 @@ void Test_CommandBuffer_Run(TestContext& ctx)
 
         FluxionEntityCommandBuffer* buffer = Fluxion_Scene_GetCommandBuffer(scene);
 
-        u32 count = 0;
-        const TestMark* marks = (const TestMark*)Fluxion_Scene_GetComponentArray(scene, MarkType(), &count);
-        const FluxionGameObjectHandle* owners = Fluxion_Scene_GetComponentOwners(scene, MarkType(), &count);
-        TEST_CHECK(ctx, count == 8);
+        const FluxionTypeId required = MarkType();
+        FluxionEntityQueryDesc desc{};
+        desc.required = &required;
+        desc.requiredCount = 1;
 
         // Every even one is asked to go while the walk is under way. The
         // walk sees all eight, because nothing has actually changed yet --
-        // which is the whole point.
-        u32 seen = 0;
-        for (u32 row = 0; row < count; ++row)
+        // which is the whole point. Doing it directly instead would move
+        // the very rows being read.
         {
-            ++seen;
-            if ((marks[row].value % 2u) == 0u)
+            FluxionEntityQuery query = Fluxion_Scene_Query(scene, &desc);
+            FluxionEntityChunkView chunk;
+            u32 seen = 0;
+
+            while (Fluxion_EntityQuery_Next(&query, &chunk))
             {
-                Fluxion_EntityCommandBuffer_RemoveComponent(buffer, Fluxion_EntityTarget_Existing(owners[row]), MarkType());
+                const TestMark* marks = (const TestMark*)Fluxion_EntityChunk_Column(&chunk, MarkType());
+                for (u32 row = 0; row < chunk.count; ++row)
+                {
+                    ++seen;
+                    if ((marks[row].value % 2u) != 0u) continue;
+                    Fluxion_EntityCommandBuffer_RemoveComponent(buffer, Fluxion_EntityTarget_Existing(chunk.entities[row]), MarkType());
+                }
             }
+            TEST_CHECK(ctx, seen == 8);
         }
-        TEST_CHECK(ctx, seen == 8);
         TEST_CHECK(ctx, Fluxion_Scene_ComponentCount(scene, MarkType()) == 8);
 
         Fluxion_Scene_Tick(scene, 0.016f);
         TEST_CHECK(ctx, Fluxion_Scene_ComponentCount(scene, MarkType()) == 4);
 
         // And the four left are the odd ones, each still its own.
-        u32 after = 0;
-        const TestMark* remaining = (const TestMark*)Fluxion_Scene_GetComponentArray(scene, MarkType(), &after);
-        u32 oddCount = 0;
-        for (u32 row = 0; row < after; ++row)
         {
-            if ((remaining[row].value % 2u) == 1u) ++oddCount;
+            FluxionEntityQuery query = Fluxion_Scene_Query(scene, &desc);
+            FluxionEntityChunkView chunk;
+            u32 oddCount = 0;
+
+            while (Fluxion_EntityQuery_Next(&query, &chunk))
+            {
+                const TestMark* marks = (const TestMark*)Fluxion_EntityChunk_Column(&chunk, MarkType());
+                for (u32 row = 0; row < chunk.count; ++row)
+                {
+                    if ((marks[row].value % 2u) == 1u) ++oddCount;
+                }
+            }
+            TEST_CHECK(ctx, oddCount == 4);
         }
-        TEST_CHECK(ctx, oddCount == 4);
 
         Fluxion_Scene_Destroy(scene);
     }
