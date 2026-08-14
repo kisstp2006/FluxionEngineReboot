@@ -378,7 +378,14 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
         FluxionRendererInternal_RecordGpuFree(false, (usize)renderer->objectBufferCapacity * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE);
     }
     if (FLUXION_HANDLE_IS_VALID(renderer->objectBindGroupLayout)) Fluxion_RHI_DestroyBindGroupLayout(renderer->objectBindGroupLayout);
-    if (FLUXION_HANDLE_IS_VALID(renderer->debugVertexBuffer)) Fluxion_RHI_DestroyBuffer(renderer->debugVertexBuffer);
+    if (FLUXION_HANDLE_IS_VALID(renderer->debugVertexBuffer))
+    {
+        Fluxion_RHI_DestroyBuffer(renderer->debugVertexBuffer);
+        // The alloc was recorded at create; forgetting this line is
+        // precisely what the tracker's shutdown warning exists to catch
+        // -- and did.
+        FluxionRendererInternal_RecordGpuFree(false, sizeof(renderer->debugVertices[0]) * FLUXION_RENDERER_MAX_DEBUG_VERTICES);
+    }
     if (FLUXION_HANDLE_IS_VALID(renderer->debugPipeline)) Fluxion_RHI_DestroyPipeline(renderer->debugPipeline);
     if (FLUXION_HANDLE_IS_VALID(renderer->debugVertexShader)) Fluxion_RHI_DestroyShader(renderer->debugVertexShader);
     if (FLUXION_HANDLE_IS_VALID(renderer->debugFragmentShader)) Fluxion_RHI_DestroyShader(renderer->debugFragmentShader);

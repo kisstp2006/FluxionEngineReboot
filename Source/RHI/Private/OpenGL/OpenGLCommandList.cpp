@@ -232,7 +232,18 @@ void Fluxion_RHIOpenGL_CommandListSetVertexBuffer(FluxionRHICommandListHandle co
     FluxionRHIOpenGLPipeline* pipelineState = Fluxion_RHIOpenGL_ResolvePipelineByIndex(pipelineIndex);
     FluxionRHIOpenGLBuffer* bufferState = Fluxion_RHIOpenGL_ResolveBuffer(buffer);
     if (pipelineState == nullptr || bufferState == nullptr) return;
+
+    // See FluxionRHIOpenGLPipeline's attachment-cache comment: the
+    // redundant re-attach is what tells a driver this buffer is dynamic.
+    if (pipelineState->attachedVertexBuffer.index == buffer.index &&
+        pipelineState->attachedVertexBuffer.generation == buffer.generation &&
+        pipelineState->attachedVertexOffset == offset)
+    {
+        return;
+    }
     glVertexArrayVertexBuffer(pipelineState->vao, slot, bufferState->name, (GLintptr)offset, (GLsizei)pipelineState->vertexStride);
+    pipelineState->attachedVertexBuffer = buffer;
+    pipelineState->attachedVertexOffset = offset;
 }
 
 void Fluxion_RHIOpenGL_CommandListSetIndexBuffer(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle buffer, usize offset, bool use16BitIndices)
@@ -244,7 +255,13 @@ void Fluxion_RHIOpenGL_CommandListSetIndexBuffer(FluxionRHICommandListHandle com
     FluxionRHIOpenGLPipeline* pipelineState = Fluxion_RHIOpenGL_ResolvePipelineByIndex(pipelineIndex);
     FluxionRHIOpenGLBuffer* bufferState = Fluxion_RHIOpenGL_ResolveBuffer(buffer);
     if (pipelineState == nullptr || bufferState == nullptr) return;
-    glVertexArrayElementBuffer(pipelineState->vao, bufferState->name);
+
+    if (pipelineState->attachedIndexBuffer.index != buffer.index ||
+        pipelineState->attachedIndexBuffer.generation != buffer.generation)
+    {
+        glVertexArrayElementBuffer(pipelineState->vao, bufferState->name);
+        pipelineState->attachedIndexBuffer = buffer;
+    }
     s_commandListState[commandList.index].use16BitIndices = use16BitIndices;
 }
 
@@ -343,6 +360,25 @@ void Fluxion_RHIOpenGL_CommandListCopyTexture(FluxionRHICommandListHandle comman
     glCopyImageSubData(srcState->name, srcState->target, 0, 0, 0, 0, dstState->name, dstState->target, 0, 0, 0, 0, (GLsizei)width, (GLsizei)height, (GLsizei)depth);
 }
 
+// Bytes per texel for the color formats the contract can upload --
+// mirrors the Vulkan backend's own table, for the same reason.
+static u32 Fluxion_RHIOpenGL_FormatTexelSize(FluxionRHIFormat format)
+{
+    switch (format)
+    {
+        case FLUXION_RHI_FORMAT_R8G8B8A8_UNORM:
+        case FLUXION_RHI_FORMAT_R8G8B8A8_SRGB:
+        case FLUXION_RHI_FORMAT_B8G8R8A8_UNORM:
+        case FLUXION_RHI_FORMAT_B8G8R8A8_SRGB:
+        case FLUXION_RHI_FORMAT_R32_FLOAT: return 4;
+        case FLUXION_RHI_FORMAT_R16G16B16A16_FLOAT:
+        case FLUXION_RHI_FORMAT_R32G32_FLOAT: return 8;
+        case FLUXION_RHI_FORMAT_R32G32B32_FLOAT: return 12;
+        case FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT: return 16;
+        default: return 0;
+    }
+}
+
 void Fluxion_RHIOpenGL_CommandListCopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer)
 {
     if (!Fluxion_RHIOpenGL_RequireRecording(commandList, "CopyBufferToTexture")) return;
@@ -361,6 +397,13 @@ void Fluxion_RHIOpenGL_CommandListCopyBufferToTexture(FluxionRHICommandListHandl
     // pointer whenever one is bound -- this is the DSA-era equivalent of
     // a buffer-to-image copy, since core GL has no direct analog to
     // vkCmdCopyBufferToImage.
+    // The contract lays rows out FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT
+    // apart (see RHI.h); UNPACK_ROW_LENGTH expresses that stride in
+    // texels, and is reset afterwards so no later unpack inherits it.
+    const u32 texelSize = Fluxion_RHIOpenGL_FormatTexelSize(dstState->format);
+    const u32 alignedRowBytes = (u32)((width * texelSize + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT);
+    if (texelSize != 0) glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(alignedRowBytes / texelSize));
+
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, srcState->name);
     if (dstState->target == GL_TEXTURE_2D_ARRAY)
     {
@@ -371,6 +414,7 @@ void Fluxion_RHIOpenGL_CommandListCopyBufferToTexture(FluxionRHICommandListHandl
         glTextureSubImage2D(dstState->name, (GLint)mipLevel, 0, 0, (GLsizei)width, (GLsizei)height, pixelFormat, pixelType, (const void*)srcOffset);
     }
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 }
 
 void Fluxion_RHIOpenGL_CommandListBarrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)

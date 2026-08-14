@@ -60,6 +60,7 @@
         WINGDIAPI const GLubyte* APIENTRY glGetString(GLenum name);
         WINGDIAPI void APIENTRY glFinish(void);
         WINGDIAPI void APIENTRY glDeleteTextures(GLsizei n, const GLuint* textures);
+        WINGDIAPI void APIENTRY glPixelStorei(GLenum pname, GLint param);
     }
 #else
     #include <X11/Xlib.h>
@@ -305,6 +306,19 @@ struct FluxionRHIOpenGLPipeline
     FluxionRHIBlendState blendState{};
     FluxionRHIPrimitiveTopology topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     u32 vertexStride = 0;
+
+    // What this VAO is currently attached to, so a frame that draws the
+    // same mesh again re-attaches nothing. Skipping the redundant call
+    // is not only cheaper on the CPU: a driver that sees a buffer
+    // re-specified as attachment state every frame is entitled to
+    // classify it as dynamic and keep it where the CPU can reach it --
+    // host memory -- and then every draw pays a bus crossing for
+    // geometry that never changed. Keyed on the RHI handle rather than
+    // the GL name, because a destroyed buffer's name can be reissued to
+    // a new buffer, and two different buffers must never compare equal.
+    FluxionRHIBufferHandle attachedVertexBuffer{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    usize attachedVertexOffset = 0;
+    FluxionRHIBufferHandle attachedIndexBuffer{ FLUXION_HANDLE_INVALID_INDEX, 0 };
 };
 
 FluxionRHIPipelineHandle Fluxion_RHIOpenGL_CreateGraphicsPipeline(FluxionRHIDeviceHandle device, const FluxionRHIGraphicsPipelineDesc* desc);

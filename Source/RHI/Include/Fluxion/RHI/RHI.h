@@ -119,14 +119,29 @@ void Fluxion_RHI_CommandList_Dispatch(FluxionRHICommandListHandle commandList, u
 
 void Fluxion_RHI_CommandList_CopyBuffer(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHIBufferHandle dst, usize dstOffset, usize size);
 void Fluxion_RHI_CommandList_CopyTexture(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, FluxionRHITextureHandle dst);
+// The layout CopyBufferToTexture reads pixel data in. Every row must
+// start FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT bytes apart, and every
+// mip's data must start at a srcOffset that is a multiple of
+// FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT. These are the strictest
+// backend's rules, adopted for all of them: a layout defined per backend
+// would mean staging data laid out for one is quietly misread by
+// another, and "quietly" is the operative word -- a 256-byte-wide image
+// happens to satisfy both tight packing and this rule at once, which is
+// exactly how such a disagreement stays invisible until the first
+// narrower mip level.
+#define FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT       ((usize)256)
+#define FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT ((usize)512)
+
 // The only CPU->GPU texture upload path this contract offers: a caller
 // stages pixel data into a CPU_TO_GPU/GPU_ONLY-transfer-source buffer
 // (Map/write/Unmap, same as any other staging upload) and copies it into
 // mip level `mipLevel`/array layer `arrayLayer` of `dst` here, at full
 // texture extent (no sub-region offset/size -- add one only once
-// something actually needs partial uploads). `dst` must already be in
-// FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION via a prior Barrier call,
-// same as CopyTexture's own destination requirement.
+// something actually needs partial uploads). Rows in the buffer must be
+// laid out to FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT and srcOffset to
+// FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT -- see above. `dst` must
+// already be in FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION via a prior
+// Barrier call, same as CopyTexture's own destination requirement.
 void Fluxion_RHI_CommandList_CopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer);
 
 typedef struct FluxionRHIBarrier

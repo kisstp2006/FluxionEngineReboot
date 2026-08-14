@@ -421,6 +421,27 @@ void Fluxion_RHIVulkan_CommandListCopyTexture(FluxionRHICommandListHandle comman
     vkCmdCopyImage(cl->commandBuffer, srcState->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstState->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
+// Bytes per texel for the color formats the contract can upload. Depth
+// formats are absent on purpose: CopyBufferToTexture has no depth-aspect
+// path, and returning a size for one would let a wrong call get further
+// before failing.
+static u32 Fluxion_RHIVulkan_FormatTexelSize(VkFormat format)
+{
+    switch (format)
+    {
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_R32_SFLOAT: return 4;
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+        case VK_FORMAT_R32G32_SFLOAT: return 8;
+        case VK_FORMAT_R32G32B32_SFLOAT: return 12;
+        case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
+        default: return 0;
+    }
+}
+
 void Fluxion_RHIVulkan_CommandListCopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer)
 {
     FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);
@@ -431,8 +452,17 @@ void Fluxion_RHIVulkan_CommandListCopyBufferToTexture(FluxionRHICommandListHandl
     u32 width = dstState->width >> mipLevel; if (width == 0) width = 1;
     u32 height = dstState->height >> mipLevel; if (height == 0) height = 1;
 
+    // The contract lays rows out FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT
+    // apart (see RHI.h); bufferRowLength expresses that stride in
+    // texels. Zero -- tight packing -- would only agree with the
+    // contract for rows that are exactly 256 bytes wide, which is the
+    // disagreement the contract exists to rule out.
+    const u32 texelSize = Fluxion_RHIVulkan_FormatTexelSize(dstState->format);
+    const u32 alignedRowBytes = (u32)((width * texelSize + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT);
+
     VkBufferImageCopy region = {};
     region.bufferOffset = srcOffset;
+    region.bufferRowLength = texelSize != 0 ? alignedRowBytes / texelSize : 0;
     region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, arrayLayer, 1 };
     region.imageExtent = { width, height, 1 };
     vkCmdCopyBufferToImage(cl->commandBuffer, srcState->buffer, dstState->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);

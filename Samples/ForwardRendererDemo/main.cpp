@@ -329,10 +329,69 @@ int main(int argc, char** argv)
         }
     }
 
-    FluxionRHIBufferDesc textureStagingDesc = { checkerPixels.size(), FLUXION_RHI_BUFFER_USAGE_TRANSFER_SRC, FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU, "DemoTextureStaging" };
+    // The full mip chain, built here on the CPU with a box filter. A
+    // single-level texture shimmers the moment the cube recedes: every
+    // screen pixel then samples one arbitrary texel out of many that
+    // should have contributed, and which one wins changes as the cube
+    // rotates. A box filter is exact for this checkerboard -- each mip
+    // texel is precisely the average of the four it replaces.
+    //
+    // Levels are laid out in one staging buffer following the layout the
+    // contract requires of CopyBufferToTexture: rows spaced to
+    // FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT, each level's start aligned
+    // to FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT.
+    u32 kMipLevels = 1;
+    while ((kTextureSize >> kMipLevels) >= 1) ++kMipLevels;
+
+    std::vector<usize> mipStagingOffsets(kMipLevels);
+    std::vector<std::vector<u8>> mipPixels(kMipLevels);
+    mipPixels[0] = checkerPixels;
+    for (u32 level = 1; level < kMipLevels; ++level)
+    {
+        const u32 srcSize = kTextureSize >> (level - 1);
+        const u32 dstSize = kTextureSize >> level;
+        mipPixels[level].resize((usize)dstSize * dstSize * 4);
+        for (u32 y = 0; y < dstSize; ++y)
+        {
+            for (u32 x = 0; x < dstSize; ++x)
+            {
+                for (u32 c = 0; c < 4; ++c)
+                {
+                    const u32 a = mipPixels[level - 1][((y * 2) * srcSize + (x * 2)) * 4 + c];
+                    const u32 b = mipPixels[level - 1][((y * 2) * srcSize + (x * 2 + 1)) * 4 + c];
+                    const u32 d = mipPixels[level - 1][((y * 2 + 1) * srcSize + (x * 2)) * 4 + c];
+                    const u32 e = mipPixels[level - 1][((y * 2 + 1) * srcSize + (x * 2 + 1)) * 4 + c];
+                    mipPixels[level][(y * dstSize + x) * 4 + c] = (u8)((a + b + d + e + 2) / 4);
+                }
+            }
+        }
+    }
+
+    usize stagingSizeTotal = 0;
+    for (u32 level = 0; level < kMipLevels; ++level)
+    {
+        stagingSizeTotal = (stagingSizeTotal + FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+        mipStagingOffsets[level] = stagingSizeTotal;
+        const u32 levelSize = kTextureSize >> level;
+        const usize rowBytes = ((usize)levelSize * 4 + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT;
+        stagingSizeTotal += rowBytes * levelSize;
+    }
+
+    FluxionRHIBufferDesc textureStagingDesc = { stagingSizeTotal, FLUXION_RHI_BUFFER_USAGE_TRANSFER_SRC, FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU, "DemoTextureStaging" };
     FluxionRHIBufferHandle textureStagingBuffer = Fluxion_RHI_CreateBuffer(device, &textureStagingDesc);
-    void* mappedTexture = Fluxion_RHI_MapBuffer(textureStagingBuffer);
-    memcpy(mappedTexture, checkerPixels.data(), checkerPixels.size());
+    u8* mappedTexture = (u8*)Fluxion_RHI_MapBuffer(textureStagingBuffer);
+    memset(mappedTexture, 0, stagingSizeTotal);
+    for (u32 level = 0; level < kMipLevels; ++level)
+    {
+        const u32 levelSize = kTextureSize >> level;
+        const usize rowBytes = ((usize)levelSize * 4 + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT;
+        for (u32 y = 0; y < levelSize; ++y)
+        {
+            memcpy(mappedTexture + mipStagingOffsets[level] + (usize)y * rowBytes,
+                mipPixels[level].data() + (usize)y * levelSize * 4,
+                (usize)levelSize * 4);
+        }
+    }
     Fluxion_RHI_UnmapBuffer(textureStagingBuffer);
 
     FluxionRHITextureDesc albedoTextureDesc;
@@ -340,7 +399,7 @@ int main(int argc, char** argv)
     albedoTextureDesc.width = kTextureSize;
     albedoTextureDesc.height = kTextureSize;
     albedoTextureDesc.depth = 1;
-    albedoTextureDesc.mipLevels = 1;
+    albedoTextureDesc.mipLevels = kMipLevels;
     albedoTextureDesc.arrayLayers = 1;
     albedoTextureDesc.sampleCount = 1;
     albedoTextureDesc.format = FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
@@ -349,7 +408,7 @@ int main(int argc, char** argv)
     albedoTextureDesc.debugName = "DemoAlbedoTexture";
     FluxionRHITextureHandle albedoTexture = Fluxion_RHI_CreateTexture(device, &albedoTextureDesc);
 
-    FluxionRHITextureViewDesc albedoViewDesc = { albedoTexture, albedoTextureDesc.format, 0, 1, 0, 1 };
+    FluxionRHITextureViewDesc albedoViewDesc = { albedoTexture, albedoTextureDesc.format, 0, kMipLevels, 0, 1 };
     FluxionRHITextureViewHandle albedoView = Fluxion_RHI_CreateTextureView(device, &albedoViewDesc);
 
     FluxionRHISamplerDesc albedoSamplerDesc;
@@ -423,7 +482,10 @@ int main(int argc, char** argv)
     preCopyBarriers[1] = FluxionRHIBarrier{ depthTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE };
     Fluxion_RHI_CommandList_Barrier(uploadCommandList, preCopyBarriers, 2);
 
-    Fluxion_RHI_CommandList_CopyBufferToTexture(uploadCommandList, textureStagingBuffer, 0, albedoTexture, 0, 0);
+    for (u32 level = 0; level < kMipLevels; ++level)
+    {
+        Fluxion_RHI_CommandList_CopyBufferToTexture(uploadCommandList, textureStagingBuffer, mipStagingOffsets[level], albedoTexture, level, 0);
+    }
 
     FluxionRHIBarrier postUploadBarrier = { albedoTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
     Fluxion_RHI_CommandList_Barrier(uploadCommandList, &postUploadBarrier, 1);

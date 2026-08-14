@@ -55,6 +55,21 @@ FluxionRHIBufferHandle Fluxion_RHIOpenGL_CreateBuffer(FluxionRHIDeviceHandle dev
             // written from the client keeps it where the client can be
             // served quickly, which means host memory, which means every
             // draw reads its geometry across the bus.
+            //
+            // A driver may still emit a one-time "moved from VIDEO to
+            // HOST" performance note about small buffers of this class,
+            // between the first submitted frame and the second, during
+            // its own residency pass. That decision was probed from
+            // every side this backend controls -- these storage flags,
+            // re-attaching versus caching the VAO attachment, whether
+            // the copy source was mapped during the transfer, client-
+            // storage on the staging side, and the buffer's size -- and
+            // none of them changes it; measured GPU frame time matches
+            // the other backends throughout. The note is the driver
+            // narrating a placement choice it owns, not something this
+            // code causes, and it is deliberately left visible rather
+            // than filtered: a log rule that hides one vendor's noise
+            // eventually hides another vendor's real complaint.
             storageFlags = 0;
             bufferState->cpuVisible = false;
             break;
