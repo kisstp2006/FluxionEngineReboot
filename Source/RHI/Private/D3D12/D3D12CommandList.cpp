@@ -629,7 +629,99 @@ struct FluxionRHID3D12SwapchainState
     u32 imageCount = 0;
     u32 width = 0, height = 0;
     bool vsync = true;
+
+    // Kept so the buffers can be resized to follow the window later --
+    // the window to measure, and the format and count to recreate with.
+    FluxionWindowHandle window = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 };
+
+// Blocks until the queue has finished everything submitted so far. The
+// back buffers cannot be released while the GPU might still be reading
+// them, and ResizeBuffers requires every reference to them to be gone.
+static void Fluxion_RHID3D12_WaitForGraphicsQueueIdle(FluxionRHID3D12Device* deviceState)
+{
+    if (deviceState == nullptr || !deviceState->graphicsQueue || !deviceState->gcFence) return;
+    const u64 waitValue = ++deviceState->gcCounter;
+    deviceState->graphicsQueue->Signal(deviceState->gcFence.Get(), waitValue);
+    deviceState->gcFence->SetEventOnCompletion(waitValue, deviceState->gcEvent);
+    WaitForSingleObject(deviceState->gcEvent, INFINITE);
+}
+
+// Points the swapchain's existing texture slots at the buffers the swap
+// chain holds right now. The slots themselves are reused rather than
+// reallocated: a caller may be holding a texture handle from an earlier
+// frame, and handing back a different one for the same image would turn
+// a resize into a dangling handle. Only what is behind the handle moves.
+static void Fluxion_RHID3D12_BindSwapchainBuffers(FluxionRHID3D12SwapchainState* state)
+{
+    for (u32 i = 0; i < state->imageCount; ++i)
+    {
+        FluxionRHID3D12Texture* textureState = Fluxion_RHID3D12_ResolveTexture(state->images[i]);
+        if (textureState == nullptr) continue;
+
+        ComPtr<ID3D12Resource> backbuffer;
+        if (FAILED(state->swapChain->GetBuffer(i, IID_PPV_ARGS(&backbuffer)))) continue;
+
+        textureState->resource = backbuffer;
+        textureState->format = state->format;
+        textureState->width = state->width;
+        textureState->height = state->height;
+        textureState->usageFlags = FLUXION_RHI_TEXTURE_USAGE_RENDER_TARGET;
+        textureState->ownedBySwapchain = true;
+    }
+}
+
+// A swap chain does not follow its window on its own: without this the
+// buffers keep their creation size for the life of the program and the
+// presented image is simply stretched over whatever the window has
+// become. Called from Acquire, which is where a caller is about to
+// commit to a size for the frame.
+static void Fluxion_RHID3D12_ResizeSwapchainIfNeeded(FluxionRHID3D12SwapchainState* state)
+{
+    u32 windowWidth = 0, windowHeight = 0;
+    Fluxion_Window_GetSize(state->window, &windowWidth, &windowHeight);
+
+    // A minimised window has no size to resize to, and ResizeBuffers
+    // rejects zero outright. Recording the zero is what lets GetExtent
+    // report "nothing to draw into" rather than the last real size, and
+    // what makes the window coming back register as a change again.
+    if (windowWidth == 0 || windowHeight == 0)
+    {
+        state->width = 0;
+        state->height = 0;
+        return;
+    }
+
+    if (windowWidth == state->width && windowHeight == state->height) return;
+
+    FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
+    Fluxion_RHID3D12_WaitForGraphicsQueueIdle(deviceState);
+
+    // Every outstanding reference has to go before ResizeBuffers, and
+    // these are the only long-lived ones: a render target view is built
+    // per FluxionRHITextureView and released with it, never cached here.
+    for (u32 i = 0; i < state->imageCount; ++i)
+    {
+        FluxionRHID3D12Texture* textureState = Fluxion_RHID3D12_ResolveTexture(state->images[i]);
+        if (textureState != nullptr) textureState->resource.Reset();
+    }
+
+    // Zero for count and format means "keep what the swap chain already
+    // has", which is exactly right -- only the size is changing.
+    if (FAILED(state->swapChain->ResizeBuffers(0, windowWidth, windowHeight, DXGI_FORMAT_UNKNOWN, 0)))
+    {
+        // The old buffers are gone either way, so the slots have to be
+        // pointed at whatever the swap chain still has rather than left
+        // holding nothing.
+        Fluxion_RHID3D12_BindSwapchainBuffers(state);
+        return;
+    }
+
+    state->width = windowWidth;
+    state->height = windowHeight;
+    Fluxion_RHID3D12_BindSwapchainBuffers(state);
+}
 
 static FluxionRHID3D12Slot s_swapchainSlots[FLUXION_RHI_D3D12_MAX_SWAPCHAINS];
 static FluxionRHID3D12SwapchainState s_swapchains[FLUXION_RHI_D3D12_MAX_SWAPCHAINS];
@@ -671,6 +763,8 @@ FluxionRHISwapchainHandle Fluxion_RHID3D12_CreateSwapchain(FluxionRHIDeviceHandl
     state->width = desc->width;
     state->height = desc->height;
     state->vsync = desc->vsync;
+    state->window = window;
+    state->format = swapDesc.Format;
 
     for (u32 i = 0; i < imageCount; ++i)
     {
@@ -713,14 +807,7 @@ void Fluxion_RHID3D12_DestroySwapchain(FluxionRHISwapchainHandle swapchain)
     // it is corruption the D3D12 debug layer treats as fatal (matches
     // the Vulkan backend's own vkDeviceWaitIdle before
     // DestroySwapchainImages).
-    FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
-    if (deviceState != nullptr && deviceState->graphicsQueue && deviceState->gcFence)
-    {
-        u64 waitValue = ++deviceState->gcCounter;
-        deviceState->graphicsQueue->Signal(deviceState->gcFence.Get(), waitValue);
-        deviceState->gcFence->SetEventOnCompletion(waitValue, deviceState->gcEvent);
-        WaitForSingleObject(deviceState->gcEvent, INFINITE);
-    }
+    Fluxion_RHID3D12_WaitForGraphicsQueueIdle(Fluxion_RHID3D12_SoleDevice());
 
     FluxionRHID3D12SwapchainState* state = &s_swapchains[swapchain.index];
     for (u32 i = 0; i < state->imageCount; ++i) Fluxion_RHID3D12_FreeTextureSlotDirect(state->images[i]);
@@ -732,7 +819,14 @@ u32 Fluxion_RHID3D12_SwapchainAcquireNextImage(FluxionRHISwapchainHandle swapcha
 {
     FLUXION_UNUSED(signalSemaphore); // see the semaphore pool's own comment above -- nothing to signal in this backend's model
     if (!Fluxion_RHID3D12_PoolIsValid(s_swapchainSlots, FLUXION_RHI_D3D12_MAX_SWAPCHAINS, swapchain.index, swapchain.generation)) return 0;
-    return s_swapchains[swapchain.index].swapChain->GetCurrentBackBufferIndex();
+
+    // Here rather than on Present: this is the point at which the caller
+    // is about to ask how big the frame is and build its own attachments
+    // to match, so the buffers have to already be the size the answer
+    // will describe.
+    FluxionRHID3D12SwapchainState* state = &s_swapchains[swapchain.index];
+    Fluxion_RHID3D12_ResizeSwapchainIfNeeded(state);
+    return state->swapChain->GetCurrentBackBufferIndex();
 }
 
 FluxionRHITextureHandle Fluxion_RHID3D12_SwapchainGetTexture(FluxionRHISwapchainHandle swapchain, u32 imageIndex)
@@ -765,6 +859,10 @@ void Fluxion_RHID3D12_SwapchainGetExtent(FluxionRHISwapchainHandle swapchain, u3
         if (outHeight) *outHeight = 0;
         return;
     }
+    // Zero here means the window has no drawable area at all -- see the
+    // minimised case in ResizeSwapchainIfNeeded. Reporting the last real
+    // size instead would look entirely ordinary to a caller, which would
+    // then size a frame to a surface that is not there.
     if (outWidth) *outWidth = s_swapchains[swapchain.index].width;
     if (outHeight) *outHeight = s_swapchains[swapchain.index].height;
 }

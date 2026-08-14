@@ -127,4 +127,17 @@ void Test_Lexer_Run(TestContext& ctx)
         Lex("string s = \"unfinished;", "<test>", diagnostics);
         TEST_CHECK(ctx, diagnostics.HasErrors());
     }
+    {
+        // A file saved with a UTF-8 byte order mark. The marker is not
+        // source text and no editor shows it, so lexing it as a character
+        // would report "unexpected character" on line 1 of a file that
+        // looks entirely ordinary to whoever wrote it.
+        DiagnosticList diagnostics;
+        std::vector<Token> tokens = Lex("\xEF\xBB\xBF" "int x = 7;", "<test>", diagnostics);
+        TEST_CHECK(ctx, !diagnostics.HasErrors());
+
+        // And the columns still match what an editor shows -- counting
+        // the marker would silently shift every position on line 1.
+        TEST_CHECK(ctx, tokens[0].location.line == 1 && tokens[0].location.column == 1);
+    }
 }

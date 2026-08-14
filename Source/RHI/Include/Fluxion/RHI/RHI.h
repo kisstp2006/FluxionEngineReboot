@@ -445,6 +445,15 @@ void Fluxion_RHI_Swapchain_Present(FluxionRHISwapchainHandle swapchain, u32 imag
 // prior Acquire/Present). A caller building a FluxionRHIRenderingDesc
 // around a swapchain-acquired texture must use this, not a separately
 // queried window size, or risk a size mismatch between the two.
+//
+// Query it *after* acquiring, never before: a backend is free to notice a
+// resize during the acquire and rebuild there, so an extent read
+// beforehand describes the swapchain that is being replaced.
+//
+// Zero means there is currently no drawable surface at all -- a minimised
+// window, most commonly. The acquire that preceded it produced nothing
+// usable, so the whole frame has to be skipped: there is nothing to
+// render into, and nothing to present either.
 void Fluxion_RHI_Swapchain_GetExtent(FluxionRHISwapchainHandle swapchain, u32* outWidth, u32* outHeight);
 
 // --- Synchronization ----------------------------------------------------------

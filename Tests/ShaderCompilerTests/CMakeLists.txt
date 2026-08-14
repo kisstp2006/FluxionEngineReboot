@@ -3,6 +3,7 @@ engine_add_test(
     SOURCES
         main.cpp
         Test_Lexer.cpp
+    Test_Preprocessor.cpp
         Test_Parser.cpp
         Test_Semantic.cpp
         Test_HLSLBackend.cpp

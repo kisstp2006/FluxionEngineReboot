@@ -151,6 +151,14 @@ struct FluxionRHID3D12Device
     // Fluxion_RHID3D12_SavePipelineCacheToFile/LoadPipelineCacheFromFile.
     ComPtr<ID3D12PipelineLibrary> pipelineLibrary;
 
+    // The blob the library above was created from. D3D12 does not copy
+    // it: the library reads out of this memory for as long as it lives,
+    // so it has to outlive the library rather than the call that loaded
+    // it. Freeing it early leaves a library that still answers, out of
+    // memory that is no longer ours -- which shows up much later, as a
+    // save that quietly produces nothing.
+    std::vector<u8> pipelineLibraryBlob;
+
     // Shader-visible heaps backing every FluxionRHIBindGroup allocated on
     // this device -- one persistent CBV_SRV_UAV heap, one persistent
     // Sampler heap (D3D12 requires these to be separate heaps), each with

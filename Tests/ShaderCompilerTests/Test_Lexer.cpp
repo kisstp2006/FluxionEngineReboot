@@ -37,4 +37,12 @@ void Test_Lexer_Run(TestContext& ctx)
         Lex("@", "<test>", diagnostics);
         TEST_CHECK(ctx, diagnostics.HasErrors());
     }
+    {
+        // Same marker, same reasoning, on the shader side.
+        DiagnosticList diagnostics;
+        std::vector<Token> tokens = Lex("\xEF\xBB\xBF" "float x = 1.5;", "<test>", diagnostics);
+        TEST_CHECK(ctx, !diagnostics.HasErrors());
+        TEST_CHECK(ctx, tokens.size() == 6);
+        TEST_CHECK(ctx, tokens[0].location.line == 1 && tokens[0].location.column == 1);
+    }
 }

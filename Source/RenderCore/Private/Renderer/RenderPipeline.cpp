@@ -4,6 +4,7 @@
 
 #include <Fluxion/Foundation/Assert.h>
 
+#include <cstdio>
 #include <cstring>
 
 namespace
@@ -184,7 +185,22 @@ extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resol
     desc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_MATERIAL] = materialLayout;
     desc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_OBJECT] = objectLayout;
     desc.bindGroupLayoutCount = FLUXION_RHI_BIND_GROUP_OBJECT + 1;
-    desc.debugName = "Fluxion.RenderPipeline";
+    // A driver's pipeline library is keyed on this name, so it has to be
+    // two things at once: different for every pipeline that is genuinely
+    // different, and identical to what the previous run called the same
+    // pipeline. Everything here is derived from what the pipeline is --
+    // never from a pool index, which is assignment order and would change
+    // between runs, turning every lookup into a miss.
+    //
+    // A name that is merely constant is worse than useless: every
+    // pipeline then collides on one key, so only the first one ever gets
+    // stored and the rest are rebuilt from scratch every run.
+    char name[192];
+    std::snprintf(name, sizeof(name), "Fluxion.RenderPipeline|%s|%u|%u|%u|%016llx",
+        FluxionRendererInternal_ShaderProgram_GetDebugName(record->program),
+        (u32)record->category, (u32)record->colorFormat, (u32)record->depthFormat,
+        (unsigned long long)hash);
+    desc.debugName = name;
 
     FluxionRHIPipelineHandle rhiPipeline = Fluxion_RHI_CreateGraphicsPipeline(device, &desc);
 

@@ -74,14 +74,14 @@ extern "C" void Test_ShaderProgram_Run(TestContext* ctx)
 
     NullRHIFixture fixture = CreateNullRHIFixture();
 
-    FluxionShaderProgramDesc graphicsDesc = { 0 };
+    FluxionShaderProgramDesc graphicsDesc = {};
     graphicsDesc.debugName = "Test_ShaderProgram.Graphics";
     graphicsDesc.vertexSource = kVertexSource;
     graphicsDesc.fragmentSource = kFragmentSource;
     FluxionShaderProgramHandle graphicsProgram = Fluxion_ShaderProgram_Create(fixture.device, &graphicsDesc);
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(graphicsProgram));
 
-    FluxionShaderProgramDesc computeDesc = { 0 };
+    FluxionShaderProgramDesc computeDesc = {};
     computeDesc.debugName = "Test_ShaderProgram.Compute";
     computeDesc.computeSource = kComputeSource;
     FluxionShaderProgramHandle computeProgram = Fluxion_ShaderProgram_Create(fixture.device, &computeDesc);
@@ -105,7 +105,7 @@ extern "C" void Test_ShaderProgram_Run(TestContext* ctx)
 
         Fluxion_ShaderProgram_SetCacheDirectory(directory.string().c_str());
 
-        FluxionShaderProgramDesc cachedDesc = { 0 };
+        FluxionShaderProgramDesc cachedDesc = {};
         cachedDesc.debugName = "Test_ShaderProgram.Cached";
         cachedDesc.vertexSource = kVertexSource;
         cachedDesc.fragmentSource = kFragmentSource;

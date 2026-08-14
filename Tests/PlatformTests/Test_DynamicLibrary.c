@@ -11,7 +11,7 @@ void Test_DynamicLibrary_Run(TestContext* ctx)
     FluxionDynamicLibrary library;
     TEST_CHECK(ctx, Fluxion_Platform_LoadDynamicLibrary(&library, FLUXION_TEST_PLUGIN_PATH));
 
-    void* symbol = Fluxion_Platform_GetSymbol(&library, "TestPlugin_GetMagicNumber");
+    FluxionSymbolAddress symbol = Fluxion_Platform_GetSymbol(&library, "TestPlugin_GetMagicNumber");
     TEST_CHECK(ctx, symbol != NULL);
 
     if (symbol)

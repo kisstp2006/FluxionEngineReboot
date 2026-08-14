@@ -65,7 +65,7 @@ extern "C" void Test_Material_Run(TestContext* ctx)
 
     NullRHIFixture fixture = CreateNullRHIFixture();
 
-    FluxionShaderProgramDesc programDesc = { 0 };
+    FluxionShaderProgramDesc programDesc = {};
     programDesc.debugName = "Test_Material.Program";
     programDesc.vertexSource = kVertexSource;
     programDesc.fragmentSource = kFragmentSource;

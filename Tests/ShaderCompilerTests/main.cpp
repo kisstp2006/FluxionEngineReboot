@@ -3,6 +3,7 @@
 #include <cstdio>
 
 void Test_Lexer_Run(TestContext& ctx);
+void Test_Preprocessor_Run(TestContext& ctx);
 void Test_Parser_Run(TestContext& ctx);
 void Test_Semantic_Run(TestContext& ctx);
 void Test_HLSLBackend_Run(TestContext& ctx);
@@ -22,6 +23,7 @@ int main()
     std::fprintf(stderr, "Running ShaderCompilerTests...\n");
 
     Test_Lexer_Run(ctx);
+    Test_Preprocessor_Run(ctx);
     Test_Parser_Run(ctx);
     Test_Semantic_Run(ctx);
     Test_HLSLBackend_Run(ctx);

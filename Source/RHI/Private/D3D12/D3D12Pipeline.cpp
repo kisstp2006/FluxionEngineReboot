@@ -269,8 +269,14 @@ bool Fluxion_RHID3D12_LoadPipelineCacheFromFile(FluxionRHIDeviceHandle device, c
     std::vector<u8> data;
     if (!Fluxion_RHIPipelineCacheFile_Read(path, Fluxion_RHID3D12_PipelineCacheIdentity(deviceState), &data)) return false;
 
+    // Handed to the device state first, because the library will keep
+    // reading out of whatever pointer it is given for as long as it
+    // exists -- a local buffer would be gone before the first lookup.
+    deviceState->pipelineLibraryBlob = std::move(data);
+
     bool seeded = false;
-    if (!Fluxion_RHID3D12_EnsurePipelineLibrary(deviceState, data.data(), data.size(), &seeded)) return false;
+    if (!Fluxion_RHID3D12_EnsurePipelineLibrary(deviceState, deviceState->pipelineLibraryBlob.data(), deviceState->pipelineLibraryBlob.size(), &seeded)) return false;
+    if (!seeded) deviceState->pipelineLibraryBlob.clear();
     return seeded;
 }
 

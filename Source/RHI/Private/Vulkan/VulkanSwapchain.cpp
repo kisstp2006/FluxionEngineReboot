@@ -317,6 +317,19 @@ void Fluxion_RHIVulkan_SwapchainGetExtent(FluxionRHISwapchainHandle swapchain, u
         return;
     }
     FluxionRHIVulkanSwapchain* sc = &s_swapchains[swapchain.index];
+
+    // With no swapchain object there is no extent to report, and the
+    // last one's size is the worst possible answer: it looks entirely
+    // ordinary, so a caller sizes its render area and its own attachments
+    // to a surface that does not exist and draws into nothing. Reporting
+    // zero is what lets "skip this frame" be noticed at all.
+    if (sc->swapchain == VK_NULL_HANDLE)
+    {
+        if (outWidth) *outWidth = 0;
+        if (outHeight) *outHeight = 0;
+        return;
+    }
+
     if (outWidth) *outWidth = sc->width;
     if (outHeight) *outHeight = sc->height;
 }

@@ -21,9 +21,12 @@ void Fluxion_Platform_UnloadDynamicLibrary(FluxionDynamicLibrary* library)
     }
 }
 
-void* Fluxion_Platform_GetSymbol(FluxionDynamicLibrary* library, const char* symbolName)
+FluxionSymbolAddress Fluxion_Platform_GetSymbol(FluxionDynamicLibrary* library, const char* symbolName)
 {
-    return (void*)GetProcAddress((HMODULE)library->handle, symbolName);
+    // GetProcAddress already returns a function pointer, so this stays a
+    // conversion between two function pointer types -- the kind the
+    // language does define.
+    return (FluxionSymbolAddress)GetProcAddress((HMODULE)library->handle, symbolName);
 }
 
 bool Fluxion_Platform_GetDynamicLibraryFileName(const char* baseName, char* outBuffer, usize bufferSize)

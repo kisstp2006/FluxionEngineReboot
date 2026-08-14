@@ -1,6 +1,7 @@
 #include <Fluxion/Platform/DynamicLibrary.h>
 
 #include <dlfcn.h>
+#include <string.h>
 #include <stdio.h>
 
 bool Fluxion_Platform_LoadDynamicLibrary(FluxionDynamicLibrary* library, const char* path)
@@ -18,9 +19,16 @@ void Fluxion_Platform_UnloadDynamicLibrary(FluxionDynamicLibrary* library)
     }
 }
 
-void* Fluxion_Platform_GetSymbol(FluxionDynamicLibrary* library, const char* symbolName)
+FluxionSymbolAddress Fluxion_Platform_GetSymbol(FluxionDynamicLibrary* library, const char* symbolName)
 {
-    return dlsym(library->handle, symbolName);
+    // dlsym hands back void*, which C does not allow converting to a
+    // function pointer -- POSIX requires the two to be interchangeable
+    // anyway, and copying the representation says exactly that without
+    // asking the language for a conversion it does not define.
+    void* raw = dlsym(library->handle, symbolName);
+    FluxionSymbolAddress symbol = NULL;
+    memcpy(&symbol, &raw, sizeof(symbol));
+    return symbol;
 }
 
 bool Fluxion_Platform_GetDynamicLibraryFileName(const char* baseName, char* outBuffer, usize bufferSize)

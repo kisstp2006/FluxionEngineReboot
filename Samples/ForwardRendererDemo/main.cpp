@@ -41,6 +41,7 @@
 #include <Fluxion/Scene/Scene.h>
 #include <Fluxion/Scene/SceneScript.hpp>
 #include <Fluxion/Script/Script.hpp>
+#include <Fluxion/ShaderCompiler/Backends/DXC/DXCAdapter.hpp>
 
 #include <cmath>
 #include <cstddef>
@@ -146,6 +147,13 @@ FluxionMat4 TransposeForUpload(FluxionMat4 m)
 
 } // namespace
 
+// Told apart from a real failure on purpose. A machine with no display,
+// no GPU, or no driver cannot answer whether this program works, and
+// reporting that as a failure would make an automated run say "your
+// change is broken" when it means "not here". ctest reads this particular
+// code as skipped.
+static const int kExitEnvironmentCannotRun = 77;
+
 int main(int argc, char** argv)
 {
     // --graphics=vulkan (default) | --graphics=opengl | --graphics=d3d12 --
@@ -154,11 +162,21 @@ int main(int argc, char** argv)
     // CompileStage is what branches per backend now (GLSL text for
     // OpenGL, DXIL for D3D12, SPIR-V for Vulkan/Null), not this file.
     FluxionRHIBackendType backendType = FLUXION_RHI_BACKEND_VULKAN;
+
+    // --frames=N stops after N frames and exits the same way closing the
+    // window does, so an automated run reaches the shutdown path rather
+    // than being killed partway through it. Everything that only happens
+    // on the way out -- saving the pipeline cache, releasing GPU objects,
+    // draining the job system -- is only covered if a run can end by
+    // itself. 0 means run until asked to stop, which is what a person
+    // wants.
+    u64 frameLimit = 0;
     for (int i = 1; i < argc; ++i)
     {
         if (std::strcmp(argv[i], "--graphics=opengl") == 0) backendType = FLUXION_RHI_BACKEND_OPENGL;
         else if (std::strcmp(argv[i], "--graphics=vulkan") == 0) backendType = FLUXION_RHI_BACKEND_VULKAN;
         else if (std::strcmp(argv[i], "--graphics=d3d12") == 0) backendType = FLUXION_RHI_BACKEND_D3D12;
+        else if (std::strncmp(argv[i], "--frames=", 9) == 0) frameLimit = std::strtoull(argv[i] + 9, nullptr, 10);
     }
     const char* backendName = backendType == FLUXION_RHI_BACKEND_OPENGL ? "OpenGL" : backendType == FLUXION_RHI_BACKEND_D3D12 ? "D3D12" : "Vulkan";
     FluxionEventQueue queue;
@@ -190,20 +208,25 @@ int main(int argc, char** argv)
     windowDesc.height = 600;
     windowDesc.resizable = true;
     FluxionWindowHandle window = Fluxion_Window_Create(&windowDesc);
+    if (!FLUXION_HANDLE_IS_VALID(window))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "No window could be created -- this machine has no display available.");
+        return kExitEnvironmentCannotRun;
+    }
 
     FluxionRHIInstanceDesc instanceDesc = { "ForwardRendererDemo", true };
     FluxionRHIInstanceHandle instance = Fluxion_RHI_CreateInstance(backendType, &instanceDesc);
     if (!FLUXION_HANDLE_IS_VALID(instance))
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create a %s instance -- no usable %s loader/driver on this machine.", backendName, backendName);
-        return 1;
+        return kExitEnvironmentCannotRun;
     }
 
     FluxionRHIAdapterHandle adapter;
     if (Fluxion_RHI_EnumerateAdapters(instance, &adapter, 1) == 0)
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "No %s adapter found.", backendName);
-        return 1;
+        return kExitEnvironmentCannotRun;
     }
     FluxionRHIAdapterInfo adapterInfo;
     Fluxion_RHI_GetAdapterInfo(adapter, &adapterInfo);
@@ -212,6 +235,21 @@ int main(int argc, char** argv)
     FluxionRHIDeviceDesc deviceDesc = { FLUXION_RHI_CAPABILITY_NONE };
     FluxionRHIDeviceHandle device = Fluxion_RHI_CreateDevice(adapter, &deviceDesc);
     FluxionRHIQueueHandle graphicsQueue = Fluxion_RHI_GetQueue(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
+
+    // Per backend, because the file records which one wrote it and would
+    // be refused anyway -- one path per backend just avoids three
+    // processes fighting over the same name.
+    char pipelineCachePath[128];
+    std::snprintf(pipelineCachePath, sizeof(pipelineCachePath), "ForwardRendererDemo.%s.pipelinecache", backendName);
+
+    // Before any pipeline exists. A driver's cache object is seeded at
+    // creation and cannot be reseeded afterwards, so loading later would
+    // silently do nothing -- the first pipeline creation is what brings
+    // the cache into existence.
+    if (Fluxion_RHI_Device_LoadPipelineCacheFromFile(device, pipelineCachePath))
+        FLUXION_LOG_INFO("ForwardRendererDemo", "Pipeline cache loaded from %s", pipelineCachePath);
+    else
+        FLUXION_LOG_INFO("ForwardRendererDemo", "No usable pipeline cache at %s -- starting cold.", pipelineCachePath);
 
     FluxionRHISwapchainDesc swapchainDesc;
     swapchainDesc.width = windowDesc.width;
@@ -420,7 +458,16 @@ int main(int argc, char** argv)
     FluxionShaderProgramHandle cubeProgram = Fluxion_ShaderProgram_Create(device, &cubeProgramDesc);
     if (!FLUXION_HANDLE_IS_VALID(cubeProgram))
     {
-        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube ShaderProgram (see prior dxc/compile errors above).");
+        // A missing shader compiler and a broken shader both end up
+        // here, and they are not the same thing: one says this machine
+        // cannot build the sample, the other says the sample is wrong.
+        // Only the second is a failure worth reporting as one.
+        if (!Fluxion::ShaderCompiler::IsDXCAvailable())
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "No shader compiler (dxc) on this machine -- the cube's shaders cannot be built here.");
+            std::exit(kExitEnvironmentCannotRun);
+        }
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube ShaderProgram (see prior compile errors above).");
         std::exit(1);
     }
 
@@ -583,6 +630,11 @@ int main(int argc, char** argv)
     // second F while the first is still going would leave the first with
     // nobody to apply it.
     FluxionShaderProgramReloadJob* shaderReload = nullptr;
+    u64 framesDrawn = 0;
+
+    // Set for the single frame that follows a resize, when the depth
+    // texture has been replaced and the new one has never been used.
+    bool depthIsUndefined = false;
 
     while (running)
     {
@@ -603,6 +655,7 @@ int main(int argc, char** argv)
             if (event.type == FLUXION_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
         }
         if (Fluxion_Input_WasKeyPressed(FLUXION_KEY_ESCAPE)) running = false;
+        if (frameLimit != 0 && ++framesDrawn >= frameLimit) running = false;
         if (!running) break;
 
         // Edit a file in Scripts/, press R, and the cube goes on turning
@@ -714,6 +767,12 @@ int main(int argc, char** argv)
         // step it cannot recover from.
         Fluxion_Time_BeginFrame();
 
+        // Acquiring comes first, and the extent is read only afterwards.
+        // A backend is free to rebuild the swapchain during the acquire
+        // -- that is where a resize is actually noticed -- so asking
+        // beforehand answers about the swapchain that is being replaced,
+        // and every size-derived decision below would be made about a
+        // frame that no longer exists.
         u32 imageIndex = Fluxion_RHI_Swapchain_AcquireNextImage(swapchain, noSemaphore);
 
         // The swapchain's actual current image extent (queried from the
@@ -724,6 +783,51 @@ int main(int argc, char** argv)
         // exactly match the acquired image.
         u32 surfaceWidth = 0, surfaceHeight = 0;
         Fluxion_RHI_Swapchain_GetExtent(swapchain, &surfaceWidth, &surfaceHeight);
+
+        // A minimised window has no drawable surface, so there is neither
+        // anything to render into nor a size to give the depth target.
+        // Nothing was acquired in that case either, so the frame is
+        // simply skipped -- presenting here would present an image that
+        // was never handed out.
+        if (surfaceWidth == 0 || surfaceHeight == 0)
+        {
+            continue;
+        }
+
+        // The depth target has to be at least as large as the area being
+        // drawn into. The swapchain follows the window on its own; this
+        // one does not, so a window that grew leaves it smaller than the
+        // render area -- not a subtle mismatch but an outright invalid
+        // draw, which Vulkan reports and stops on.
+        if (surfaceWidth != depthTextureDesc.width || surfaceHeight != depthTextureDesc.height)
+        {
+            // Nothing is in flight here, so the old texture can go
+            // straight away: this loop waits on its own fence before the
+            // next iteration starts, which leaves the GPU idle at this
+            // point every frame. Waiting again here would not merely be
+            // redundant -- a fence that has been waited and reset is
+            // pointing at the next submission, one that has not been made
+            // yet, so waiting on it blocks until the timeout.
+            Fluxion_RHI_DestroyTextureView(depthView);
+            Fluxion_RHI_DestroyTexture(depthTexture);
+
+            depthTextureDesc.width = surfaceWidth;
+            depthTextureDesc.height = surfaceHeight;
+            depthTexture = Fluxion_RHI_CreateTexture(device, &depthTextureDesc);
+            depthViewDesc.texture = depthTexture;
+            depthView = Fluxion_RHI_CreateTextureView(device, &depthViewDesc);
+
+            // The new texture starts undefined, so this frame has to
+            // import it as such -- see the import below. Transitioning it
+            // here instead would mean a command list and a submit of its
+            // own, in the middle of a frame whose pacing is built on one
+            // submit per frame; the graph already emits exactly this
+            // barrier for free.
+            depthIsUndefined = true;
+
+            FLUXION_LOG_INFO("ForwardRendererDemo", "Depth target resized to %ux%u", surfaceWidth, surfaceHeight);
+        }
+
         FluxionRHITextureHandle backbuffer = Fluxion_RHI_Swapchain_GetTexture(swapchain, imageIndex);
 
         FluxionRHITextureViewDesc backbufferViewDesc = { backbuffer, swapchainDesc.format, 0, 1, 0, 1 };
@@ -770,18 +874,21 @@ int main(int argc, char** argv)
         // there"), which is exactly what's wanted anyway since
         // "ForwardOpaquePass" clears both attachments every frame.
         //
-        // The depth texture has none of that ambiguity -- it's one single
-        // persistent resource across the whole run, not N cycling
-        // swapchain images, so its real current state is always exactly
-        // known: DEPTH_WRITE, set once by the upload command list before
-        // this loop even starts (see preCopyBarriers above) and left there
-        // by every subsequent Execute. D3D12's barrier validation (unlike
-        // Vulkan's UNDEFINED-is-always-valid layout) requires the declared
-        // "before" state to actually match, so claiming UNDEFINED here
-        // every frame is a real mismatch, not just a conservative no-op.
+        // The depth texture has none of that ambiguity: at any moment
+        // there is exactly one of it, and its real state is always known.
+        // DEPTH_WRITE for an ordinary frame -- set by the upload command
+        // list before this loop starts and left there by every Execute --
+        // and UNDEFINED for the one frame after a resize replaced it,
+        // because a texture that was created moments ago has never been
+        // anything else. D3D12's barrier validation (unlike Vulkan's
+        // UNDEFINED-is-always-valid layout) requires the declared "before"
+        // state to actually match, so this is not a distinction that could
+        // be skipped by always claiming one or the other.
         FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(device);
         Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Color0", backbuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
-        Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Depth", depthTexture, FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE);
+        Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Depth", depthTexture,
+            depthIsUndefined ? FLUXION_RHI_RESOURCE_STATE_UNDEFINED : FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE);
+        depthIsUndefined = false;
         Fluxion_RenderGraph_AddPassFromRegistry(graph, "ForwardOpaquePass", Fluxion_Renderer_GetForwardOpaquePassUserData(renderer));
 
         Fluxion_Renderer_BeginFrame(renderer, frameView);
@@ -870,6 +977,16 @@ int main(int argc, char** argv)
         Fluxion_RHI_DestroyFence(frameFences[i]);
         Fluxion_RHI_DestroyCommandList(commandLists[i]);
     }
+    // Before anything built this run is destroyed. A backend whose cache
+    // is a device-level object would not care, but one that reads the
+    // pipelines themselves has nothing left to read once they are gone --
+    // and it cannot report that as an error, because "no pipelines" is
+    // also what a run that drew nothing looks like.
+    if (Fluxion_RHI_Device_SavePipelineCacheToFile(device, pipelineCachePath))
+        FLUXION_LOG_INFO("ForwardRendererDemo", "Pipeline cache saved to %s", pipelineCachePath);
+    else
+        FLUXION_LOG_WARN("ForwardRendererDemo", "Pipeline cache was not saved to %s", pipelineCachePath);
+
     Fluxion_Renderer_Destroy(renderer);
     Fluxion_RenderPipeline_Destroy(cubePipeline);
     Fluxion_MeshBuffer_Destroy(cubeMesh);

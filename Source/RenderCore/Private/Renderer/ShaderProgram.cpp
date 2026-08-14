@@ -57,6 +57,12 @@ struct FluxionShaderProgramRecord
     FluxionMaterialParameterInfo materialParams[FLUXION_RENDERER_MAX_MATERIAL_PARAMETERS]{};
     u32 materialParamCount = 0;
     u32 materialUniformBufferSize = 0;
+
+    // Kept past creation because a pipeline built from this program needs
+    // a name that means the same thing in the next run, and this is the
+    // only part of a program that a caller chose rather than the compiler
+    // deriving. A reload does not touch it.
+    std::string debugName;
 };
 
 FluxionShaderProgramRecord s_programs[FLUXION_RENDERER_MAX_SHADER_PROGRAMS];
@@ -581,6 +587,7 @@ extern "C" FluxionShaderProgramHandle Fluxion_ShaderProgram_Create(FluxionRHIDev
 
     record.alive = true;
     record.generation = s_programs[index].generation;
+    record.debugName = desc->debugName != nullptr ? desc->debugName : "";
     s_programs[index] = record;
 
     FluxionShaderProgramHandle handle = { index, s_programs[index].generation };
@@ -693,6 +700,12 @@ extern "C" FluxionRHIShaderHandle FluxionRendererInternal_ShaderProgram_GetVerte
     const FluxionShaderProgramRecord* record = Resolve(program);
     FluxionRHIShaderHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     return record != nullptr ? record->vertexShader : invalid;
+}
+
+extern "C" const char* FluxionRendererInternal_ShaderProgram_GetDebugName(FluxionShaderProgramHandle program)
+{
+    const FluxionShaderProgramRecord* record = Resolve(program);
+    return record != nullptr ? record->debugName.c_str() : "";
 }
 
 extern "C" FluxionRHIShaderHandle FluxionRendererInternal_ShaderProgram_GetFragmentShader(FluxionShaderProgramHandle program)

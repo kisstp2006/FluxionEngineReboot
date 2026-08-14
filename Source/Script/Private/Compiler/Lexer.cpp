@@ -320,9 +320,31 @@ private:
 
 } // namespace
 
+// A UTF-8 BOM is an encoding marker rather than source text, and the
+// editors that write one do not display it. Lexing it as a character
+// produces "unexpected character" on line 1 column 1 of a file that
+// looks, to whoever wrote it, completely ordinary.
+bool StartsWithUtf8Bom(const std::string& source)
+{
+    return source.size() >= 3 &&
+           (unsigned char)source[0] == 0xEFu &&
+           (unsigned char)source[1] == 0xBBu &&
+           (unsigned char)source[2] == 0xBFu;
+}
+
 std::vector<Token> Lex(const std::string& source, const std::string& fileName, DiagnosticList& diagnostics)
 {
-    LexerState lexer(source, fileName, diagnostics);
+    if (!StartsWithUtf8Bom(source))
+    {
+        LexerState lexer(source, fileName, diagnostics);
+        return lexer.Run();
+    }
+
+    // Dropped rather than skipped over, so that reported columns match
+    // what an editor shows -- it does not count the marker either. The
+    // copy is the price of a file that has one, and only that file.
+    const std::string withoutBom = source.substr(3);
+    LexerState lexer(withoutBom, fileName, diagnostics);
     return lexer.Run();
 }
 

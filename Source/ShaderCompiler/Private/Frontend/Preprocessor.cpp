@@ -94,6 +94,22 @@ public:
         }
 
         std::string joined = JoinContinuations(source);
+
+        // A UTF-8 BOM here is worse than one reaching the lexer: it sits
+        // in front of the '#' of a first-line directive, so the line
+        // stops being recognised as one at all and is copied into the
+        // output verbatim. An #include on line 1 then silently does
+        // nothing, and the failure surfaces much later as a missing
+        // definition. Every included file goes through here too, so one
+        // check covers the whole tree.
+        if (joined.size() >= 3 &&
+            (unsigned char)joined[0] == 0xEFu &&
+            (unsigned char)joined[1] == 0xBBu &&
+            (unsigned char)joined[2] == 0xBFu)
+        {
+            joined.erase(0, 3);
+        }
+
         std::ostringstream out;
         std::istringstream in(joined);
         std::string line;

@@ -58,7 +58,7 @@ extern "C" {
 // identical descs -- see RHI.h).
 static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeFrameLayoutDesc(void)
 {
-    FluxionRHIBindGroupLayoutDesc desc = { 0 };
+    FluxionRHIBindGroupLayoutDesc desc = { };
     desc.entries[0].binding = 0;
     desc.entries[0].type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
     desc.entries[0].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_VERTEX | FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
@@ -76,7 +76,7 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeFrameLay
 // has no such restriction and no per-element-stride ambiguity either.
 static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeObjectLayoutDesc(void)
 {
-    FluxionRHIBindGroupLayoutDesc desc = { 0 };
+    FluxionRHIBindGroupLayoutDesc desc = { };
     desc.entries[0].binding = 0;
     desc.entries[0].type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
     desc.entries[0].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_VERTEX | FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
@@ -192,6 +192,14 @@ FluxionRHIShaderHandle FluxionRendererInternal_ShaderProgram_GetVertexShader(Flu
 FluxionRHIShaderHandle FluxionRendererInternal_ShaderProgram_GetFragmentShader(FluxionShaderProgramHandle program);
 FluxionRHIShaderHandle FluxionRendererInternal_ShaderProgram_GetComputeShader(FluxionShaderProgramHandle program);
 FluxionRHIBindGroupLayoutHandle FluxionRendererInternal_ShaderProgram_GetMaterialBindGroupLayout(FluxionShaderProgramHandle program);
+
+// The name this program was created with, or "" if it was created
+// without one. Never NULL. Used to build a pipeline name that means the
+// same thing in the next run of the same build -- a pool index would not,
+// and a driver's pipeline library keyed on one would never find anything
+// again. A reload deliberately does not change it: the program is still
+// the same program, which is the whole point of reloading in place.
+const char* FluxionRendererInternal_ShaderProgram_GetDebugName(FluxionShaderProgramHandle program);
 
 // Copies up to maxParams entries of this program's MATERIAL-group
 // uniform members + textures into outParams, returning the number

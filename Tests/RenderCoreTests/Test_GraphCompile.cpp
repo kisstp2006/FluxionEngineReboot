@@ -221,14 +221,40 @@ extern "C" void Test_GraphCompile_Run(TestContext* ctx)
         TEST_CHECK(ctx, log.count == 3);
         TEST_CHECK(ctx, log.count == 3 && log.order[0] == 0 && log.order[1] == 1 && log.order[2] == 2);
 
+        // A named file rather than a nameless one, so what was written
+        // can be looked at afterwards. DumpDot returning true only says
+        // it thought it succeeded; a version that wrote nothing at all
+        // would say exactly the same thing.
+        const char* dotPath = "Test_GraphCompile.dot";
         bool dumped = false;
-        FILE* dotFile = tmpfile();
+        long dotSize = 0;
+
+        FILE* dotFile = nullptr;
+#if defined(_MSC_VER)
+        if (fopen_s(&dotFile, dotPath, "wb") != 0) dotFile = nullptr;
+#else
+        dotFile = fopen(dotPath, "wb");
+#endif
         if (dotFile)
         {
             dumped = Fluxion_RenderGraph_DumpDot(graph, dotFile);
             fclose(dotFile);
+
+#if defined(_MSC_VER)
+            if (fopen_s(&dotFile, dotPath, "rb") != 0) dotFile = nullptr;
+#else
+            dotFile = fopen(dotPath, "rb");
+#endif
+            if (dotFile)
+            {
+                fseek(dotFile, 0, SEEK_END);
+                dotSize = ftell(dotFile);
+                fclose(dotFile);
+            }
         }
         TEST_CHECK(ctx, dumped);
+        TEST_CHECK(ctx, dotSize > 0);
+        remove(dotPath);
 
         Fluxion_RenderGraph_Destroy(graph);
     }

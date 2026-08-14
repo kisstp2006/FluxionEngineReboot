@@ -171,18 +171,22 @@ void Test_ShaderCache_Run(TestContext& ctx)
             // A variant that failed to compile would also report "not
             // cached", and the check would pass for the wrong reason --
             // which is how a key test ends up proving nothing.
+            // Named apart from the outer pair on purpose: this lambda
+            // must report on its own compilation, and a name that
+            // shadowed the outer one would still compile if the capture
+            // were ever changed to take them by reference instead.
             auto missedAndCompiled = [&ctx, &cache](const std::string& text, const ArtifactRequest& request)
             {
-                DiagnosticList diagnostics;
-                ShaderCacheReport report;
-                auto result = CompileArtifactCached(text, request, cache, diagnostics, report);
+                DiagnosticList variantDiagnostics;
+                ShaderCacheReport variantReport;
+                auto result = CompileArtifactCached(text, request, cache, variantDiagnostics, variantReport);
                 if (!result.IsOk())
                 {
-                    for (const Diagnostic& d : diagnostics.entries)
+                    for (const Diagnostic& d : variantDiagnostics.entries)
                         std::fprintf(stderr, "  %s:%u: %s\n", d.location.file.c_str(), d.location.line, d.message.c_str());
                 }
                 TEST_CHECK(ctx, result.IsOk());
-                TEST_CHECK(ctx, !report.wasCached);
+                TEST_CHECK(ctx, !variantReport.wasCached);
             };
 
             // A different source.

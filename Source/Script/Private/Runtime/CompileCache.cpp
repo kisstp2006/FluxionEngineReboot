@@ -4,12 +4,20 @@
 
 #include <Fluxion/Script/Runtime/ModuleSerializer.hpp>
 
+#include <atomic>
 #include <cstdio>
 #include <filesystem>
+#include <string>
 #include <fstream>
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace Fluxion::Script
 {
@@ -127,7 +135,13 @@ std::string KeyFileName(u64 key)
 
 // Counted rather than timed: a run that is quicker than the last one is
 // not evidence of anything, and these are.
-CompileCacheCounters g_counters;
+//
+// Atomic because compiling is something a caller is free to do from more
+// than one thread, and a plain ++ from two of them loses counts -- which
+// would show up as a cache that looks slightly less effective than it is,
+// with nothing to suggest the number itself is wrong.
+std::atomic<u64> g_compiled{ 0 };
+std::atomic<u64> g_loaded{ 0 };
 
 bool ReadWholeFile(const std::filesystem::path& path, std::vector<u8>& outBytes)
 {
@@ -154,8 +168,17 @@ bool ReadWholeFile(const std::filesystem::path& path, std::vector<u8>& outBytes)
 // like any other file it cannot account for.
 bool WriteWholeFile(const std::filesystem::path& path, const std::vector<u8>& bytes)
 {
+    // The staging name carries the writing process's own id. Two builds
+    // caching the same module at once would otherwise choose the same
+    // staging path and rename each other's half-written file into place,
+    // which is the exact outcome staging exists to prevent.
     std::filesystem::path staging = path;
-    staging += ".writing";
+    staging += ".writing.";
+#if defined(_WIN32)
+    staging += std::to_string((unsigned long)_getpid());
+#else
+    staging += std::to_string((unsigned long)getpid());
+#endif
 
     {
         std::ofstream file(staging, std::ios::binary | std::ios::trunc);
@@ -239,14 +262,14 @@ Fluxion::Foundation::Result<CompiledModule> CompileCached(const std::string& sou
         CompiledModule loaded;
         if (TryLoad(path, key, loaded))
         {
-            ++g_counters.loaded;
+            g_loaded.fetch_add(1, std::memory_order_relaxed);
             outReport.wasCached = true;
             return ResultType::Ok(std::move(loaded));
         }
     }
 
     auto compiled = Compile(source, options, outDiagnostics);
-    ++g_counters.compiled;
+    g_compiled.fetch_add(1, std::memory_order_relaxed);
     if (!compiled.IsOk()) return ResultType::Error(compiled.Status().code, compiled.Status().message);
 
     if (usable && !cache.readOnly)
@@ -263,6 +286,12 @@ Fluxion::Foundation::Result<CompiledModule> CompileCached(const std::string& sou
     return ResultType::Ok(std::move(compiled.Value()));
 }
 
-CompileCacheCounters GetCompileCacheCounters() { return g_counters; }
+CompileCacheCounters GetCompileCacheCounters()
+{
+    CompileCacheCounters snapshot;
+    snapshot.compiled = g_compiled.load(std::memory_order_relaxed);
+    snapshot.loaded = g_loaded.load(std::memory_order_relaxed);
+    return snapshot;
+}
 
 } // namespace Fluxion::Script
