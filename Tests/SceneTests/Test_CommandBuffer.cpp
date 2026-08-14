@@ -42,7 +42,6 @@ bool SameObject(FluxionGameObjectHandle a, FluxionGameObjectHandle b)
 
 void Test_CommandBuffer_Run(TestContext& ctx)
 {
-    Fluxion_Reflection_Init();
     RegisterMark();
 
     // --- Nothing happens until playback ---------------------------------
@@ -335,6 +334,4 @@ void Test_CommandBuffer_Run(TestContext& ctx)
 
         Fluxion_Scene_Destroy(scene);
     }
-
-    Fluxion_Reflection_Shutdown();
 }

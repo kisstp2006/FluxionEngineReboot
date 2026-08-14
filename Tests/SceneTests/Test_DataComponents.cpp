@@ -4,6 +4,7 @@
 #include <Fluxion/Scene/EntityCommandBuffer.h>
 #include <Fluxion/Scene/EntityQuery.h>
 #include <Fluxion/Scene/Scene.h>
+#include <Fluxion/Scene/Transform.h>
 #include <Fluxion/Scene/World.hpp>
 
 #include <cstring>
@@ -141,7 +142,6 @@ void CheckStorageAgrees(TestContext& ctx, FluxionSceneHandle scene, const Fluxio
 
 void Test_DataComponents_Run(TestContext& ctx)
 {
-    Fluxion_Reflection_Init();
     RegisterComponentTypes();
 
     // --- Attaching, reading, and what a fresh component holds -----------
@@ -197,21 +197,25 @@ void Test_DataComponents_Run(TestContext& ctx)
             TEST_CHECK(ctx, moved != nullptr && moved->x == 1.0f && moved->y == 2.0f && moved->z == 3.0f);
         }
 
-        // Both types are reported as this object's, and nothing else is.
+        // Both types are reported as this object's -- and so is the
+        // transform, which every object carries from the moment it is
+        // made and which is counted here like anything else.
         {
             FluxionTypeId carried[FLUXION_SCENE_MAX_COMPONENT_TYPES];
             const u32 carriedCount = Fluxion_GameObject_GetComponentTypes(scene, object, carried, FLUXION_SCENE_MAX_COMPONENT_TYPES);
             bool sawPosition = false;
             bool sawTag = false;
+            bool sawTransform = false;
 
-            TEST_CHECK(ctx, carriedCount == 2);
-            TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, object, nullptr, 0) == 2);
+            TEST_CHECK(ctx, carriedCount == 3);
+            TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, object, nullptr, 0) == 3);
             for (u32 i = 0; i < carriedCount; ++i)
             {
                 if (carried[i] == PositionType()) sawPosition = true;
                 if (carried[i] == TagType()) sawTag = true;
+                if (carried[i] == Fluxion_Transform_TypeId()) sawTransform = true;
             }
-            TEST_CHECK(ctx, sawPosition && sawTag);
+            TEST_CHECK(ctx, sawPosition && sawTag && sawTransform);
         }
 
         // A type nothing was ever attached for is carried by nobody,
@@ -365,6 +369,4 @@ void Test_DataComponents_Run(TestContext& ctx)
         Fluxion_Scene_Destroy(second);
         Fluxion_Scene_Destroy(third);
     }
-
-    Fluxion_Reflection_Shutdown();
 }

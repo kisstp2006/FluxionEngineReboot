@@ -24,6 +24,7 @@
 #include <Fluxion/Application/Time/Time.h>
 #include <Fluxion/Application/Window/Window.h>
 #include <Fluxion/Core/Jobs/JobSystem.h>
+#include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/Foundation/Defines.h>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/Foundation/Memory/MemoryTracker.h>
@@ -183,6 +184,11 @@ int main(int argc, char** argv)
     // The host owns diagnostics subsystems, same as it owns the job
     // system: modules below only offer statistics when this is on.
     Fluxion_MemoryTracker_Init();
+
+    // The type registry, before anything makes a scene. Every object a
+    // scene holds carries a transform, and the storage takes that
+    // component's size from here -- so a scene cannot be made without it.
+    Fluxion_Reflection_Init();
 
     FluxionEventQueue queue;
     Fluxion_EventQueue_Init(&queue, NULL, 256);
@@ -1106,6 +1112,7 @@ int main(int argc, char** argv)
 
     Fluxion_Window_Destroy(window);
     Fluxion_JobSystem_Shutdown();
+    Fluxion_Reflection_Shutdown();
     Fluxion_MemoryTracker_Shutdown(); // logs a warning per domain with bytes still standing -- a lightweight leak signal
     Fluxion_WindowSystem_Shutdown();
     Fluxion_Time_Shutdown();

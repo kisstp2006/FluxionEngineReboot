@@ -181,6 +181,21 @@ FluxionMat4 Fluxion_GameObject_GetWorldMatrix(FluxionSceneHandle scene, FluxionG
 // The object's own translation, rotation and scale alone.
 FluxionMat4 Fluxion_GameObject_GetLocalMatrix(FluxionSceneHandle scene, FluxionGameObjectHandle object);
 
+// What the world matrix was one turn ago.
+//
+// Kept because a renderer that compares one frame against the last -- for
+// motion blur, for reprojection, for anything temporal -- needs to know
+// where a thing was, and by the time it asks, the only copy of that would
+// otherwise have been overwritten.
+//
+// Exactly one turn behind, always: refreshed for every object at the
+// start of each turn's transform update, whether that object moved or
+// not, so a thing that has stopped reports no motion rather than the
+// motion it had two turns ago. Before the first turn it equals the
+// object's starting world matrix, so nothing reports motion for having
+// just been created.
+FluxionMat4 Fluxion_GameObject_GetPreviousWorldMatrix(FluxionSceneHandle scene, FluxionGameObjectHandle object);
+
 // --- Data components ----------------------------------------------------
 
 // A data component is a plain struct attached to a game object: no

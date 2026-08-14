@@ -36,7 +36,6 @@ void Test_World_Run(TestContext& ctx)
     using Fluxion::Scene::Entity;
     using Fluxion::Scene::World;
 
-    Fluxion_Reflection_Init();
     RegisterVelocity();
 
     // --- The C++ names reach the same objects as the C ones -------------
@@ -229,6 +228,4 @@ void Test_World_Run(TestContext& ctx)
         TEST_CHECK(ctx, world.EntityCount() == 1);
         TEST_CHECK(ctx, world.FindByUUID(id).IsValid());
     }
-
-    Fluxion_Reflection_Shutdown();
 }

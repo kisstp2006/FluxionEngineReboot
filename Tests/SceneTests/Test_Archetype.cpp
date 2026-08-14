@@ -5,6 +5,7 @@
 #include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/Scene/EntityQuery.h>
 #include <Fluxion/Scene/Scene.h>
+#include <Fluxion/Scene/Transform.h>
 
 #include <cstring>
 
@@ -159,7 +160,6 @@ void CheckBulkAgrees(TestContext& ctx, FluxionSceneHandle scene, const FluxionEn
 
 void Test_Archetype_Run(TestContext& ctx)
 {
-    Fluxion_Reflection_Init();
     RegisterTypes();
 
     // --- The order components were given in must not matter -------------
@@ -233,7 +233,9 @@ void Test_Archetype_Run(TestContext& ctx)
             TEST_CHECK(ctx, ((const TestBeta*)Fluxion_GameObject_GetComponent(scene, entity, BetaType()))->value == 222u);
         }
 
-        TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == 3);
+        // Four, not three: the transform every entity carries is counted
+        // here like anything else.
+        TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == 4);
 
         // Taking one away moves everything again, and the two that stay
         // must keep their values -- including the one that was NOT next to
@@ -243,13 +245,19 @@ void Test_Archetype_Run(TestContext& ctx)
         TEST_CHECK(ctx, ((const TestAlpha*)Fluxion_GameObject_GetComponent(scene, entity, AlphaType()))->value == 111u);
         TEST_CHECK(ctx, ((const TestGamma*)Fluxion_GameObject_GetComponent(scene, entity, GammaType()))->value == 3.5f);
 
-        // Down to nothing, and back up. An entity carrying nothing is
-        // still somewhere -- it belongs to the grouping that carries
-        // nothing -- so this must not be a special case anywhere.
+        // Down to nothing that was attached, and back up. What is left is
+        // the transform, which is part of the entity rather than attached
+        // to it -- so "carrying nothing" is one type, not zero, and that
+        // must not be a special case anywhere.
         TEST_CHECK(ctx, Fluxion_GameObject_RemoveComponent(scene, entity, AlphaType()));
         TEST_CHECK(ctx, Fluxion_GameObject_RemoveComponent(scene, entity, GammaType()));
-        TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == 0);
+        TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == 1);
+        TEST_CHECK(ctx, Fluxion_GameObject_HasComponent(scene, entity, Fluxion_Transform_TypeId()));
         TEST_CHECK(ctx, Fluxion_GameObject_IsValid(scene, entity));
+
+        // And it cannot be taken away, however it is asked for.
+        TEST_CHECK(ctx, !Fluxion_GameObject_RemoveComponent(scene, entity, Fluxion_Transform_TypeId()));
+        TEST_CHECK(ctx, Fluxion_GameObject_HasComponent(scene, entity, Fluxion_Transform_TypeId()));
 
         {
             TestAlpha a; a.value = 999u;
@@ -266,8 +274,8 @@ void Test_Archetype_Run(TestContext& ctx)
             FluxionTypeId one[1];
             const u32 written = Fluxion_GameObject_GetComponentTypes(scene, entity, one, 1);
             TEST_CHECK(ctx, written == 1);
-            TEST_CHECK(ctx, one[0] == AlphaType() || one[0] == BetaType());
-            TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == 2);
+            TEST_CHECK(ctx, one[0] == AlphaType() || one[0] == BetaType() || one[0] == Fluxion_Transform_TypeId());
+            TEST_CHECK(ctx, Fluxion_GameObject_GetComponentTypes(scene, entity, nullptr, 0) == 3);
         }
 
         Fluxion_Scene_Destroy(scene);
@@ -565,6 +573,4 @@ void Test_Archetype_Run(TestContext& ctx)
         Fluxion_Scene_Destroy(second);
         Fluxion_Scene_Destroy(third);
     }
-
-    Fluxion_Reflection_Shutdown();
 }

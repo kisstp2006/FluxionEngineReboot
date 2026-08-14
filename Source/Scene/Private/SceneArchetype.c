@@ -401,19 +401,39 @@ bool Fluxion_SceneArchetype_PlaceNewObject(FluxionSceneRecord* record, FluxionGa
 
     if (record == NULL || object.index >= FLUXION_SCENE_MAX_GAME_OBJECTS) return false;
 
-    if (record->emptyArchetype == FLUXION_SCENE_NO_ARCHETYPE)
+    // Every object starts carrying exactly one thing: its transform. There
+    // is no composition below this one, because there is no object without
+    // a place to be.
+    if (record->baseArchetype == FLUXION_SCENE_NO_ARCHETYPE)
     {
-        record->emptyArchetype = Fluxion_SceneArchetype_FindOrCreate(record, NULL, 0);
-        if (record->emptyArchetype == FLUXION_SCENE_NO_ARCHETYPE) return false;
+        const FluxionTypeId transformType = Fluxion_Transform_TypeId();
+        if (!Fluxion_SceneTransform_EnsureRegistered()) return false;
+
+        record->baseArchetype = Fluxion_SceneArchetype_FindOrCreate(record, &transformType, 1);
+        if (record->baseArchetype == FLUXION_SCENE_NO_ARCHETYPE) return false;
     }
 
-    if (!Fluxion_SceneArchetype_ClaimRow(record, record->emptyArchetype, object, &chunkIndex, &row)) return false;
+    if (!Fluxion_SceneArchetype_ClaimRow(record, record->baseArchetype, object, &chunkIndex, &row)) return false;
 
     entry = &record->objects[object.index];
-    entry->archetypeIndex = record->emptyArchetype;
+    entry->archetypeIndex = record->baseArchetype;
     entry->chunkIndex = chunkIndex;
     entry->rowInChunk = row;
     return true;
+}
+
+void* Fluxion_SceneArchetype_ValueOf(FluxionSceneRecord* record, const FluxionSceneGameObjectRecord* entry, FluxionTypeId type)
+{
+    const FluxionSceneArchetype* archetype;
+    u32 typeIndex;
+
+    if (record == NULL || entry == NULL || entry->archetypeIndex == FLUXION_SCENE_NO_ARCHETYPE) return NULL;
+
+    archetype = &record->archetypes[entry->archetypeIndex];
+    typeIndex = Fluxion_SceneArchetype_IndexOfType(archetype, type);
+    if (typeIndex == archetype->typeCount) return NULL;
+
+    return Fluxion_SceneArchetype_ValueAt(archetype, entry->chunkIndex, entry->rowInChunk, typeIndex);
 }
 
 void Fluxion_SceneArchetype_RemoveObject(FluxionSceneRecord* record, FluxionGameObjectHandle object)
@@ -457,7 +477,7 @@ void Fluxion_SceneArchetype_ReleaseScene(FluxionSceneRecord* record)
         memset(archetype, 0, sizeof(*archetype));
     }
 
-    record->emptyArchetype = FLUXION_SCENE_NO_ARCHETYPE;
+    record->baseArchetype = FLUXION_SCENE_NO_ARCHETYPE;
 }
 
 // --- The public per-object interface -------------------------------------
@@ -549,6 +569,16 @@ bool Fluxion_GameObject_RemoveComponent(FluxionSceneHandle scene, FluxionGameObj
     u32 i;
 
     if (entry == NULL || entry->archetypeIndex == FLUXION_SCENE_NO_ARCHETYPE) return false;
+
+    // The one component that is part of an object rather than attached to
+    // it. Refused rather than allowed, so that "where is this object" can
+    // never be answered with "nowhere" -- every other piece of code here
+    // is written on the strength of that.
+    if (type == Fluxion_Transform_TypeId())
+    {
+        Fluxion_SceneInternal_SetError(record, "an object's transform is part of it and cannot be taken away");
+        return false;
+    }
 
     {
         const FluxionSceneArchetype* current = &record->archetypes[entry->archetypeIndex];

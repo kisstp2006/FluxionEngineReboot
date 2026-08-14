@@ -2,6 +2,7 @@
 
 #include <Fluxion/Scene/EntityCommandBuffer.h>
 #include <Fluxion/Scene/Scene.h>
+#include <Fluxion/Scene/Transform.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -81,12 +82,16 @@ typedef struct FluxionSceneGameObjectRecord
     FluxionGameObjectHandle firstChild;
     FluxionGameObjectHandle nextSibling;
 
-    FluxionVec3 localPosition;
-    FluxionQuat localRotation;
-    FluxionVec3 localScale;
-
-    FluxionMat4 worldMatrix;
-    bool worldDirty;
+    // How far below a root this object sits, zero for a root itself.
+    //
+    // Hierarchy rather than transform, so it lives here rather than in the
+    // transform component. It is what lets the world-matrix update be
+    // split across workers: two objects at the same depth cannot be each
+    // other's parent, so a whole depth can be worked out at once.
+    //
+    // Maintained wherever an object's parent changes, for the object and
+    // for everything below it.
+    u32 depth;
 
     u32 firstComponent;
 
@@ -178,10 +183,22 @@ typedef struct FluxionSceneRecord
     // what it carries.
     FluxionSceneArchetype archetypes[FLUXION_SCENE_MAX_ARCHETYPES];
 
-    // The composition carrying nothing at all, which every object joins
-    // when it is made. Held here so that making an object does not have to
+    // The composition every object starts in: the one carrying nothing but
+    // a transform. Held here so that making an object does not have to
     // search for it. FLUXION_SCENE_NO_ARCHETYPE until the first object.
-    u32 emptyArchetype;
+    u32 baseArchetype;
+
+    // Whether anything has been marked as needing its world matrix worked
+    // out again since the last update, and whether the last update
+    // actually changed any.
+    //
+    // The second is not the same question as the first, and both are
+    // needed: an object that moved last step and stands still this one has
+    // to have its previous-world refreshed once more, or it would keep
+    // reporting the motion it had. Once both are false there is nothing
+    // left to do and the whole update is skipped.
+    bool transformsDirty;
+    bool transformsChangedLastUpdate;
 
     // The scene's own place to write structural change down, made the
     // first time something asks for it and played back at the end of every
@@ -278,6 +295,38 @@ void Fluxion_SceneArchetype_ReleaseScene(FluxionSceneRecord* record);
 // composition does not carry that type. Shared by the per-object lookups
 // and by the query.
 void* Fluxion_SceneArchetype_ColumnAt(const FluxionSceneArchetype* archetype, u32 chunkIndex, FluxionTypeId type);
+
+// One object's value of one type, reached from the record rather than
+// from a handle -- for the paths that already hold the record and would
+// otherwise resolve the same handle twice.
+void* Fluxion_SceneArchetype_ValueOf(FluxionSceneRecord* record, const FluxionSceneGameObjectRecord* entry, FluxionTypeId type);
+
+// --- Transforms ---------------------------------------------------------
+
+// Makes sure the transform type is known to the reflection registry,
+// which is where the storage takes its size from. False when the registry
+// has not been brought up, which is a startup mistake rather than a
+// runtime condition -- without it no object can be made at all.
+bool Fluxion_SceneTransform_EnsureRegistered(void);
+
+// This object's transform, or null when the handle names no live object.
+FluxionTransform* Fluxion_SceneInternal_Transform(FluxionSceneRecord* record, FluxionGameObjectHandle object);
+
+// The same, for a caller that already has the record entry.
+void* Fluxion_SceneInternal_TransformOf(FluxionSceneRecord* record, const FluxionSceneGameObjectRecord* entry);
+
+// Translation, rotation and scale of one transform, composed. Does not
+// look at anything above the object.
+FluxionMat4 Fluxion_SceneInternal_LocalMatrixOf(const FluxionTransform* transform);
+
+// Works out every world matrix that needs working out, and carries every
+// object's world into its previous first. Nothing structural may happen
+// while this runs.
+void Fluxion_SceneInternal_UpdateTransforms(FluxionSceneRecord* record);
+
+// Says this object and everything below it now sit one level deeper or
+// shallower than they did, following a change of parent.
+void Fluxion_SceneInternal_UpdateSubtreeDepth(FluxionSceneRecord* record, FluxionGameObjectHandle object, u32 depth);
 
 // --- The scene's own command buffer -------------------------------------
 

@@ -86,7 +86,7 @@ FluxionSceneHandle Fluxion_Scene_Create(void)
     // perfectly good composition index, so "none yet" has to be said
     // explicitly or the first object would join a composition that does
     // not exist.
-    record->emptyArchetype = FLUXION_SCENE_NO_ARCHETYPE;
+    record->baseArchetype = FLUXION_SCENE_NO_ARCHETYPE;
 
     handle.index = index;
     handle.generation = record->generation;
@@ -170,6 +170,12 @@ static void Fluxion_SceneInternal_Link(FluxionSceneRecord* record, FluxionGameOb
 
     entry->parent = (parentEntry != NULL) ? parent : Fluxion_GameObject_InvalidHandle();
     entry->nextSibling = Fluxion_GameObject_InvalidHandle();
+
+    // The whole subtree moves with it: an object's depth is one more than
+    // its parent's, and everything below it shifts by the same amount.
+    // Kept in step here, at the one place a parent is ever set, so that
+    // the batched update can trust it without checking.
+    Fluxion_SceneInternal_UpdateSubtreeDepth(record, object, (parentEntry != NULL) ? parentEntry->depth + 1u : 0u);
 
     head = (parentEntry != NULL) ? &parentEntry->firstChild : &record->firstRoot;
     if (!FLUXION_HANDLE_IS_VALID(*head))
@@ -262,16 +268,8 @@ static FluxionGameObjectHandle Fluxion_SceneInternal_CreateGameObject(FluxionSce
     entry->parent = Fluxion_GameObject_InvalidHandle();
     entry->firstChild = Fluxion_GameObject_InvalidHandle();
     entry->nextSibling = Fluxion_GameObject_InvalidHandle();
-    entry->localPosition.x = 0.0f;
-    entry->localPosition.y = 0.0f;
-    entry->localPosition.z = 0.0f;
-    entry->localRotation = Fluxion_Quat_Identity();
-    entry->localScale.x = 1.0f;
-    entry->localScale.y = 1.0f;
-    entry->localScale.z = 1.0f;
-    entry->worldMatrix = Fluxion_Mat4_Identity();
-    entry->worldDirty = true;
     entry->firstComponent = FLUXION_SCENE_NO_COMPONENT;
+    entry->depth = 0;
     entry->archetypeIndex = FLUXION_SCENE_NO_ARCHETYPE;
 
     handle.index = index;
@@ -287,6 +285,23 @@ static FluxionGameObjectHandle Fluxion_SceneInternal_CreateGameObject(FluxionSce
         entry->alive = false;
         Fluxion_SceneInternal_SetError(record, "this scene has no room to store another object's components");
         return Fluxion_GameObject_InvalidHandle();
+    }
+
+    // The block was cleared to zero when it was taken, which is the right
+    // starting value for a position but not for a rotation or a scale --
+    // an object with a zero quaternion and a zero scale would be a point
+    // facing nowhere. Written here rather than left to the caller,
+    // because a transform is not something a caller attaches.
+    {
+        FluxionTransform* transform = (FluxionTransform*)Fluxion_SceneInternal_TransformOf(record, entry);
+        transform->localRotation = Fluxion_Quat_Identity();
+        transform->localScale.x = 1.0f;
+        transform->localScale.y = 1.0f;
+        transform->localScale.z = 1.0f;
+        transform->worldMatrix = Fluxion_Mat4_Identity();
+        transform->previousWorldMatrix = Fluxion_Mat4_Identity();
+        transform->dirtyFlags = FLUXION_TRANSFORM_DIRTY_LOCAL | FLUXION_TRANSFORM_DIRTY_WORLD;
+        record->transformsDirty = true;
     }
 
     Fluxion_SceneInternal_Link(record, handle, Fluxion_GameObject_InvalidHandle());
@@ -612,14 +627,60 @@ FluxionGameObjectHandle Fluxion_Scene_Find(FluxionSceneHandle scene, const char*
 }
 
 // --- Transforms ---------------------------------------------------------
+//
+// The values live in the transform component, in the storage, alongside
+// every other per-object value. Everything below reaches them there; none
+// of the signatures changed.
+
+void* Fluxion_SceneInternal_TransformOf(FluxionSceneRecord* record, const FluxionSceneGameObjectRecord* entry)
+{
+    return Fluxion_SceneArchetype_ValueOf(record, entry, Fluxion_Transform_TypeId());
+}
+
+// Rotation and scale in the upper three-by-three, translation in the last
+// column: the same row-major arrangement Fluxion_Mat4_Translation writes,
+// so the two compose with Fluxion_Mat4_Multiply as they stand.
+FluxionMat4 Fluxion_SceneInternal_LocalMatrixOf(const FluxionTransform* transform)
+{
+    FluxionMat4 result = Fluxion_Mat4_Identity();
+    FluxionQuat q = transform->localRotation;
+
+    f32 xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    f32 xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    f32 wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+
+    result.m[0][0] = (1.0f - 2.0f * (yy + zz)) * transform->localScale.x;
+    result.m[1][0] = (2.0f * (xy + wz)) * transform->localScale.x;
+    result.m[2][0] = (2.0f * (xz - wy)) * transform->localScale.x;
+
+    result.m[0][1] = (2.0f * (xy - wz)) * transform->localScale.y;
+    result.m[1][1] = (1.0f - 2.0f * (xx + zz)) * transform->localScale.y;
+    result.m[2][1] = (2.0f * (yz + wx)) * transform->localScale.y;
+
+    result.m[0][2] = (2.0f * (xz + wy)) * transform->localScale.z;
+    result.m[1][2] = (2.0f * (yz - wx)) * transform->localScale.z;
+    result.m[2][2] = (1.0f - 2.0f * (xx + yy)) * transform->localScale.z;
+
+    result.m[0][3] = transform->localPosition.x;
+    result.m[1][3] = transform->localPosition.y;
+    result.m[2][3] = transform->localPosition.z;
+    return result;
+}
 
 void Fluxion_SceneInternal_MarkWorldDirty(FluxionSceneRecord* record, FluxionGameObjectHandle object)
 {
     FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
+    FluxionTransform* transform;
     FluxionGameObjectHandle cursor;
     if (entry == NULL) return;
 
-    entry->worldDirty = true;
+    transform = (FluxionTransform*)Fluxion_SceneInternal_TransformOf(record, entry);
+    if (transform != NULL) transform->dirtyFlags |= FLUXION_TRANSFORM_DIRTY_WORLD;
+
+    // Recorded on the scene as well as on the object, so the batched
+    // update can decide whether to run at all without walking the table
+    // to find out.
+    record->transformsDirty = true;
 
     cursor = entry->firstChild;
     while (FLUXION_HANDLE_IS_VALID(cursor))
@@ -631,20 +692,29 @@ void Fluxion_SceneInternal_MarkWorldDirty(FluxionSceneRecord* record, FluxionGam
     }
 }
 
+// Setting any of the three marks the local matrix stale as well as the
+// world one: the local matrix is built from exactly these three, so it
+// cannot still match them.
+static void Fluxion_SceneInternal_MarkLocalDirty(FluxionSceneRecord* record, FluxionGameObjectHandle object, FluxionTransform* transform)
+{
+    transform->dirtyFlags |= FLUXION_TRANSFORM_DIRTY_LOCAL;
+    Fluxion_SceneInternal_MarkWorldDirty(record, object);
+}
+
 void Fluxion_GameObject_SetLocalPosition(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionVec3 position)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
-    FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
-    if (entry == NULL) return;
-    entry->localPosition = position;
-    Fluxion_SceneInternal_MarkWorldDirty(record, object);
+    FluxionTransform* transform = Fluxion_SceneInternal_Transform(record, object);
+    if (transform == NULL) return;
+    transform->localPosition = position;
+    Fluxion_SceneInternal_MarkLocalDirty(record, object, transform);
 }
 
 FluxionVec3 Fluxion_GameObject_GetLocalPosition(FluxionSceneHandle scene, FluxionGameObjectHandle object)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
-    FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
-    if (entry != NULL) return entry->localPosition;
+    const FluxionTransform* transform = Fluxion_SceneInternal_Transform(record, object);
+    if (transform != NULL) return transform->localPosition;
     {
         FluxionVec3 zero = { 0.0f, 0.0f, 0.0f };
         return zero;
@@ -654,34 +724,34 @@ FluxionVec3 Fluxion_GameObject_GetLocalPosition(FluxionSceneHandle scene, Fluxio
 void Fluxion_GameObject_SetLocalRotation(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionQuat rotation)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
-    FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
-    if (entry == NULL) return;
-    entry->localRotation = rotation;
-    Fluxion_SceneInternal_MarkWorldDirty(record, object);
+    FluxionTransform* transform = Fluxion_SceneInternal_Transform(record, object);
+    if (transform == NULL) return;
+    transform->localRotation = rotation;
+    Fluxion_SceneInternal_MarkLocalDirty(record, object, transform);
 }
 
 FluxionQuat Fluxion_GameObject_GetLocalRotation(FluxionSceneHandle scene, FluxionGameObjectHandle object)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
-    FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
-    if (entry != NULL) return entry->localRotation;
+    const FluxionTransform* transform = Fluxion_SceneInternal_Transform(record, object);
+    if (transform != NULL) return transform->localRotation;
     return Fluxion_Quat_Identity();
 }
 
 void Fluxion_GameObject_SetLocalScale(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionVec3 scale)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
-    FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
-    if (entry == NULL) return;
-    entry->localScale = scale;
-    Fluxion_SceneInternal_MarkWorldDirty(record, object);
+    FluxionTransform* transform = Fluxion_SceneInternal_Transform(record, object);
+    if (transform == NULL) return;
+    transform->localScale = scale;
+    Fluxion_SceneInternal_MarkLocalDirty(record, object, transform);
 }
 
 FluxionVec3 Fluxion_GameObject_GetLocalScale(FluxionSceneHandle scene, FluxionGameObjectHandle object)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
-    FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
-    if (entry != NULL) return entry->localScale;
+    const FluxionTransform* transform = Fluxion_SceneInternal_Transform(record, object);
+    if (transform != NULL) return transform->localScale;
     {
         FluxionVec3 one = { 1.0f, 1.0f, 1.0f };
         return one;
@@ -691,9 +761,9 @@ FluxionVec3 Fluxion_GameObject_GetLocalScale(FluxionSceneHandle scene, FluxionGa
 void Fluxion_GameObject_Rotate(FluxionSceneHandle scene, FluxionGameObjectHandle object, FluxionVec3 eulerRadians)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
-    FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
+    FluxionTransform* transform = Fluxion_SceneInternal_Transform(record, object);
     FluxionQuat pitch, yaw, roll, turn;
-    if (entry == NULL) return;
+    if (transform == NULL) return;
 
     {
         f32 half = eulerRadians.x * 0.5f;
@@ -709,66 +779,55 @@ void Fluxion_GameObject_Rotate(FluxionSceneHandle scene, FluxionGameObjectHandle
     }
 
     turn = Fluxion_Quat_Multiply(yaw, Fluxion_Quat_Multiply(pitch, roll));
-    entry->localRotation = Fluxion_Quat_Multiply(entry->localRotation, turn);
-    Fluxion_SceneInternal_MarkWorldDirty(record, object);
-}
-
-// Rotation and scale in the upper three-by-three, translation in the last
-// column: the same row-major arrangement Fluxion_Mat4_Translation writes,
-// so the two compose with Fluxion_Mat4_Multiply as they stand.
-static FluxionMat4 Fluxion_SceneInternal_LocalMatrix(const FluxionSceneGameObjectRecord* entry)
-{
-    FluxionMat4 result = Fluxion_Mat4_Identity();
-    FluxionQuat q = entry->localRotation;
-
-    f32 xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
-    f32 xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
-    f32 wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
-
-    result.m[0][0] = (1.0f - 2.0f * (yy + zz)) * entry->localScale.x;
-    result.m[1][0] = (2.0f * (xy + wz)) * entry->localScale.x;
-    result.m[2][0] = (2.0f * (xz - wy)) * entry->localScale.x;
-
-    result.m[0][1] = (2.0f * (xy - wz)) * entry->localScale.y;
-    result.m[1][1] = (1.0f - 2.0f * (xx + zz)) * entry->localScale.y;
-    result.m[2][1] = (2.0f * (yz + wx)) * entry->localScale.y;
-
-    result.m[0][2] = (2.0f * (xz + wy)) * entry->localScale.z;
-    result.m[1][2] = (2.0f * (yz - wx)) * entry->localScale.z;
-    result.m[2][2] = (1.0f - 2.0f * (xx + yy)) * entry->localScale.z;
-
-    result.m[0][3] = entry->localPosition.x;
-    result.m[1][3] = entry->localPosition.y;
-    result.m[2][3] = entry->localPosition.z;
-    return result;
+    transform->localRotation = Fluxion_Quat_Multiply(transform->localRotation, turn);
+    Fluxion_SceneInternal_MarkLocalDirty(record, object, transform);
 }
 
 FluxionMat4 Fluxion_GameObject_GetLocalMatrix(FluxionSceneHandle scene, FluxionGameObjectHandle object)
 {
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
-    FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
-    if (entry == NULL) return Fluxion_Mat4_Identity();
-    return Fluxion_SceneInternal_LocalMatrix(entry);
+    const FluxionTransform* transform = Fluxion_SceneInternal_Transform(record, object);
+    if (transform == NULL) return Fluxion_Mat4_Identity();
+    return Fluxion_SceneInternal_LocalMatrixOf(transform);
 }
 
+// Worked out here and now, walking up the parents, for a caller that asks
+// before the batched update has run -- which is anything reading a
+// transform in the middle of a step.
+//
+// It is not made redundant by the batched update and does not duplicate
+// it: this one answers one question immediately, that one answers all of
+// them at once and keeps the previous-world copy. Both clear the same
+// flag, so whichever runs first leaves the other less to do.
 static FluxionMat4 Fluxion_SceneInternal_WorldMatrix(FluxionSceneRecord* record, FluxionGameObjectHandle object)
 {
     FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
+    FluxionTransform* transform;
+
     if (entry == NULL) return Fluxion_Mat4_Identity();
-    if (!entry->worldDirty) return entry->worldMatrix;
+    transform = (FluxionTransform*)Fluxion_SceneInternal_TransformOf(record, entry);
+    if (transform == NULL) return Fluxion_Mat4_Identity();
+
+    if ((transform->dirtyFlags & FLUXION_TRANSFORM_DIRTY_WORLD) == 0) return transform->worldMatrix;
 
     if (FLUXION_HANDLE_IS_VALID(entry->parent))
     {
         FluxionMat4 parentWorld = Fluxion_SceneInternal_WorldMatrix(record, entry->parent);
-        entry->worldMatrix = Fluxion_Mat4_Multiply(parentWorld, Fluxion_SceneInternal_LocalMatrix(entry));
+
+        // Taken again after the recursion: working out the parent cannot
+        // move this object -- nothing structural happens in here -- but
+        // reading it back is what makes that assumption visible rather
+        // than silent.
+        transform = (FluxionTransform*)Fluxion_SceneInternal_TransformOf(record, entry);
+        transform->worldMatrix = Fluxion_Mat4_Multiply(parentWorld, Fluxion_SceneInternal_LocalMatrixOf(transform));
     }
     else
     {
-        entry->worldMatrix = Fluxion_SceneInternal_LocalMatrix(entry);
+        transform->worldMatrix = Fluxion_SceneInternal_LocalMatrixOf(transform);
     }
 
-    entry->worldDirty = false;
-    return entry->worldMatrix;
+    transform->dirtyFlags = FLUXION_TRANSFORM_CLEAN;
+    return transform->worldMatrix;
 }
 
 FluxionMat4 Fluxion_GameObject_GetWorldMatrix(FluxionSceneHandle scene, FluxionGameObjectHandle object)
@@ -776,4 +835,30 @@ FluxionMat4 Fluxion_GameObject_GetWorldMatrix(FluxionSceneHandle scene, FluxionG
     FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
     if (record == NULL) return Fluxion_Mat4_Identity();
     return Fluxion_SceneInternal_WorldMatrix(record, object);
+}
+
+FluxionMat4 Fluxion_GameObject_GetPreviousWorldMatrix(FluxionSceneHandle scene, FluxionGameObjectHandle object)
+{
+    FluxionSceneRecord* record = Fluxion_SceneInternal_Resolve(scene);
+    const FluxionTransform* transform = Fluxion_SceneInternal_Transform(record, object);
+    if (transform == NULL) return Fluxion_Mat4_Identity();
+    return transform->previousWorldMatrix;
+}
+
+void Fluxion_SceneInternal_UpdateSubtreeDepth(FluxionSceneRecord* record, FluxionGameObjectHandle object, u32 depth)
+{
+    FluxionSceneGameObjectRecord* entry = Fluxion_SceneInternal_ResolveObject(record, object);
+    FluxionGameObjectHandle cursor;
+    if (entry == NULL) return;
+
+    entry->depth = depth;
+
+    cursor = entry->firstChild;
+    while (FLUXION_HANDLE_IS_VALID(cursor))
+    {
+        FluxionSceneGameObjectRecord* child = Fluxion_SceneInternal_ResolveObject(record, cursor);
+        if (child == NULL) break;
+        Fluxion_SceneInternal_UpdateSubtreeDepth(record, cursor, depth + 1u);
+        cursor = child->nextSibling;
+    }
 }

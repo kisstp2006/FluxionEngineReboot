@@ -1215,4 +1215,11 @@ extern "C" void Fluxion_Scene_Tick(FluxionSceneHandle scene, f32 deltaTime)
     // turn, or a caller with no scripts would find its recorded changes
     // piling up and never landing.
     Fluxion_SceneInternal_PlaybackCommandBuffer(record);
+
+    // And only then the transforms. The order is not a preference: the
+    // update reads and writes the storage from several threads at once,
+    // which is safe exactly as long as nothing is moving between blocks
+    // while it runs -- so every structural change of the turn has to have
+    // landed first.
+    Fluxion_SceneInternal_UpdateTransforms(record);
 }

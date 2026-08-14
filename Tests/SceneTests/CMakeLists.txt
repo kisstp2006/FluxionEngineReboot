@@ -10,6 +10,7 @@ engine_add_test(
         Test_Reload.cpp
         Test_DataComponents.cpp
         Test_Archetype.cpp
+        Test_TransformUpdate.cpp
         Test_EntityUUID.cpp
         Test_CommandBuffer.cpp
         Test_World.cpp
