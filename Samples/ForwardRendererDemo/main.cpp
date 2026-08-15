@@ -27,6 +27,7 @@
 #include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/Foundation/Defines.h>
 #include <Fluxion/Foundation/Log.h>
+#include <Fluxion/Foundation/ScopeExit.hpp>
 #include <Fluxion/Foundation/Memory/MemoryTracker.h>
 #include <Fluxion/Foundation/Math.h>
 #include <Fluxion/RHI/RHI.h>
@@ -185,29 +186,50 @@ int main(int argc, char** argv)
     // system: modules below only offer statistics when this is on.
     Fluxion_MemoryTracker_Init();
 
+    // Teardown is attached to each thing as it is acquired, rather than
+    // written out once at the bottom.
+    //
+    // The bottom is only reached by the run that works. Every check below
+    // that finds this machine cannot run the sample returns from the
+    // middle -- and each of those returns used to walk out past
+    // everything it had already started. Nothing said so, because a
+    // process on its way out looks the same either way until something
+    // is watching for it.
+    //
+    // Guards also unwind in exactly the reverse of the order things were
+    // made, which is one fewer ordering to get right by hand.
+    FLUXION_SCOPE_EXIT(Fluxion_MemoryTracker_Shutdown());
+
     // The type registry, before anything makes a scene. Every object a
     // scene holds carries a transform, and the storage takes that
     // component's size from here -- so a scene cannot be made without it.
     Fluxion_Reflection_Init();
+    FLUXION_SCOPE_EXIT(Fluxion_Reflection_Shutdown());
 
     FluxionEventQueue queue;
     Fluxion_EventQueue_Init(&queue, NULL, 256);
+    FLUXION_SCOPE_EXIT(Fluxion_EventQueue_Destroy(&queue));
+
     Fluxion_WindowSystem_Init(NULL, &queue, 1);
+    FLUXION_SCOPE_EXIT(Fluxion_WindowSystem_Shutdown());
 
     // The input system is not fed by the window system: it is fed by
     // whoever drains the event queue, which is this file. Without both of
     // these -- the per-frame reset below and an event handed over for
     // every event popped -- Input answers "nothing is held down" forever.
     Fluxion_Input_Init();
+    FLUXION_SCOPE_EXIT(Fluxion_Input_Shutdown());
 
     // The clock is started before the window is made, so the long, unrepresentative
     // stretch of work between here and the first frame is not mistaken for one.
     Fluxion_Time_Init();
+    FLUXION_SCOPE_EXIT(Fluxion_Time_Shutdown());
 
     // Workers, so that recompiling a shader does not stop the picture.
     // Zero means "as many as this machine has, less the one running the
     // frame" -- the frame thread keeps its core to itself.
     Fluxion_JobSystem_Init(0, false);
+    FLUXION_SCOPE_EXIT(Fluxion_JobSystem_Shutdown());
 
     // The backend is otherwise only visible in the startup log line below
     // ("Using adapter: ...") -- putting it in the title too means it's
@@ -224,6 +246,7 @@ int main(int argc, char** argv)
         FLUXION_LOG_ERROR("ForwardRendererDemo", "No window could be created -- this machine has no display available.");
         return kExitEnvironmentCannotRun;
     }
+    FLUXION_SCOPE_EXIT(Fluxion_Window_Destroy(window));
 
     FluxionRHIInstanceDesc instanceDesc = { "ForwardRendererDemo", true };
     FluxionRHIInstanceHandle instance = Fluxion_RHI_CreateInstance(backendType, &instanceDesc);
@@ -232,6 +255,7 @@ int main(int argc, char** argv)
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create a %s instance -- no usable %s loader/driver on this machine.", backendName, backendName);
         return kExitEnvironmentCannotRun;
     }
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyInstance(instance));
 
     FluxionRHIAdapterHandle adapter;
     if (Fluxion_RHI_EnumerateAdapters(instance, &adapter, 1) == 0)
@@ -245,6 +269,7 @@ int main(int argc, char** argv)
 
     FluxionRHIDeviceDesc deviceDesc = { FLUXION_RHI_CAPABILITY_NONE };
     FluxionRHIDeviceHandle device = Fluxion_RHI_CreateDevice(adapter, &deviceDesc);
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyDevice(device));
     FluxionRHIQueueHandle graphicsQueue = Fluxion_RHI_GetQueue(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
 
     // Per backend, because the file records which one wrote it and would
@@ -269,6 +294,11 @@ int main(int argc, char** argv)
     swapchainDesc.bufferCount = FLUXION_DEMO_FRAMES_IN_FLIGHT;
     swapchainDesc.vsync = true;
     FluxionRHISwapchainHandle swapchain = Fluxion_RHI_CreateSwapchain(device, window, &swapchainDesc);
+
+    // The collect and the destroy travel together so that they keep the
+    // order they had: whatever the device is holding back is let go
+    // before the swapchain it may be holding back FOR.
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_Device_CollectGarbage(device); Fluxion_RHI_DestroySwapchain(swapchain));
 
     // --- Cube geometry: staging (CPU_TO_GPU) -> GPU_ONLY, the real upload
     // pattern, not just a directly-mapped GPU buffer. 24 vertices (4 per
@@ -413,9 +443,11 @@ int main(int argc, char** argv)
     albedoTextureDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
     albedoTextureDesc.debugName = "DemoAlbedoTexture";
     FluxionRHITextureHandle albedoTexture = Fluxion_RHI_CreateTexture(device, &albedoTextureDesc);
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTexture(albedoTexture));
 
     FluxionRHITextureViewDesc albedoViewDesc = { albedoTexture, albedoTextureDesc.format, 0, kMipLevels, 0, 1 };
     FluxionRHITextureViewHandle albedoView = Fluxion_RHI_CreateTextureView(device, &albedoViewDesc);
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTextureView(albedoView));
 
     FluxionRHISamplerDesc albedoSamplerDesc;
     memset(&albedoSamplerDesc, 0, sizeof(albedoSamplerDesc));
@@ -428,6 +460,7 @@ int main(int argc, char** argv)
     albedoSamplerDesc.maxAnisotropy = 1.0f;
     albedoSamplerDesc.debugName = "DemoAlbedoSampler";
     FluxionRHISamplerHandle albedoSampler = Fluxion_RHI_CreateSampler(device, &albedoSamplerDesc);
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroySampler(albedoSampler));
 
     // --- Depth buffer: sized once at startup to the initial window
     // extent -- this demo doesn't otherwise handle swapchain-resize edge
@@ -447,9 +480,11 @@ int main(int argc, char** argv)
     depthTextureDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
     depthTextureDesc.debugName = "DemoDepthTexture";
     FluxionRHITextureHandle depthTexture = Fluxion_RHI_CreateTexture(device, &depthTextureDesc);
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTexture(depthTexture));
 
     FluxionRHITextureViewDesc depthViewDesc = { depthTexture, depthTextureDesc.format, 0, 1, 0, 1 };
     FluxionRHITextureViewHandle depthView = Fluxion_RHI_CreateTextureView(device, &depthViewDesc);
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTextureView(depthView));
 
     // --- Upload command list: cube vertex/index buffers via MeshBuffer's
     // own internal staging path, plus this file's own texture copy and the
@@ -475,8 +510,9 @@ int main(int argc, char** argv)
     if (!FLUXION_HANDLE_IS_VALID(cubeMesh))
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube MeshBuffer.");
-        std::exit(1);
+        return 1;
     }
+    FLUXION_SCOPE_EXIT(Fluxion_MeshBuffer_Destroy(cubeMesh));
 
     FluxionRHICommandListHandle uploadCommandList = Fluxion_RHI_CreateCommandList(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
     Fluxion_RHI_CommandList_Begin(uploadCommandList);
@@ -510,13 +546,14 @@ int main(int argc, char** argv)
     // bind groups and pipeline descs. -----------------------------------------
 
     Fluxion_RenderGraphPassRegistry_Init(); // must run before Fluxion_Renderer_Create, which registers "ForwardOpaquePass" into it
+    FLUXION_SCOPE_EXIT(Fluxion_RenderGraphPassRegistry_Shutdown());
 
     std::string cubeVertexSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.vert.jsl");
     std::string cubeFragmentSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.frag.jsl");
     if (cubeVertexSource.empty() || cubeFragmentSource.empty())
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to read cube.vert.jsl/cube.frag.jsl from %s", FLUXION_DEMO_SHADER_DIR);
-        std::exit(1);
+        return 1;
     }
 
     // Said before the first program is made, so the first one already
@@ -529,6 +566,7 @@ int main(int argc, char** argv)
     cubeProgramDesc.vertexSource = cubeVertexSource.c_str();
     cubeProgramDesc.fragmentSource = cubeFragmentSource.c_str();
     FluxionShaderProgramHandle cubeProgram = Fluxion_ShaderProgram_Create(device, &cubeProgramDesc);
+    FLUXION_SCOPE_EXIT(if (FLUXION_HANDLE_IS_VALID(cubeProgram)) Fluxion_ShaderProgram_Destroy(cubeProgram));
     if (!FLUXION_HANDLE_IS_VALID(cubeProgram))
     {
         // A missing shader compiler and a broken shader both end up
@@ -538,18 +576,23 @@ int main(int argc, char** argv)
         if (!Fluxion::ShaderCompiler::IsDXCAvailable())
         {
             FLUXION_LOG_ERROR("ForwardRendererDemo", "No shader compiler (dxc) on this machine -- the cube's shaders cannot be built here.");
-            std::exit(kExitEnvironmentCannotRun);
+            return kExitEnvironmentCannotRun;
         }
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube ShaderProgram (see prior compile errors above).");
-        std::exit(1);
+
+        // A return rather than an exit, so the guards above run. Walking
+        // out of the process instead unwinds nothing, and what that costs
+        // is invisible until something is watching for it.
+        return 1;
     }
 
     FluxionMaterialHandle cubeMaterial = Fluxion_Material_Create(device, cubeProgram);
     if (!FLUXION_HANDLE_IS_VALID(cubeMaterial))
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube Material.");
-        std::exit(1);
+        return 1;
     }
+    FLUXION_SCOPE_EXIT(Fluxion_Material_Destroy(cubeMaterial));
     Fluxion_Material_SetTexture(cubeMaterial, "albedoMap", albedoView, albedoSampler);
     Fluxion_Material_SetVec3(cubeMaterial, "tint", FluxionVec3{ 1.0f, 1.0f, 1.0f });
     Fluxion_Material_FlushDirty(cubeMaterial);
@@ -558,15 +601,17 @@ int main(int argc, char** argv)
     if (!FLUXION_HANDLE_IS_VALID(cubePipeline))
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube RenderPipeline.");
-        std::exit(1);
+        return 1;
     }
+    FLUXION_SCOPE_EXIT(Fluxion_RenderPipeline_Destroy(cubePipeline));
 
     FluxionRendererHandle renderer = Fluxion_Renderer_Create(device, graphicsQueue);
     if (!FLUXION_HANDLE_IS_VALID(renderer))
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the FluxionRenderer.");
-        std::exit(1);
+        return 1;
     }
+    FLUXION_SCOPE_EXIT(Fluxion_Renderer_Destroy(renderer));
 
     // --- Per-frame-in-flight resources (caller-managed, no hidden
     // backend FrameContext) --------------------------------------------------
@@ -578,6 +623,10 @@ int main(int argc, char** argv)
         commandLists[i] = Fluxion_RHI_CreateCommandList(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
         frameFences[i] = Fluxion_RHI_CreateFence(device, true);
     }
+    FLUXION_SCOPE_EXIT(for (u32 i = 0; i < FLUXION_DEMO_FRAMES_IN_FLIGHT; ++i) {
+        Fluxion_RHI_DestroyFence(frameFences[i]);
+        Fluxion_RHI_DestroyCommandList(commandLists[i]);
+    });
     // No FluxionRHISemaphoreHandle is created for Acquire/Present: this
     // backend's Acquire already CPU-blocks on an internal fence before
     // returning (VulkanSwapchain.cpp), and Present is preceded by an
@@ -596,12 +645,30 @@ int main(int argc, char** argv)
     // and then hands the scene how much time has passed each frame. What
     // ends up on the screen is whatever they have made of it.
 
+    // Declared here rather than where it is started, so the guard below
+    // can reach it: the scene and the runtime it runs on come apart in an
+    // order that is not the reverse of the order they were made in, and
+    // that is easier to say once than to keep true in several places.
+    Fluxion::Script::Vm* scriptVm = nullptr;
+
     FluxionSceneHandle scene = Fluxion_Scene_Create();
     if (!Fluxion_Scene_IsValid(scene))
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the scene.");
-        std::exit(1);
+        return 1;
     }
+    FLUXION_SCOPE_EXIT(
+        // Said before the scene is destroyed, so that a script
+        // component's OnDestroy -- which runs while the scene is being
+        // destroyed, below -- cannot ask for a draw into a renderer that
+        // is about to be torn down.
+        Fluxion::Scene::SetScriptRenderer(FluxionRendererHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 });
+        Fluxion::Scene::ClearScriptAssets();
+
+        // The scene goes before the machine it runs on.
+        Fluxion_Scene_Destroy(scene);
+        if (scriptVm != nullptr) Fluxion::Script::DestroyVm(scriptVm);
+    );
 
     Fluxion::Script::BindingTable sceneBindings;
     Fluxion::Script::DiagnosticList scriptDiagnostics;
@@ -609,7 +676,7 @@ int main(int argc, char** argv)
     {
         ReportScriptDiagnostics(scriptDiagnostics);
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to describe the scene to the scripting runtime.");
-        std::exit(1);
+        return 1;
     }
 
     // The rest of the engine, on top of the scene: the clock, the input
@@ -620,11 +687,11 @@ int main(int argc, char** argv)
     {
         ReportScriptDiagnostics(scriptDiagnostics);
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to describe the engine to the scripting runtime.");
-        std::exit(1);
+        return 1;
     }
 
     std::string demoScriptSource = ReadDemoScripts();
-    if (demoScriptSource.empty()) std::exit(1);
+    if (demoScriptSource.empty()) return 1;
 
     Fluxion::Script::CompileOptions scriptOptions;
     scriptOptions.fileName = "DemoScripts.fls";
@@ -647,17 +714,17 @@ int main(int argc, char** argv)
     {
         ReportScriptDiagnostics(scriptDiagnostics);
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to compile the demo's scripts.");
-        std::exit(1);
+        return 1;
     }
     FLUXION_LOG_INFO("ForwardRendererDemo", "Scripts %s.", cacheReport.wasCached ? "loaded from the compile cache" : "compiled");
 
     Fluxion::Script::CompiledModule scriptModule = compiledScript.Value();
-    Fluxion::Script::Vm* scriptVm = Fluxion::Script::CreateVm(scriptModule, scriptDiagnostics, &sceneBindings);
+    scriptVm = Fluxion::Script::CreateVm(scriptModule, scriptDiagnostics, &sceneBindings);
     if (!scriptVm || !Fluxion::Scene::AttachRuntime(scene, scriptVm))
     {
         ReportScriptDiagnostics(scriptDiagnostics);
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to start the scripting runtime: %s", Fluxion_Scene_GetLastError(scene));
-        std::exit(1);
+        return 1;
     }
 
     // The debug lines a script draws go into the same colour attachment
@@ -674,7 +741,7 @@ int main(int argc, char** argv)
         !Fluxion::Scene::RegisterScriptPipeline("Cube", cubePipeline))
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put the cube's mesh, material and pipeline within reach of a script.");
-        std::exit(1);
+        return 1;
     }
 
     FluxionGameObjectHandle cubeObject = Fluxion_Scene_CreateGameObject(scene, "Cube");
@@ -688,7 +755,7 @@ int main(int argc, char** argv)
         {
             FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a %s on the cube: %s", componentName,
                 Fluxion_Scene_GetLastError(scene));
-            std::exit(1);
+            return 1;
         }
     }
 
@@ -703,6 +770,9 @@ int main(int argc, char** argv)
     // second F while the first is still going would leave the first with
     // nobody to apply it.
     FluxionShaderProgramReloadJob* shaderReload = nullptr;
+    // Applied rather than abandoned: Finish waits for the compiling and
+    // then releases it, and there is no other way to let the job go.
+    FLUXION_SCOPE_EXIT(if (shaderReload != nullptr) Fluxion_ShaderProgram_FinishReload(shaderReload));
     u64 framesDrawn = 0;
 
     // Two timestamps a frame -- one before the graph executes, one after
@@ -711,6 +781,7 @@ int main(int argc, char** argv)
     // closing average: a real number a person can compare against what
     // a frame of this scene plausibly costs.
     FluxionRHIQueryPoolHandle gpuTimeQueries = Fluxion_RHI_CreateQueryPool(device, 2);
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyQueryPool(gpuTimeQueries));
     const u64 gpuTimestampFrequency = Fluxion_RHI_Device_GetTimestampFrequency(device);
     f64 gpuTimeTotalMs = 0.0;
     u64 gpuTimeSamples = 0;
@@ -1054,24 +1125,6 @@ int main(int argc, char** argv)
     // bounded timeout for work that was never submitted.
     FLUXION_LOG_INFO("ForwardRendererDemo", "Closing.");
 
-    // Nothing a script can name may outlive what it names. The renderer
-    // and the three registered handles are taken away first, so that a
-    // component's OnDestroy -- which runs while the scene is being
-    // destroyed, below -- cannot ask for a draw into a renderer that is
-    // about to be torn down.
-    Fluxion::Scene::SetScriptRenderer(FluxionRendererHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 });
-    Fluxion::Scene::ClearScriptAssets();
-
-    // The scene goes before the machine it runs on: destroying it runs
-    // OnDestroy on everything still attached, which is script code.
-    Fluxion_Scene_Destroy(scene);
-    Fluxion::Script::DestroyVm(scriptVm);
-
-    for (u32 i = 0; i < FLUXION_DEMO_FRAMES_IN_FLIGHT; ++i)
-    {
-        Fluxion_RHI_DestroyFence(frameFences[i]);
-        Fluxion_RHI_DestroyCommandList(commandLists[i]);
-    }
     // Before anything built this run is destroyed. A backend whose cache
     // is a device-level object would not care, but one that reads the
     // pipelines themselves has nothing left to read once they are gone --
@@ -1082,41 +1135,14 @@ int main(int argc, char** argv)
     else
         FLUXION_LOG_WARN("ForwardRendererDemo", "Pipeline cache was not saved to %s", pipelineCachePath);
 
-    Fluxion_Renderer_Destroy(renderer);
-    Fluxion_RenderPipeline_Destroy(cubePipeline);
-    Fluxion_MeshBuffer_Destroy(cubeMesh);
-    Fluxion_Material_Destroy(cubeMaterial);
-    // Applied rather than abandoned: Finish waits for the compiling and
-    // then releases it, and there is no other way to let the job go.
     if (gpuTimeSamples > 0)
     {
         FLUXION_LOG_INFO("ForwardRendererDemo", "GPU frame time: %.3f ms on average over %llu frames.",
             gpuTimeTotalMs / (f64)gpuTimeSamples, (unsigned long long)gpuTimeSamples);
     }
-    Fluxion_RHI_DestroyQueryPool(gpuTimeQueries);
-
-    if (shaderReload != nullptr) Fluxion_ShaderProgram_FinishReload(shaderReload);
-
-    Fluxion_ShaderProgram_Destroy(cubeProgram);
-    Fluxion_RenderGraphPassRegistry_Shutdown();
-
-    Fluxion_RHI_DestroySampler(albedoSampler);
-    Fluxion_RHI_DestroyTextureView(albedoView);
-    Fluxion_RHI_DestroyTexture(albedoTexture);
-    Fluxion_RHI_DestroyTextureView(depthView);
-    Fluxion_RHI_DestroyTexture(depthTexture);
-    Fluxion_RHI_Device_CollectGarbage(device);
-    Fluxion_RHI_DestroySwapchain(swapchain);
-    Fluxion_RHI_DestroyDevice(device);
-    Fluxion_RHI_DestroyInstance(instance);
-
-    Fluxion_Window_Destroy(window);
-    Fluxion_JobSystem_Shutdown();
-    Fluxion_Reflection_Shutdown();
-    Fluxion_MemoryTracker_Shutdown(); // logs a warning per domain with bytes still standing -- a lightweight leak signal
-    Fluxion_WindowSystem_Shutdown();
-    Fluxion_Time_Shutdown();
-    Fluxion_Input_Shutdown();
-    Fluxion_EventQueue_Destroy(&queue);
+    // Everything above is let go by the guards, in the reverse of the
+    // order it was made. The memory tracker is last of all, and so its
+    // report -- a warning per domain with bytes still standing -- is
+    // taken once nothing else is left holding any.
     return 0;
 }

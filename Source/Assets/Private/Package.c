@@ -134,6 +134,16 @@ static u8* Fluxion_PackageSource_ReadAll(FluxionVfsSource* source, const char* p
     return bytes;
 }
 
+// Straight out of the index: a package already knows how large every
+// entry is, so this costs nothing at all.
+static usize Fluxion_PackageSource_GetSize(FluxionVfsSource* source, const char* path)
+{
+    const FluxionPackageSource* self = (const FluxionPackageSource*)source;
+
+    const FluxionPackageEntry* entry = Fluxion_PackageSource_Find(self, path);
+    return entry ? (usize)entry->blobSize : 0u;
+}
+
 static void Fluxion_PackageSource_Destroy(FluxionVfsSource* source)
 {
     FluxionPackageSource* self = (FluxionPackageSource*)source;
@@ -148,6 +158,7 @@ static void Fluxion_PackageSource_Destroy(FluxionVfsSource* source)
 static const FluxionVfsSourceVTable s_packageVTable = {
     Fluxion_PackageSource_Exists,
     Fluxion_PackageSource_ReadAll,
+    Fluxion_PackageSource_GetSize,
     NULL, // A package is what shipped. Nothing writes into it.
     Fluxion_PackageSource_Destroy,
 };

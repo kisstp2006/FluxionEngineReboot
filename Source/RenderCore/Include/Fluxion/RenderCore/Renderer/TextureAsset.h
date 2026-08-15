@@ -95,6 +95,96 @@ bool Fluxion_TextureAsset_Write(FluxionStream* stream, const FluxionTextureAsset
 bool Fluxion_TextureAsset_Read(const u8* bytes, usize size, FluxionTextureAsset** outAsset);
 void Fluxion_TextureAsset_Destroy(FluxionTextureAsset* asset);
 
+// --- What a texture is for, and everything that follows from it ----------
+//
+// The one setting that drives the rest.
+//
+// Not twenty independent switches: those can contradict each other, and
+// the worst of the contradictions -- a normal map marked as colour --
+// produces no error at all, only lighting that is quietly wrong. The
+// usage settles the colour space, the format and the channel layout
+// together, and nothing can set them apart from each other.
+typedef enum FluxionTextureUsage
+{
+    // Base colour, emissive: what a person picked by eye, stored the way
+    // it was picked.
+    FLUXION_TEXTURE_USAGE_COLOR_SRGB = 0,
+
+    // A direction, not a colour.
+    FLUXION_TEXTURE_USAGE_NORMAL_MAP,
+
+    // Metallic-roughness, occlusion: numbers that happen to be stored in
+    // an image.
+    FLUXION_TEXTURE_USAGE_MASK_LINEAR,
+
+    FLUXION_TEXTURE_USAGE_GRAYSCALE,
+
+    // Environments and anything else whose values go above one.
+    FLUXION_TEXTURE_USAGE_HDR,
+
+    FLUXION_TEXTURE_USAGE_COUNT,
+} FluxionTextureUsage;
+
+#define FLUXION_TEXTURE_IMPORT_GENERATE_MIPS    ((u32)(1u << 0))
+
+// The green channel of a normal map, inverted. Which way is up is a
+// convention, and the two conventions in use disagree.
+#define FLUXION_TEXTURE_IMPORT_FLIP_GREEN       ((u32)(1u << 1))
+
+#define FLUXION_TEXTURE_IMPORT_PREMULTIPLY_ALPHA ((u32)(1u << 2))
+
+// Rescales each mip so that about as many pixels stay above the alpha
+// test as were above it in the level before. Without it, alpha-tested
+// foliage DISSOLVES as it recedes: averaging pulls the alpha under the
+// threshold, and the leaves thin out to nothing.
+#define FLUXION_TEXTURE_IMPORT_ALPHA_COVERAGE   ((u32)(1u << 3))
+
+// Lowers roughness on the smaller mips of the map this normal map is
+// paired with, from how much the normals vary within each texel. It is
+// specular antialiasing, done where it is nearly free -- the normals are
+// being read anyway.
+#define FLUXION_TEXTURE_IMPORT_ROUGHNESS_LIMITER ((u32)(1u << 4))
+
+// What the database stores for a texture, and what a re-import compares
+// against. Plain data with no pointers: it is written into the asset
+// database as bytes, and only this module reads it back.
+typedef struct FluxionTextureImportSettings
+{
+    // Raised when the meaning of a field below changes, so settings
+    // written by an older build are recognised rather than misread.
+    u32 version;
+
+    u32 usage;
+    u32 flags;
+
+    f32 alphaCoverageThreshold;
+
+    // Zero means no cap.
+    u32 maxSize;
+
+    u32 addressModeU;
+    u32 addressModeV;
+    u32 filter;
+    f32 maxAnisotropy;
+} FluxionTextureImportSettings;
+
+#define FLUXION_TEXTURE_IMPORT_SETTINGS_VERSION 1
+
+// What a texture of this usage is imported as when nobody says otherwise.
+FluxionTextureImportSettings Fluxion_TextureAsset_DefaultImportSettings(FluxionTextureUsage usage);
+
+// The format a usage cooks to. Uncompressed for now; a compressed one
+// arrives here and nowhere else, which is why every caller asks rather
+// than choosing.
+FluxionRHIFormat Fluxion_TextureAsset_GetUsageFormat(FluxionTextureUsage usage);
+
+// Whether this usage's format carries an sRGB curve. Answered from the
+// format itself, so it cannot disagree with what is stored.
+bool Fluxion_TextureAsset_IsUsageSRGB(FluxionTextureUsage usage);
+
+// The sampler a texture imported with these settings wants.
+FluxionRHISamplerDesc Fluxion_TextureAsset_GetSamplerDesc(const FluxionTextureImportSettings* settings);
+
 FluxionAssetTypeId Fluxion_TextureAsset_TypeId(void);
 
 bool Fluxion_TextureAsset_RegisterType(FluxionRHIDeviceHandle device, FluxionRHIQueueHandle queue);

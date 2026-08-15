@@ -523,3 +523,112 @@ void Fluxion_TextureAsset_UnregisterType(void)
     Fluxion_AssetTypes_Unregister(Fluxion_TextureAsset_TypeId());
     s_registered = false;
 }
+
+// ---------------------------------------------------------------------
+// What a texture is for.
+// ---------------------------------------------------------------------
+
+FluxionRHIFormat Fluxion_TextureAsset_GetUsageFormat(FluxionTextureUsage usage)
+{
+    switch (usage)
+    {
+        // The only one stored with an sRGB curve, because it is the only
+        // one holding something a person chose by eye.
+        case FLUXION_TEXTURE_USAGE_COLOR_SRGB:
+            return FLUXION_RHI_FORMAT_R8G8B8A8_SRGB;
+
+        // Linear, all of them. A normal is a direction and a mask is a
+        // number; putting either through an sRGB curve does not make it
+        // look wrong, it makes it BE wrong, and nothing reports that.
+        case FLUXION_TEXTURE_USAGE_NORMAL_MAP:
+        case FLUXION_TEXTURE_USAGE_MASK_LINEAR:
+        case FLUXION_TEXTURE_USAGE_GRAYSCALE:
+            return FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
+
+        case FLUXION_TEXTURE_USAGE_HDR:
+            return FLUXION_RHI_FORMAT_R16G16B16A16_FLOAT;
+
+        default:
+            return FLUXION_RHI_FORMAT_UNKNOWN;
+    }
+}
+
+bool Fluxion_TextureAsset_IsUsageSRGB(FluxionTextureUsage usage)
+{
+    // Read off the format rather than kept beside it. Two places saying
+    // the same thing is two places that can disagree, and the disagreement
+    // here would be a picture that looks washed out with nothing to point
+    // at.
+    const FluxionRHIFormat format = Fluxion_TextureAsset_GetUsageFormat(usage);
+    return format == FLUXION_RHI_FORMAT_R8G8B8A8_SRGB || format == FLUXION_RHI_FORMAT_B8G8R8A8_SRGB;
+}
+
+FluxionTextureImportSettings Fluxion_TextureAsset_DefaultImportSettings(FluxionTextureUsage usage)
+{
+    FluxionTextureImportSettings settings;
+    memset(&settings, 0, sizeof(settings));
+
+    settings.version = FLUXION_TEXTURE_IMPORT_SETTINGS_VERSION;
+    settings.usage = (u32)usage;
+
+    // Mips by default, for everything. Without them every surface that
+    // recedes shimmers, and the shimmer moves with the camera -- which
+    // reads as the renderer being broken rather than as a missing setting.
+    settings.flags = FLUXION_TEXTURE_IMPORT_GENERATE_MIPS;
+
+    settings.alphaCoverageThreshold = 0.5f;
+    settings.maxSize = 0;
+
+    settings.addressModeU = (u32)FLUXION_RHI_ADDRESS_MODE_REPEAT;
+    settings.addressModeV = (u32)FLUXION_RHI_ADDRESS_MODE_REPEAT;
+    settings.filter = (u32)FLUXION_RHI_FILTER_LINEAR;
+    settings.maxAnisotropy = 8.0f;
+
+    if (usage == FLUXION_TEXTURE_USAGE_NORMAL_MAP)
+    {
+        // A normal map is the one map whose own variation says how rough
+        // the surface looks from far away, so it is also the one that can
+        // do something about the shimmer.
+        settings.flags |= FLUXION_TEXTURE_IMPORT_ROUGHNESS_LIMITER;
+    }
+
+    if (usage == FLUXION_TEXTURE_USAGE_HDR)
+    {
+        // An environment is sampled by direction, and wrapping one at the
+        // seam samples the far side of the sky.
+        settings.addressModeU = (u32)FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+        settings.addressModeV = (u32)FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+    }
+
+    return settings;
+}
+
+FluxionRHISamplerDesc Fluxion_TextureAsset_GetSamplerDesc(const FluxionTextureImportSettings* settings)
+{
+    FluxionRHISamplerDesc desc;
+    memset(&desc, 0, sizeof(desc));
+
+    desc.minFilter = FLUXION_RHI_FILTER_LINEAR;
+    desc.magFilter = FLUXION_RHI_FILTER_LINEAR;
+    desc.mipFilter = FLUXION_RHI_FILTER_LINEAR;
+    desc.addressModeU = FLUXION_RHI_ADDRESS_MODE_REPEAT;
+    desc.addressModeV = FLUXION_RHI_ADDRESS_MODE_REPEAT;
+    desc.addressModeW = FLUXION_RHI_ADDRESS_MODE_REPEAT;
+    desc.maxAnisotropy = 1.0f;
+    desc.debugName = NULL;
+
+    if (settings == NULL) return desc;
+
+    desc.minFilter = (FluxionRHIFilter)settings->filter;
+    desc.magFilter = (FluxionRHIFilter)settings->filter;
+    desc.mipFilter = (FluxionRHIFilter)settings->filter;
+    desc.addressModeU = (FluxionRHIAddressMode)settings->addressModeU;
+    desc.addressModeV = (FluxionRHIAddressMode)settings->addressModeV;
+    desc.addressModeW = (FluxionRHIAddressMode)settings->addressModeV;
+    desc.maxAnisotropy = settings->maxAnisotropy;
+
+    // Anisotropy only means anything with mips to be anisotropic across.
+    if ((settings->flags & FLUXION_TEXTURE_IMPORT_GENERATE_MIPS) == 0) desc.maxAnisotropy = 1.0f;
+
+    return desc;
+}

@@ -50,6 +50,12 @@ typedef struct FluxionVfsSourceVTable
     // so a caller never has to know which source answered.
     u8* (*readAll)(FluxionVfsSource* self, const char* path, usize* outSize);
 
+    // How large the file is, without reading it. NULL on a source that
+    // cannot say cheaply, and then Fluxion_Vfs_GetSize answers zero
+    // rather than reading the whole file to find out -- a caller asking
+    // for a size does not expect to pay for the contents.
+    usize (*getSize)(FluxionVfsSource* self, const char* path);
+
     // NULL on a read-only source, which is what makes "assets:// cannot
     // be written" a fact about the source rather than a rule someone
     // remembered to check.
@@ -82,6 +88,14 @@ bool Fluxion_Vfs_UnmountAll(const char* scheme);
 u32  Fluxion_Vfs_GetSourceCount(const char* scheme);
 
 bool Fluxion_Vfs_Exists(const char* path);
+
+// How large a file is, without reading it.
+//
+// Zero when it is not there, and zero for a file with nothing in it --
+// the two are not told apart here, because every caller that cares can
+// ask Exists, and every caller that does not would have had to handle
+// both the same way anyway.
+usize Fluxion_Vfs_GetSize(const char* path);
 
 // Reads through the scheme's sources, newest mount first, and stops at
 // the first one that has the file. NULL when no source does, or when the

@@ -209,6 +209,84 @@ void TheTypeShipsCookedAndClaimsNoSourceFormat(TestContext* ctx)
     Fluxion_AssetTypes_Shutdown();
 }
 
+// The single most consequential thing the usage decides, and the one
+// whose failure produces no error at all.
+void OnlyColourIsStoredWithAnSrgbCurve(TestContext* ctx)
+{
+    TEST_CHECK(ctx, Fluxion_TextureAsset_IsUsageSRGB(FLUXION_TEXTURE_USAGE_COLOR_SRGB));
+
+    // A normal is a direction and a mask is a number. Through an sRGB
+    // curve neither looks wrong -- it IS wrong, and nothing reports it.
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_IsUsageSRGB(FLUXION_TEXTURE_USAGE_NORMAL_MAP));
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_IsUsageSRGB(FLUXION_TEXTURE_USAGE_MASK_LINEAR));
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_IsUsageSRGB(FLUXION_TEXTURE_USAGE_GRAYSCALE));
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_IsUsageSRGB(FLUXION_TEXTURE_USAGE_HDR));
+
+    // Every usage cooks to a format this module can actually lay out --
+    // otherwise the preset would name something no texture could be
+    // written in.
+    for (int i = 0; i < FLUXION_TEXTURE_USAGE_COUNT; ++i)
+    {
+        const FluxionRHIFormat format = Fluxion_TextureAsset_GetUsageFormat((FluxionTextureUsage)i);
+        TEST_CHECK(ctx, format != FLUXION_RHI_FORMAT_UNKNOWN);
+        TEST_CHECK(ctx, Fluxion_TextureAsset_GetLevelByteSize(format, 4, 4) > 0);
+    }
+
+    // And the answer is read off the format rather than kept beside it:
+    // whatever the format says, the sRGB question agrees with it.
+    for (int i = 0; i < FLUXION_TEXTURE_USAGE_COUNT; ++i)
+    {
+        const FluxionRHIFormat format = Fluxion_TextureAsset_GetUsageFormat((FluxionTextureUsage)i);
+        const bool formatIsSrgb = format == FLUXION_RHI_FORMAT_R8G8B8A8_SRGB || format == FLUXION_RHI_FORMAT_B8G8R8A8_SRGB;
+        TEST_CHECK(ctx, Fluxion_TextureAsset_IsUsageSRGB((FluxionTextureUsage)i) == formatIsSrgb);
+    }
+}
+
+void TheDefaultsFollowTheUsage(TestContext* ctx)
+{
+    for (int i = 0; i < FLUXION_TEXTURE_USAGE_COUNT; ++i)
+    {
+        const FluxionTextureImportSettings settings = Fluxion_TextureAsset_DefaultImportSettings((FluxionTextureUsage)i);
+
+        TEST_CHECK(ctx, settings.version == FLUXION_TEXTURE_IMPORT_SETTINGS_VERSION);
+        TEST_CHECK(ctx, settings.usage == (u32)i);
+
+        // Mips for everything by default: without them every receding
+        // surface shimmers, and the shimmer reads as a broken renderer
+        // rather than as a missing setting.
+        TEST_CHECK(ctx, (settings.flags & FLUXION_TEXTURE_IMPORT_GENERATE_MIPS) != 0);
+    }
+
+    // The one map whose own variation says how rough a surface looks from
+    // far away is the one that gets the limiter.
+    const FluxionTextureImportSettings normal = Fluxion_TextureAsset_DefaultImportSettings(FLUXION_TEXTURE_USAGE_NORMAL_MAP);
+    TEST_CHECK(ctx, (normal.flags & FLUXION_TEXTURE_IMPORT_ROUGHNESS_LIMITER) != 0);
+
+    const FluxionTextureImportSettings colour = Fluxion_TextureAsset_DefaultImportSettings(FLUXION_TEXTURE_USAGE_COLOR_SRGB);
+    TEST_CHECK(ctx, (colour.flags & FLUXION_TEXTURE_IMPORT_ROUGHNESS_LIMITER) == 0);
+
+    // An environment is sampled by direction; wrapping it at the seam
+    // samples the far side of the sky.
+    const FluxionTextureImportSettings hdr = Fluxion_TextureAsset_DefaultImportSettings(FLUXION_TEXTURE_USAGE_HDR);
+    TEST_CHECK(ctx, hdr.addressModeU == (u32)FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE);
+
+    // The sampler follows the settings, and anisotropy is switched off
+    // where there are no mips to be anisotropic across.
+    FluxionRHISamplerDesc desc = Fluxion_TextureAsset_GetSamplerDesc(&colour);
+    TEST_CHECK(ctx, desc.maxAnisotropy > 1.0f);
+    TEST_CHECK(ctx, desc.addressModeU == FLUXION_RHI_ADDRESS_MODE_REPEAT);
+
+    FluxionTextureImportSettings noMips = colour;
+    noMips.flags &= ~FLUXION_TEXTURE_IMPORT_GENERATE_MIPS;
+    desc = Fluxion_TextureAsset_GetSamplerDesc(&noMips);
+    TEST_CHECK(ctx, desc.maxAnisotropy == 1.0f);
+
+    // A description with nothing to go on is still a usable one, not a
+    // zeroed struct that asks for nearest filtering nobody wanted.
+    desc = Fluxion_TextureAsset_GetSamplerDesc(nullptr);
+    TEST_CHECK(ctx, desc.minFilter == FLUXION_RHI_FILTER_LINEAR);
+}
+
 } // namespace
 
 extern "C" void Test_TextureAsset_Run(TestContext* ctx)
@@ -219,4 +297,6 @@ extern "C" void Test_TextureAsset_Run(TestContext* ctx)
     RoundTripIsByteIdentical(ctx);
     RefusesWhatItShould(ctx);
     TheTypeShipsCookedAndClaimsNoSourceFormat(ctx);
+    OnlyColourIsStoredWithAnSrgbCurve(ctx);
+    TheDefaultsFollowTheUsage(ctx);
 }

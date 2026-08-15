@@ -238,6 +238,29 @@ bool Fluxion_Vfs_Exists(const char* path)
     return false;
 }
 
+usize Fluxion_Vfs_GetSize(const char* path)
+{
+    char relative[FLUXION_VFS_MAX_PATH];
+    const FluxionVfsMount* mount = Fluxion_Vfs_Resolve(path, relative, sizeof(relative));
+    if (!mount) return 0;
+
+    for (u32 i = mount->sourceCount; i > 0; --i)
+    {
+        FluxionVfsSource* source = mount->sources[i - 1];
+        if (!source->vtable->getSize) continue;
+
+        const usize size = source->vtable->getSize(source, relative);
+        if (size > 0) return size;
+
+        // A source that says zero may simply not have the file, so the
+        // search goes on -- but if it does have it and it is empty, the
+        // answer is zero either way and no further source can improve it.
+        if (source->vtable->exists && source->vtable->exists(source, relative)) return 0;
+    }
+
+    return 0;
+}
+
 u8* Fluxion_Vfs_ReadAll(const char* path, usize* outSize)
 {
     if (outSize) *outSize = 0;
@@ -392,6 +415,21 @@ static bool Fluxion_VfsDirectorySource_MakeParents(char* full, usize rootLength)
     return true;
 }
 
+static usize Fluxion_VfsDirectorySource_GetSize(FluxionVfsSource* source, const char* relative)
+{
+    const FluxionVfsDirectorySource* self = (const FluxionVfsDirectorySource*)source;
+    char full[FLUXION_VFS_MAX_PATH];
+    if (!Fluxion_VfsDirectorySource_BuildPath(self, relative, full, sizeof(full))) return 0;
+
+    FluxionFile file;
+    if (!Fluxion_Platform_FileOpen(&file, full, FLUXION_FILE_OPEN_READ)) return 0;
+
+    const i64 size = Fluxion_Platform_FileSize(&file);
+    Fluxion_Platform_FileClose(&file);
+
+    return size > 0 ? (usize)size : 0u;
+}
+
 static bool Fluxion_VfsDirectorySource_WriteAll(FluxionVfsSource* source, const char* relative, const void* data, usize size)
 {
     const FluxionVfsDirectorySource* self = (const FluxionVfsDirectorySource*)source;
@@ -429,6 +467,7 @@ static void Fluxion_VfsDirectorySource_Destroy(FluxionVfsSource* source)
 static const FluxionVfsSourceVTable s_directoryVTable = {
     Fluxion_VfsDirectorySource_Exists,
     Fluxion_VfsDirectorySource_ReadAll,
+    Fluxion_VfsDirectorySource_GetSize,
     Fluxion_VfsDirectorySource_WriteAll,
     Fluxion_VfsDirectorySource_Destroy,
 };

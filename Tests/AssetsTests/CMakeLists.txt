@@ -7,6 +7,7 @@ engine_add_test(
         Test_AssetDatabase.cpp
         Test_AssetLoading.cpp
         Test_Package.cpp
+        Test_AssetImport.cpp
     DEPENDENCIES
         Fluxion::Assets
         # These checks put files on disk and read the finished package
@@ -14,6 +15,8 @@ engine_add_test(
         # interface rather than the C library's -- the same way the thing
         # they are testing does.
         Fluxion::Platform
+        # The import runtime hands its work to the job system.
+        Fluxion::Core
     NO_EXCEPTIONS
     NO_RTTI
 )
@@ -27,6 +30,7 @@ engine_add_header_selfcontained_test(
         Fluxion/Assets/AssetDatabase.h
         Fluxion/Assets/AssetService.h
         Fluxion/Assets/AssetSystem.h
+        Fluxion/Assets/AssetImport.h
         Fluxion/Assets/Assets.h
         Fluxion/Assets/Package.h
         Fluxion/Assets/VirtualFileSystem.h
