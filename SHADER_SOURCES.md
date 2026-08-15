@@ -314,6 +314,39 @@ What changed:       Written from the description. No code was read.
 Licence doubt:      none
 ```
 
+### Exposure and tone mapping
+
+```
+Feature:            Tone mapping (extended Reinhard)
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Reinhard, Stark, Shirley, Ferwerda, "Photographic
+                    Tone Reproduction for Digital Images" (SIGGRAPH
+                    2002), equation 4
+Our implementation: Source/RenderCore/Shaders/Fluxion/Tonemap.jsl,
+                    TonemapReinhard
+What changed:       Applied per channel rather than to the luminance, so
+                    that a very bright colour drifts towards white as film
+                    and eyes both do. A white point of zero or less is our
+                    own addition and means do not tone map at all.
+Licence doubt:      none
+```
+
+```
+Feature:            Exposure from camera settings
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    The photographic exposure relation, which is
+                    standard: EV100 = log2(N^2 / t * 100 / S). The 1.2
+                    calibration between an incident reading and middle
+                    grey is ISO 2720.
+Our implementation: Source/RenderCore/Private/Renderer/Exposure.c
+What changed:       nothing
+Licence doubt:      none
+```
+
 Not yet written, and named here so that their absence is a decision
 rather than an oversight: the split-sum environment approximation (Karis
 2013) and multiscatter energy compensation, both of which need the

@@ -96,10 +96,18 @@ struct IRBuildOptions
 {
     // Per-group uniform-buffer budget, in bytes -- the RHI backend this
     // shader will ultimately run on owns the real per-binding limit
-    // (e.g. a device's minUniformBufferOffsetAlignment-driven maximum),
+    // (e.g. a device engine's minUniformBufferOffsetAlignment-driven maximum),
     // so the caller passes it in rather than this module assuming a
     // fixed limit of its own.
-    unsigned int maxUniformBufferBytesPerGroup = 128;
+    //
+    // Two hundred and fifty-six rather than a hundred and twenty-eight:
+    // one matrix is sixty-four bytes on its own, and a frame that carries
+    // a view-projection alongside a camera position, a light and a couple
+    // of camera settings passes the smaller figure without any of it
+    // being extravagant. Every backend guarantees at least sixteen
+    // kilobytes, so this is nowhere near a hardware limit -- it is a
+    // guard against a shader that has quietly grown a hundred parameters.
+    unsigned int maxUniformBufferBytesPerGroup = 256;
 };
 
 // Builds the module-level IR metadata from an already-Analyze()'d

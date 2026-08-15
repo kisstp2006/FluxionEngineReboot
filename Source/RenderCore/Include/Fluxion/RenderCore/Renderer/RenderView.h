@@ -63,6 +63,10 @@ typedef struct FluxionFrameConstants
     // A flat amount of light arriving from everywhere, standing in for
     // the sky until there is one. rgb; w is unused.
     FluxionVec4 ambientColor;
+
+    // x: the exposure multiplier. y: the tone mapping white point, with
+    // zero or less meaning no tone mapping. zw unused.
+    FluxionVec4 toneMapping;
 } FluxionFrameConstants;
 
 // `renderPipeline` from the original sketch is deliberately not here -- a
@@ -89,6 +93,26 @@ typedef struct FluxionRenderViewDesc
     FluxionVec3 sunDirection; // to the light; normalized here if it is not already
     FluxionVec3 sunColor;     // colour times intensity
     FluxionVec3 ambientColor;
+
+    // How much light makes a middle grey. One multiplication, applied
+    // after the lighting and before the tone mapping.
+    //
+    // Zero or less is taken as one rather than as darkness. A description
+    // that nobody filled in should give a picture, not a black screen --
+    // and a black screen is what an unset multiplier would produce, which
+    // reads as a broken renderer rather than as a missing setting.
+    // Fluxion_Exposure_FromCamera works one of these out from what a
+    // photographer would set instead.
+    f32 exposure;
+
+    // The value that tone mapping brings out as exactly one. Everything
+    // brighter is clipped rather than compressed, which is what makes a
+    // highlight read as a bright thing.
+    //
+    // Zero or less means DO NOT TONE MAP. That is not a degenerate case:
+    // it is how a caller says it will do this itself later, and a curve
+    // applied twice is far worse than one applied not at all.
+    f32 tonemapWhitePoint;
 } FluxionRenderViewDesc;
 
 FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device, const FluxionRenderViewDesc* desc);

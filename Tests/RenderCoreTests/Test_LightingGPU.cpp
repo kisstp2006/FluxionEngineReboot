@@ -92,6 +92,9 @@ struct Configuration
     f32 sunDirection[3];
     f32 sunColor[3];
     f32 ambient[3];
+
+    f32 exposure;
+    f32 tonemapWhitePoint;
 };
 
 struct Rgb
@@ -369,6 +372,8 @@ Rgb RenderOne(TestContext* ctx, LightingRig& rig, const Configuration& configura
     viewDesc.sunDirection = FluxionVec3{ configuration.sunDirection[0], configuration.sunDirection[1], configuration.sunDirection[2] };
     viewDesc.sunColor = FluxionVec3{ configuration.sunColor[0], configuration.sunColor[1], configuration.sunColor[2] };
     viewDesc.ambientColor = FluxionVec3{ configuration.ambient[0], configuration.ambient[1], configuration.ambient[2] };
+    viewDesc.exposure = configuration.exposure;
+    viewDesc.tonemapWhitePoint = configuration.tonemapWhitePoint;
     FluxionRenderViewHandle view = Fluxion_RenderView_Create(rig.device, &viewDesc);
     Fluxion_RenderView_UpdateFrameConstants(view);
 
@@ -434,6 +439,13 @@ Configuration BaseConfiguration()
     configuration.metallic = 0.0f;
     configuration.roughness = 1.0f;
     configuration.occlusion = 0.0f;
+
+    // One and none: the light that leaves the surface arrives at the
+    // target untouched, so every check above this one is about the
+    // reflectance model and nothing else. The camera gets its own checks
+    // further down.
+    configuration.exposure = 1.0f;
+    configuration.tonemapWhitePoint = 0.0f;
 
     // Straight at the surface, which faces the camera.
     configuration.sunDirection[2] = 1.0f;
@@ -558,6 +570,81 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     // where the map says there is none.
     const Rgb occludedColor = RenderOne(ctx, rig, occluded);
     TEST_CHECK(ctx, occludedColor.r > 0.35f && occludedColor.r < 0.45f);
+
+    // --- The camera: exposure -------------------------------------------
+    //
+    // Emissive, because it passes through the lighting untouched -- which
+    // makes what comes out at the far end a statement about the camera
+    // alone.
+    Configuration exposed = BaseConfiguration();
+    exposed.name = "exposure halves the light";
+    exposed.sunColor[0] = 0.0f;
+    exposed.sunColor[1] = 0.0f;
+    exposed.sunColor[2] = 0.0f;
+    exposed.emissive[0] = 2.0f;
+    exposed.emissive[1] = 1.0f;
+    exposed.emissive[2] = 0.5f;
+    exposed.exposure = 0.5f;
+    const Rgb exposedColor = RenderOne(ctx, rig, exposed);
+
+    TEST_CHECK(ctx, exposedColor.r > 0.99f && exposedColor.r < 1.01f);
+    TEST_CHECK(ctx, exposedColor.g > 0.49f && exposedColor.g < 0.51f);
+    TEST_CHECK(ctx, exposedColor.b > 0.24f && exposedColor.b < 0.26f);
+
+    // --- The camera: tone mapping ---------------------------------------
+    //
+    // A white point of two, and three values around it. The one AT the
+    // white point has to come out at exactly one -- that is what naming a
+    // white point means, and an operator that merely compressed towards
+    // one without reaching it would leave the brightest thing in every
+    // scene slightly grey.
+    Configuration mapped = BaseConfiguration();
+    mapped.name = "tone mapped against a white point of two";
+    mapped.sunColor[0] = 0.0f;
+    mapped.sunColor[1] = 0.0f;
+    mapped.sunColor[2] = 0.0f;
+    mapped.emissive[0] = 2.0f;  // at the white point
+    mapped.emissive[1] = 1.0f;  // below it
+    mapped.emissive[2] = 0.5f;  // well below it
+    mapped.tonemapWhitePoint = 2.0f;
+    const Rgb mappedColor = RenderOne(ctx, rig, mapped);
+
+    TEST_CHECK(ctx, mappedColor.r > 0.995f && mappedColor.r < 1.005f);
+
+    // 1 * (1 + 1/4) / (1 + 1) and 0.5 * (1 + 0.5/4) / (1 + 0.5), worked
+    // out from the published operator rather than from what came back.
+    TEST_CHECK(ctx, mappedColor.g > 0.620f && mappedColor.g < 0.630f);
+    TEST_CHECK(ctx, mappedColor.b > 0.370f && mappedColor.b < 0.380f);
+
+    // Darker in, darker out. An operator that was not monotonic would
+    // reorder the brightness of two surfaces, which is a far stranger
+    // failure than merely being too dark.
+    TEST_CHECK(ctx, mappedColor.r > mappedColor.g);
+    TEST_CHECK(ctx, mappedColor.g > mappedColor.b);
+
+    // And something far above the white point is CLIPPED rather than
+    // compressed further -- which is what makes a highlight read as a
+    // bright thing rather than as a grey shape.
+    Configuration blown = mapped;
+    blown.name = "far above the white point";
+    blown.emissive[0] = 50.0f;
+    const Rgb blownColor = RenderOne(ctx, rig, blown);
+    TEST_CHECK(ctx, blownColor.r > 1.0f);
+
+    // --- And none of it happens when nobody asked -----------------------
+    Configuration untouched = BaseConfiguration();
+    untouched.name = "no camera at all";
+    untouched.sunColor[0] = 0.0f;
+    untouched.sunColor[1] = 0.0f;
+    untouched.sunColor[2] = 0.0f;
+    untouched.emissive[0] = 3.0f;
+    const Rgb untouchedColor = RenderOne(ctx, rig, untouched);
+
+    // Exactly what went in. A white point of zero means the pass does not
+    // tone map, and an operator applied twice -- here and in whatever
+    // post-processing arrives later -- would be much worse than one
+    // applied not at all.
+    TEST_CHECK(ctx, untouchedColor.r > 2.99f && untouchedColor.r < 3.01f);
 
     Fluxion_TextureDefaults_Shutdown();
     DestroyRig(rig);

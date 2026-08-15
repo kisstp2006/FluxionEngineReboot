@@ -1,0 +1,98 @@
+#ifndef FLUXION_TONEMAP_INCLUDED
+#define FLUXION_TONEMAP_INCLUDED
+
+#include "Fluxion/Math.jsl"
+
+// Getting from an amount of light to a number a screen can show.
+//
+// The lighting produces radiance, which has no upper bound: a sunlit
+// white wall and the sun itself differ by a factor of thousands, and both
+// are correct. A display accepts values between zero and one. Two
+// separate things bridge that gap, and confusing them is the usual reason
+// a picture is unfixably dark or unfixably washed out.
+//
+// EXPOSURE is a camera setting. It says how much light makes a middle
+// grey, and it is one multiplication. Changing it is what a photographer
+// does when a room is dim.
+//
+// TONE MAPPING is what happens to whatever is still above one afterwards.
+// It is a curve, and its job is to keep a highlight recognisable as a
+// bright thing rather than a flat white shape.
+//
+// Neither is a colour correction and neither is the display's transfer
+// function -- see LinearToSRGB at the end of this file for that third
+// thing, which is not applied here.
+
+// The multiplier for a photographic exposure value.
+//
+// EV100 is the exposure value at a sensitivity of 100: zero is a fairly
+// dim interior, fifteen is bright daylight, and each step of one halves
+// the light that reaches the sensor. The 1.2 is the standard calibration
+// between an incident reading and the middle grey it should produce.
+float ExposureFromEV100(float ev100)
+{
+    return 1.0 / (1.2 * pow(2.0, ev100));
+}
+
+Vector3 ApplyExposure(Vector3 color, float exposure)
+{
+    return color * exposure;
+}
+
+// The extended Reinhard operator.
+//
+// The plain form, c / (1 + c), never reaches one: the brightest thing in
+// a scene is always a little grey. The extended form takes a white point
+// -- the value that should come out as exactly one -- and everything
+// brighter than it is clipped rather than compressed, which is what
+// makes a highlight look like a highlight.
+//
+// Applied per channel rather than to the luminance. A luminance-only
+// version keeps a bright red fully red however intense it gets, which
+// reads as clipping; per channel, the strongest channel saturates first
+// and a very bright colour drifts towards white, which is what film and
+// eyes both do.
+//
+// A white point of zero or less means DO NOT TONE MAP: the colour is
+// returned untouched. That is not a degenerate case to be guarded
+// against, it is how a caller says it will do this itself somewhere else
+// -- and applying a curve twice is far worse than applying none.
+Vector3 TonemapReinhard(Vector3 color, float whitePoint)
+{
+    if (whitePoint <= 0.0)
+    {
+        return color;
+    }
+
+    float w2 = Square(whitePoint);
+    Vector3 numerator = color * (Vector3(1.0, 1.0, 1.0) + color / w2);
+    return numerator / (Vector3(1.0, 1.0, 1.0) + color);
+}
+
+// The display's transfer function, which is neither of the two above.
+//
+// NOT applied by any pass in this engine. A colour target declared in an
+// sRGB format has the hardware do this on the way out, which is both
+// free and correct for blending; doing it here as well would encode
+// twice and wash the picture out. It is here for a pass that writes to a
+// target with no sRGB format of its own and therefore has to.
+//
+// The piecewise form rather than a plain power: the straight segment near
+// black is what keeps the darkest few values distinguishable, and the
+// exponent alone would crush them together.
+Vector3 LinearToSRGB(Vector3 color)
+{
+    Vector3 clamped = Saturate3(color);
+
+    Vector3 high = pow(clamped, Vector3(1.0 / 2.4, 1.0 / 2.4, 1.0 / 2.4)) * 1.055 - Vector3(0.055, 0.055, 0.055);
+    Vector3 low = clamped * 12.92;
+
+    // Chosen per channel without branching on each one: step gives zero
+    // below the join and one above it, and mix then picks. Three
+    // conditionals here would be three places for a divergent branch to
+    // cost more than the arithmetic it avoided.
+    Vector3 useHigh = step(Vector3(0.0031308, 0.0031308, 0.0031308), clamped);
+    return mix(low, high, useHigh);
+}
+
+#endif

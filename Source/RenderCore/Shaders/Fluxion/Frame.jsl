@@ -38,4 +38,10 @@
 // sky until there is one.
 [Uniform(Frame)] Vector4 ambientColor;
 
+// x: the exposure multiplier -- how much light makes a middle grey.
+// y: the tone mapping white point, the value that comes out as exactly
+//    one. Zero or less means the pass does not tone map at all.
+// zw: unused.
+[Uniform(Frame)] Vector4 toneMapping;
+
 #endif

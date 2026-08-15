@@ -23,6 +23,8 @@ typedef struct FluxionRenderViewRecord
     FluxionVec3 sunDirection;
     FluxionVec3 sunColor;
     FluxionVec3 ambientColor;
+    f32 exposure;
+    f32 tonemapWhitePoint;
 
     FluxionRHIBufferHandle frameConstantBuffer; // uniform buffer holding this frame's FluxionFrameConstants
     FluxionRHIBindGroupLayoutHandle frameBindGroupLayout;
@@ -92,6 +94,13 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     record->sunDirection = desc->sunDirection;
     record->sunColor = desc->sunColor;
     record->ambientColor = desc->ambientColor;
+
+    // Taken as one when nobody said. See the field's own comment: an
+    // unset multiplier producing a black screen would read as a broken
+    // renderer rather than as a description with a hole in it.
+    record->exposure = desc->exposure > 0.0f ? desc->exposure : 1.0f;
+    record->tonemapWhitePoint = desc->tonemapWhitePoint;
+
     record->frameConstantBuffer = frameConstantBuffer;
     record->frameBindGroupLayout = frameBindGroupLayout;
     record->frameBindGroup = frameBindGroup;
@@ -150,6 +159,9 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
     constants.ambientColor.x = record->ambientColor.x;
     constants.ambientColor.y = record->ambientColor.y;
     constants.ambientColor.z = record->ambientColor.z;
+
+    constants.toneMapping.x = record->exposure;
+    constants.toneMapping.y = record->tonemapWhitePoint;
 
     void* mapped = Fluxion_RHI_MapBuffer(record->frameConstantBuffer);
     if (mapped != NULL)

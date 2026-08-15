@@ -200,8 +200,14 @@ void Test_ShaderCache_Run(TestContext& ctx)
 
             // A different uniform-buffer budget changes how bindings are
             // laid out, which the reflection carries.
+            //
+            // The number has to be one the default is NOT, or this checks
+            // nothing: it once said 256, and the day the default became
+            // 256 this stopped being a different request at all and
+            // started failing -- correctly, which is the only reason it
+            // was noticed.
             ArtifactRequest otherBudget = MakeRequest(ArtifactTarget::Glsl);
-            otherBudget.compile.irOptions.maxUniformBufferBytesPerGroup = 256;
+            otherBudget.compile.irOptions.maxUniformBufferBytesPerGroup = 512;
             missedAndCompiled(kSource, otherBudget);
 
             // The same source under a different name: the name reaches

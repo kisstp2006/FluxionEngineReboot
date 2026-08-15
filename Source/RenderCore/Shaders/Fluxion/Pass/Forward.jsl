@@ -3,6 +3,7 @@
 
 #include "Fluxion/Lighting.jsl"
 #include "Fluxion/Surface.jsl"
+#include "Fluxion/Tonemap.jsl"
 #include "Fluxion/Varyings.jsl"
 
 // One of the ends a material can come to: lit here and now, into a single
@@ -32,6 +33,17 @@ void main() {
 
   Vector3 color = EvaluateLighting(surface, N, vWorldPosition);
 
+  // The camera, after the lighting and not during it. Everything above
+  // this line is an amount of light, in the same units for every surface
+  // and every source; everything below is about turning that into a
+  // number a screen can show.
+  color = ApplyExposure(color, toneMapping.x);
+  color = TonemapReinhard(color, toneMapping.y);
+
+  // The display's transfer function is deliberately NOT applied here --
+  // a colour target declared in an sRGB format has the hardware do it,
+  // which is free and blends correctly. Fluxion/Tonemap.jsl has
+  // LinearToSRGB for a pass that writes somewhere with no such format.
   return Vector4(color, surface.opacity);
 }
 

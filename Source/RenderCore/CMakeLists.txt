@@ -14,6 +14,7 @@ engine_embed_shader_library(
         Fluxion/Varyings.jsl
         Fluxion/BRDF.jsl
         Fluxion/Lighting.jsl
+        Fluxion/Tonemap.jsl
         Fluxion/Material.jsl
         Fluxion/Pass/Vertex.jsl
         Fluxion/Pass/Forward.jsl
