@@ -173,9 +173,44 @@ typedef enum FluxionTextureUsage
 // being read anyway.
 #define FLUXION_TEXTURE_IMPORT_ROUGHNESS_LIMITER ((u32)(1u << 4))
 
+// Whether a texture is stored as it was read, or in a block format.
+//
+// Not "which block format": that follows from what the texture holds and
+// from what the machine it is cooked for can read, and neither of those
+// is a decision an artist makes per texture.
+typedef enum FluxionTextureCompression
+{
+    // Larger on disc and in memory, and exact. What a texture wants when
+    // the artefacts of a block format would be visible -- a gradient a
+    // shader will amplify, a lookup table that happens to be an image.
+    FLUXION_TEXTURE_COMPRESSION_NONE = 0,
+
+    // Four times to eight times smaller, and lossy. The right answer for
+    // almost everything, which is why it is the default.
+    FLUXION_TEXTURE_COMPRESSION_BLOCK,
+
+    FLUXION_TEXTURE_COMPRESSION_COUNT,
+} FluxionTextureCompression;
+
+// Which family of block formats a machine can read.
+//
+// This is not a per-texture setting and not a per-artist one: it belongs
+// to the cook target. Desktop hardware reads BC and no ASTC at all;
+// mobile hardware reads ASTC and rarely BC. A texture cooked for both
+// exists twice, which is what the asset database's per-target cooked
+// forms are for.
+typedef enum FluxionTextureBlockFamily
+{
+    FLUXION_TEXTURE_BLOCK_FAMILY_BC = 0,
+    FLUXION_TEXTURE_BLOCK_FAMILY_ASTC,
+} FluxionTextureBlockFamily;
+
 // What the database stores for a texture, and what a re-import compares
 // against. Plain data with no pointers: it is written into the asset
 // database as bytes, and only this module reads it back.
+//
+// A new field goes at the END and the version above it goes up, so that
+// what an older build wrote is still a prefix of what a newer one reads.
 typedef struct FluxionTextureImportSettings
 {
     // Raised when the meaning of a field below changes, so settings
@@ -194,17 +229,38 @@ typedef struct FluxionTextureImportSettings
     u32 addressModeV;
     u32 filter;
     f32 maxAnisotropy;
+
+    // Added after the first version of this struct -- see the note above
+    // about where a new field goes.
+    u32 compression;
 } FluxionTextureImportSettings;
 
-#define FLUXION_TEXTURE_IMPORT_SETTINGS_VERSION 1
+#define FLUXION_TEXTURE_IMPORT_SETTINGS_VERSION 2
 
 // What a texture of this usage is imported as when nobody says otherwise.
 FluxionTextureImportSettings Fluxion_TextureAsset_DefaultImportSettings(FluxionTextureUsage usage);
 
-// The format a usage cooks to. Uncompressed for now; a compressed one
-// arrives here and nowhere else, which is why every caller asks rather
-// than choosing.
-FluxionRHIFormat Fluxion_TextureAsset_GetUsageFormat(FluxionTextureUsage usage);
+// Reads settings back out of the bytes the database holds.
+//
+// Bytes written by an older build are shorter than this struct, and the
+// fields it did not have are filled in with what they would have meant
+// then -- which for compression is "none", because that is what every
+// texture cooked before the field existed actually is. Refuses bytes from
+// a NEWER build rather than reading fields it does not understand: a
+// setting misread is a texture silently cooked wrong.
+bool Fluxion_TextureAsset_ReadImportSettings(const void* bytes, usize size, FluxionTextureImportSettings* outSettings);
+
+// The format a texture cooks to: what it holds, whether it is compressed,
+// and which block family the machine it is cooked for can read. Three
+// inputs and one answer, in one place, so that no caller ever picks a
+// format itself.
+//
+// NOTE for whatever samples a normal map: the BC answer here is BC5,
+// which stores TWO channels. The third has to be reconstructed from the
+// other two, and a shader that reads it straight gets whatever the format
+// left there rather than a direction.
+FluxionRHIFormat Fluxion_TextureAsset_GetCookedFormat(FluxionTextureUsage usage, FluxionTextureCompression compression,
+                                                      FluxionTextureBlockFamily family);
 
 // Whether this usage's format carries an sRGB curve. Answered from the
 // format itself, so it cannot disagree with what is stored.

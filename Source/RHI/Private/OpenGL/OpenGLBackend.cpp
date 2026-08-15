@@ -120,6 +120,27 @@ GLenum Fluxion_RHIOpenGL_MapSizedInternalFormat(FluxionRHIFormat format)
     }
 }
 
+bool Fluxion_RHIOpenGL_DeviceIsFormatSupported(FluxionRHIDeviceHandle device, FluxionRHIFormat format)
+{
+    if (Fluxion_RHIOpenGL_ResolveDevice(device) == nullptr) return false;
+    if (Fluxion_RHI_GetFormatInfo(format).blockBytes == 0) return false;
+
+    // The mapper answers GL_RGBA8 for anything it does not know, so a
+    // format that lands there without being asked for is one this backend
+    // cannot hold -- and saying yes would mean a texture quietly created
+    // in the wrong format rather than not created at all.
+    const GLenum internalFormat = Fluxion_RHIOpenGL_MapSizedInternalFormat(format);
+    if (internalFormat == GL_RGBA8 && format != FLUXION_RHI_FORMAT_R8G8B8A8_UNORM && format != FLUXION_RHI_FORMAT_B8G8R8A8_UNORM)
+    {
+        return false;
+    }
+
+    // Whether the driver will actually allocate it, asked of the driver.
+    GLint supported = GL_FALSE;
+    glGetInternalformativ(GL_TEXTURE_2D, internalFormat, GL_INTERNALFORMAT_SUPPORTED, 1, &supported);
+    return supported == GL_TRUE;
+}
+
 void Fluxion_RHIOpenGL_MapPixelTransferFormat(FluxionRHIFormat format, GLenum* outFormat, GLenum* outType)
 {
     switch (format)
@@ -397,6 +418,7 @@ static const FluxionRHIBackendVTable s_openglVTable = {
     Fluxion_RHIOpenGL_CommandListCopyTexture,
     Fluxion_RHIOpenGL_CommandListCopyBufferToTexture,
     Fluxion_RHIOpenGL_CommandListCopyTextureToBuffer,
+    Fluxion_RHIOpenGL_DeviceIsFormatSupported,
     Fluxion_RHIOpenGL_CommandListBarrier,
     Fluxion_RHIOpenGL_CommandListSetBindGroup,
 

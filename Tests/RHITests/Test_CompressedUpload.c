@@ -46,15 +46,19 @@ static void Fluxion_Test_UploadOneCompressedTexture(TestContext* ctx, FluxionRHI
     textureDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
     textureDesc.debugName = "RHITests.CompressedUpload";
 
-    FluxionRHITextureHandle texture = Fluxion_RHI_CreateTexture(device, &textureDesc);
-    if (!FLUXION_HANDLE_IS_VALID(texture))
+    // Not a failure: no hardware is required to have every compressed
+    // format. Asked before creating rather than discovered by creating,
+    // because a backend told to make a texture it cannot reports an
+    // error, and an error is a fault rather than an answer.
+    if (!Fluxion_RHI_Device_IsFormatSupported(device, format))
     {
-        // Not a failure: no backend is required to have every compressed
-        // format, and a software rasteriser in particular may have none.
-        // Skipping says so out loud rather than passing silently.
-        FLUXION_LOG_WARN("RHITests", "%s: %s is not available on this adapter -- skipping its upload check.", backendName, formatName);
+        FLUXION_LOG_WARN("RHITests", "%s: this adapter has no %s -- skipping its upload check.", backendName, formatName);
         return;
     }
+
+    FluxionRHITextureHandle texture = Fluxion_RHI_CreateTexture(device, &textureDesc);
+    TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(texture));
+    if (!FLUXION_HANDLE_IS_VALID(texture)) return;
 
     // The layout the contract asks for, worked out the way a caller is
     // meant to: rows of BLOCKS, padded to the row alignment, each level
@@ -212,6 +216,17 @@ static void Fluxion_Test_CompressedUploadOnBackend(TestContext* ctx, FluxionRHIB
 
     FluxionRHIQueueHandle queue = Fluxion_RHI_GetQueue(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(queue));
+
+    // The question a cook target asks before it picks a format at all.
+    // Every device this engine will run on has the ordinary colour
+    // format, and none of them has a format that does not exist.
+    TEST_CHECK(ctx, Fluxion_RHI_Device_IsFormatSupported(device, FLUXION_RHI_FORMAT_R8G8B8A8_UNORM));
+    TEST_CHECK(ctx, !Fluxion_RHI_Device_IsFormatSupported(device, FLUXION_RHI_FORMAT_UNKNOWN));
+    TEST_CHECK(ctx, !Fluxion_RHI_Device_IsFormatSupported(device, (FluxionRHIFormat)9999));
+
+    // And a dead handle answers no rather than reaching through it.
+    FluxionRHIDeviceHandle noDevice = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    TEST_CHECK(ctx, !Fluxion_RHI_Device_IsFormatSupported(noDevice, FLUXION_RHI_FORMAT_R8G8B8A8_UNORM));
 
     const u64 errorsBefore = Fluxion_RHI_Validation_GetErrorCount();
 

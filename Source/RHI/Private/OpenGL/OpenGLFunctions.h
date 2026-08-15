@@ -48,6 +48,8 @@
     X(PFNGLCOMPRESSEDTEXTURESUBIMAGE3DPROC, glCompressedTextureSubImage3D) \
     /* The readback direction. GL 4.5 core, same as the rest of DSA. */ \
     X(PFNGLGETTEXTURESUBIMAGEPROC, glGetTextureSubImage) \
+    /* Asking whether a format exists before trying to allocate one. */ \
+    X(PFNGLGETINTERNALFORMATIVPROC, glGetInternalformativ) \
     X(PFNGLTEXTUREVIEWPROC, glTextureView) \
     X(PFNGLBINDTEXTUREUNITPROC, glBindTextureUnit) \
     X(PFNGLGENERATETEXTUREMIPMAPPROC, glGenerateTextureMipmap) \

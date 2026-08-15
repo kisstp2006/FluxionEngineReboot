@@ -478,6 +478,15 @@ static void Fluxion_RHI_Null_CommandListCopyTextureToBuffer(FluxionRHICommandLis
     Fluxion_RHI_Null_RequireRecording(commandList, "CopyTextureToBuffer");
 }
 
+static bool Fluxion_RHI_Null_DeviceIsFormatSupported(FluxionRHIDeviceHandle device, FluxionRHIFormat format)
+{
+    FLUXION_UNUSED(device);
+    // Everything the format table knows. There is no hardware here to
+    // disagree, and answering no would only make a caller skip work this
+    // backend exists to let it rehearse.
+    return Fluxion_RHI_GetFormatInfo(format).blockBytes != 0;
+}
+
 static void Fluxion_RHI_Null_CommandListBarrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)
 {
     FLUXION_UNUSED(barriers);
@@ -909,6 +918,7 @@ static const FluxionRHIBackendVTable s_nullVTable = {
     Fluxion_RHI_Null_CommandListCopyTexture,
     Fluxion_RHI_Null_CommandListCopyBufferToTexture,
     Fluxion_RHI_Null_CommandListCopyTextureToBuffer,
+    Fluxion_RHI_Null_DeviceIsFormatSupported,
     Fluxion_RHI_Null_CommandListBarrier,
     Fluxion_RHI_Null_CommandListSetBindGroup,
 

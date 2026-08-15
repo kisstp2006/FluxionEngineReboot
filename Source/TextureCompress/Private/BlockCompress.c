@@ -21,6 +21,13 @@ FluxionTextureCompressPixels Fluxion_TextureCompress_GetPixelLayout(FluxionRHIFo
         case FLUXION_RHI_FORMAT_BC5_UNORM:
         case FLUXION_RHI_FORMAT_BC7_UNORM:
         case FLUXION_RHI_FORMAT_BC7_SRGB:
+        // Four texels by four is the ASTC block size whose weight grid can
+        // cover every texel on its own. The larger ones carry a smaller
+        // grid and lean on the decoder to interpolate between its points,
+        // which is a piece of the format this module does not write --
+        // see ASTC.c. They are refused here rather than encoded badly.
+        case FLUXION_RHI_FORMAT_ASTC_4X4_UNORM:
+        case FLUXION_RHI_FORMAT_ASTC_4X4_SRGB:
             return FLUXION_TEXTURE_COMPRESS_PIXELS_RGBA8;
 
         case FLUXION_RHI_FORMAT_BC6H_UFLOAT:
@@ -81,6 +88,11 @@ static void Fluxion_TextureCompress_EncodeOneBlock(FluxionRHIFormat format, cons
             Fluxion_BC7_EncodeBlock(texels, outBlock);
             return;
 
+        case FLUXION_RHI_FORMAT_ASTC_4X4_UNORM:
+        case FLUXION_RHI_FORMAT_ASTC_4X4_SRGB:
+            Fluxion_ASTC_EncodeBlock(texels, outBlock);
+            return;
+
         default:
             return;
     }
@@ -123,6 +135,11 @@ static void Fluxion_TextureCompress_DecodeOneBlock(FluxionRHIFormat format, cons
         case FLUXION_RHI_FORMAT_BC7_UNORM:
         case FLUXION_RHI_FORMAT_BC7_SRGB:
             Fluxion_BC7_DecodeBlock(block, outTexels);
+            return;
+
+        case FLUXION_RHI_FORMAT_ASTC_4X4_UNORM:
+        case FLUXION_RHI_FORMAT_ASTC_4X4_SRGB:
+            Fluxion_ASTC_DecodeBlock(block, outTexels);
             return;
 
         default:

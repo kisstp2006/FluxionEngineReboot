@@ -504,7 +504,7 @@ void Fluxion_TextureAsset_UnregisterType(void)
 // What a texture is for.
 // ---------------------------------------------------------------------
 
-FluxionRHIFormat Fluxion_TextureAsset_GetUsageFormat(FluxionTextureUsage usage)
+static FluxionRHIFormat Fluxion_TextureAsset_GetUncompressedFormat(FluxionTextureUsage usage)
 {
     switch (usage)
     {
@@ -529,13 +529,81 @@ FluxionRHIFormat Fluxion_TextureAsset_GetUsageFormat(FluxionTextureUsage usage)
     }
 }
 
+// The block format each usage becomes on hardware that reads BC.
+//
+// Each of these is chosen for what the texture HOLDS, not for what it
+// looks like: a normal map goes to the two-channel format because two
+// channels is what a direction needs once the third is reconstructed, a
+// single-channel mask goes to the half-size format because the other
+// three channels would be paid for and thrown away, and anything above
+// one goes to the floating-point one because the rest clamp.
+static FluxionRHIFormat Fluxion_TextureAsset_GetBlockFormatBC(FluxionTextureUsage usage)
+{
+    switch (usage)
+    {
+        case FLUXION_TEXTURE_USAGE_COLOR_SRGB:
+            return FLUXION_RHI_FORMAT_BC7_SRGB;
+
+        case FLUXION_TEXTURE_USAGE_NORMAL_MAP:
+            return FLUXION_RHI_FORMAT_BC5_UNORM;
+
+        case FLUXION_TEXTURE_USAGE_MASK_LINEAR:
+            return FLUXION_RHI_FORMAT_BC7_UNORM;
+
+        case FLUXION_TEXTURE_USAGE_GRAYSCALE:
+            return FLUXION_RHI_FORMAT_BC4_UNORM;
+
+        case FLUXION_TEXTURE_USAGE_HDR:
+            return FLUXION_RHI_FORMAT_BC6H_UFLOAT;
+
+        default:
+            return FLUXION_RHI_FORMAT_UNKNOWN;
+    }
+}
+
+// And on hardware that reads ASTC instead.
+//
+// ASTC has one block layout for everything rather than a family of
+// channel-specific ones, so the only thing that varies here is the colour
+// space -- which is not a small thing, because it is the one distinction
+// that cannot be got wrong silently.
+static FluxionRHIFormat Fluxion_TextureAsset_GetBlockFormatASTC(FluxionTextureUsage usage)
+{
+    switch (usage)
+    {
+        case FLUXION_TEXTURE_USAGE_COLOR_SRGB:
+            return FLUXION_RHI_FORMAT_ASTC_4X4_SRGB;
+
+        case FLUXION_TEXTURE_USAGE_NORMAL_MAP:
+        case FLUXION_TEXTURE_USAGE_MASK_LINEAR:
+        case FLUXION_TEXTURE_USAGE_GRAYSCALE:
+            return FLUXION_RHI_FORMAT_ASTC_4X4_UNORM;
+
+        case FLUXION_TEXTURE_USAGE_HDR:
+            return FLUXION_RHI_FORMAT_ASTC_4X4_FLOAT;
+
+        default:
+            return FLUXION_RHI_FORMAT_UNKNOWN;
+    }
+}
+
+FluxionRHIFormat Fluxion_TextureAsset_GetCookedFormat(FluxionTextureUsage usage, FluxionTextureCompression compression,
+                                                      FluxionTextureBlockFamily family)
+{
+    if (compression == FLUXION_TEXTURE_COMPRESSION_NONE) return Fluxion_TextureAsset_GetUncompressedFormat(usage);
+    if (compression != FLUXION_TEXTURE_COMPRESSION_BLOCK) return FLUXION_RHI_FORMAT_UNKNOWN;
+
+    return family == FLUXION_TEXTURE_BLOCK_FAMILY_ASTC ? Fluxion_TextureAsset_GetBlockFormatASTC(usage)
+                                                       : Fluxion_TextureAsset_GetBlockFormatBC(usage);
+}
+
 bool Fluxion_TextureAsset_IsUsageSRGB(FluxionTextureUsage usage)
 {
     // Read off the format rather than kept beside it. Two places saying
     // the same thing is two places that can disagree, and the disagreement
     // here would be a picture that looks washed out with nothing to point
     // at.
-    return Fluxion_RHI_IsFormatSRGB(Fluxion_TextureAsset_GetUsageFormat(usage));
+    return Fluxion_RHI_IsFormatSRGB(Fluxion_TextureAsset_GetUncompressedFormat(usage));
 }
 
 FluxionTextureImportSettings Fluxion_TextureAsset_DefaultImportSettings(FluxionTextureUsage usage)
@@ -559,6 +627,15 @@ FluxionTextureImportSettings Fluxion_TextureAsset_DefaultImportSettings(FluxionT
     settings.filter = (u32)FLUXION_RHI_FILTER_LINEAR;
     settings.maxAnisotropy = 8.0f;
 
+    // Compressed by default, for everything. A texture that is not
+    // compressed costs four to eight times its size in memory and in
+    // bandwidth for the whole life of the game, and the artefacts of a
+    // block format are invisible on almost all real texture content. The
+    // exceptions are real and are the reason this is a setting rather
+    // than a rule -- but they are exceptions, and a default that made
+    // every texture pay for them would be the wrong way round.
+    settings.compression = (u32)FLUXION_TEXTURE_COMPRESSION_BLOCK;
+
     if (usage == FLUXION_TEXTURE_USAGE_NORMAL_MAP)
     {
         // A normal map is the one map whose own variation says how rough
@@ -576,6 +653,61 @@ FluxionTextureImportSettings Fluxion_TextureAsset_DefaultImportSettings(FluxionT
     }
 
     return settings;
+}
+
+bool Fluxion_TextureAsset_ReadImportSettings(const void* bytes, usize size, FluxionTextureImportSettings* outSettings)
+{
+    if (bytes == NULL || outSettings == NULL) return false;
+
+    // The version is the first field, so it can be read before anything
+    // else is trusted -- including the length.
+    u32 version = 0;
+    if (size < sizeof(u32)) return false;
+    memcpy(&version, bytes, sizeof(version));
+
+    if (version == 0 || version > FLUXION_TEXTURE_IMPORT_SETTINGS_VERSION)
+    {
+        FLUXION_LOG_ERROR(FLUXION_TEXTURE_ASSET_LOG_CATEGORY,
+                          "texture import settings were written by a newer build (version %u); refusing to read them", version);
+        return false;
+    }
+
+    // How long the bytes must be for the version they claim to be. A blob
+    // shorter than its own version is damaged, and reading it would leave
+    // whichever fields it stopped short of holding defaults that were
+    // never written down -- which is a texture cooked to settings nobody
+    // chose.
+    const usize sizeOfVersion1 = sizeof(FluxionTextureImportSettings) - sizeof(u32);
+    const usize required = (version >= 2) ? sizeof(FluxionTextureImportSettings) : sizeOfVersion1;
+    if (size < required)
+    {
+        FLUXION_LOG_ERROR(FLUXION_TEXTURE_ASSET_LOG_CATEGORY,
+                          "texture import settings claim version %u but are only %zu bytes", version, size);
+        return false;
+    }
+
+    // Start from the defaults so that every field an older version did not
+    // carry already means what it meant then. Which usage those defaults
+    // belong to is not known yet, so the neutral one is used and the bytes
+    // overwrite it a line later.
+    *outSettings = Fluxion_TextureAsset_DefaultImportSettings(FLUXION_TEXTURE_USAGE_COLOR_SRGB);
+
+    // Version one had every field except the last, so its bytes are a
+    // prefix of these. Copying only what is there is what makes that true
+    // rather than merely hoped for.
+    usize copySize = size;
+    if (copySize > sizeof(FluxionTextureImportSettings)) copySize = sizeof(FluxionTextureImportSettings);
+    memcpy(outSettings, bytes, copySize);
+
+    if (version < 2)
+    {
+        // Nothing cooked before this field existed is compressed, whatever
+        // the bytes after the end of that version happen to hold.
+        outSettings->compression = (u32)FLUXION_TEXTURE_COMPRESSION_NONE;
+    }
+
+    outSettings->version = FLUXION_TEXTURE_IMPORT_SETTINGS_VERSION;
+    return true;
 }
 
 FluxionRHISamplerDesc Fluxion_TextureAsset_GetSamplerDesc(const FluxionTextureImportSettings* settings)

@@ -527,6 +527,23 @@ void Fluxion_RHIVulkan_CommandListCopyTextureToBuffer(FluxionRHICommandListHandl
     vkCmdCopyImageToBuffer(cl->commandBuffer, srcState->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstState->buffer, 1, &region);
 }
 
+bool Fluxion_RHIVulkan_DeviceIsFormatSupported(FluxionRHIDeviceHandle device, FluxionRHIFormat format)
+{
+    FluxionRHIVulkanDevice* deviceState = Fluxion_RHIVulkan_ResolveDevice(device);
+    if (deviceState == nullptr) return false;
+
+    const VkFormat native = Fluxion_RHIVulkan_MapFormat(format);
+    if (native == VK_FORMAT_UNDEFINED) return false;
+
+    // Asked of the physical device, which is where the answer lives --
+    // and asked with the query that does NOT report an error for a format
+    // it does not have. Creating the image to find out would.
+    VkFormatProperties properties = {};
+    vkGetPhysicalDeviceFormatProperties(deviceState->physicalDevice, native, &properties);
+
+    return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+}
+
 void Fluxion_RHIVulkan_CommandListBarrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)
 {
     FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);

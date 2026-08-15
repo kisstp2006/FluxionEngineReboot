@@ -292,7 +292,7 @@ static void AnOutputBufferTooSmallIsRefusedRatherThanFilled(TestContext* ctx)
     // producing zero bytes that would read as an empty texture.
     TEST_CHECK(ctx, Fluxion_TextureCompress_GetOutputSize(FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, 4, 4) == 0);
     TEST_CHECK(ctx, !Fluxion_TextureCompress_Encode(FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, source, 4, 4, block, sizeof(block)));
-    TEST_CHECK(ctx, Fluxion_TextureCompress_GetPixelLayout(FLUXION_RHI_FORMAT_ASTC_4X4_UNORM) == FLUXION_TEXTURE_COMPRESS_PIXELS_NONE);
+    TEST_CHECK(ctx, Fluxion_TextureCompress_GetPixelLayout(FLUXION_RHI_FORMAT_D32_FLOAT) == FLUXION_TEXTURE_COMPRESS_PIXELS_NONE);
 }
 
 static void BC6HKeepsValuesAboveOne(TestContext* ctx)
@@ -380,6 +380,125 @@ static void TheOutputSizeIsTheFormatsOwnAnswer(TestContext* ctx)
     TEST_CHECK(ctx, Fluxion_TextureCompress_GetOutputSize(FLUXION_RHI_FORMAT_BC6H_UFLOAT, 1, 1) == 16);
 }
 
+static void AnAstcBlockCarriesItsConfigurationWhereTheFormatSaysItDoes(TestContext* ctx)
+{
+    // Read straight out of the bytes rather than through the decoder,
+    // which would only confirm that the decoder reads what the encoder
+    // wrote. The eleven low bits name the weight grid and its precision,
+    // the next two the number of regions, and the four after that how
+    // colour is described. Those four fields are what a hardware decoder
+    // reads first, and everything else in the block depends on them.
+    u8 source[4 * 4 * 4];
+    for (u32 i = 0; i < 16; ++i)
+    {
+        source[i * 4 + 0] = 60;
+        source[i * 4 + 1] = 120;
+        source[i * 4 + 2] = 180;
+        source[i * 4 + 3] = 255;
+    }
+
+    u8 block[16];
+    TEST_CHECK(ctx, Fluxion_TextureCompress_Encode(FLUXION_RHI_FORMAT_ASTC_4X4_UNORM, source, 4, 4, block, sizeof(block)));
+
+    const u32 low = (u32)block[0] | ((u32)block[1] << 8) | ((u32)block[2] << 16);
+    TEST_CHECK(ctx, (low & 0x7FFu) == 0x42u);        // four by four, two bits a weight
+    TEST_CHECK(ctx, ((low >> 11) & 0x3u) == 0u);     // one region
+    TEST_CHECK(ctx, ((low >> 13) & 0xFu) == 12u);    // red, green, blue and alpha, given outright
+}
+
+static void AnAstcBlockOfOneColourComesBackUntouched(TestContext* ctx)
+{
+    // Every endpoint value is eight bits here and the quantization step is
+    // the identity, so a solid colour has nothing to lose -- unlike BC7,
+    // where the two endpoints share one extra bit and the channels have to
+    // agree about it.
+    u8 source[4 * 4 * 4];
+    for (u32 i = 0; i < 16; ++i)
+    {
+        source[i * 4 + 0] = 201;
+        source[i * 4 + 1] = 100;
+        source[i * 4 + 2] = 37;
+        source[i * 4 + 3] = 202;
+    }
+
+    u8 block[16];
+    TEST_CHECK(ctx, Fluxion_TextureCompress_Encode(FLUXION_RHI_FORMAT_ASTC_4X4_UNORM, source, 4, 4, block, sizeof(block)));
+
+    u8 decoded[4 * 4 * 4];
+    TEST_CHECK(ctx, Fluxion_TextureCompress_Decode(FLUXION_RHI_FORMAT_ASTC_4X4_UNORM, block, sizeof(block), 4, 4, decoded));
+
+    bool exact = true;
+    for (u32 i = 0; i < sizeof(decoded); ++i)
+    {
+        if (decoded[i] != source[i]) exact = false;
+    }
+    TEST_CHECK(ctx, exact);
+}
+
+static void AnAstcGradientHasFourPositionsAndNoMore(TestContext* ctx)
+{
+    // Two bits a weight is four positions along the line, against BC7's
+    // sixteen. That is the trade this configuration makes -- the same
+    // sixteen bytes, spent on full-precision endpoints instead of on
+    // index precision -- and the bound says what it costs rather than
+    // pretending it costs nothing.
+    u8 source[4 * 4 * 4];
+    for (u32 i = 0; i < 16; ++i)
+    {
+        source[i * 4 + 0] = (u8)(i * 17u);
+        source[i * 4 + 1] = (u8)(i * 8u);
+        source[i * 4 + 2] = (u8)(255u - i * 17u);
+        source[i * 4 + 3] = 255;
+    }
+
+    u8 block[16];
+    TEST_CHECK(ctx, Fluxion_TextureCompress_Encode(FLUXION_RHI_FORMAT_ASTC_4X4_UNORM, source, 4, 4, block, sizeof(block)));
+
+    u8 decoded[4 * 4 * 4];
+    TEST_CHECK(ctx, Fluxion_TextureCompress_Decode(FLUXION_RHI_FORMAT_ASTC_4X4_UNORM, block, sizeof(block), 4, 4, decoded));
+
+    int worst = 0;
+    for (u32 i = 0; i < sizeof(decoded); ++i)
+    {
+        int difference = (int)decoded[i] - (int)source[i];
+        if (difference < 0) difference = -difference;
+        if (difference > worst) worst = difference;
+    }
+
+    // Four positions across a span of 255 puts them 85 apart, so half of
+    // that is what a texel between two of them costs.
+    TEST_CHECK(ctx, worst <= 43);
+
+    // And the two ends of the line are still exact, which is what makes
+    // the four positions worth having at all.
+    TEST_CHECK(ctx, decoded[0] == source[0]);
+    TEST_CHECK(ctx, decoded[15 * 4] == source[15 * 4]);
+}
+
+static void TheAstcSizesWithNoEncoderSayNoRatherThanGuess(TestContext* ctx)
+{
+    // Six by six and eight by eight cannot give every texel its own
+    // weight, so they lean on the decoder to interpolate between grid
+    // points -- a piece of the format this module does not write. Saying
+    // so is the point: an encoder that quietly produced something for
+    // them would produce it wrong, on the one kind of device that uses
+    // this format.
+    u8 source[4 * 4 * 4];
+    memset(source, 0x60, sizeof(source));
+    u8 block[16];
+
+    TEST_CHECK(ctx, Fluxion_TextureCompress_GetPixelLayout(FLUXION_RHI_FORMAT_ASTC_6X6_UNORM) == FLUXION_TEXTURE_COMPRESS_PIXELS_NONE);
+    TEST_CHECK(ctx, Fluxion_TextureCompress_GetPixelLayout(FLUXION_RHI_FORMAT_ASTC_8X8_UNORM) == FLUXION_TEXTURE_COMPRESS_PIXELS_NONE);
+    TEST_CHECK(ctx, Fluxion_TextureCompress_GetPixelLayout(FLUXION_RHI_FORMAT_ASTC_4X4_FLOAT) == FLUXION_TEXTURE_COMPRESS_PIXELS_NONE);
+
+    TEST_CHECK(ctx, !Fluxion_TextureCompress_Encode(FLUXION_RHI_FORMAT_ASTC_6X6_UNORM, source, 4, 4, block, sizeof(block)));
+    TEST_CHECK(ctx, !Fluxion_TextureCompress_Encode(FLUXION_RHI_FORMAT_ASTC_4X4_FLOAT, source, 4, 4, block, sizeof(block)));
+
+    // The sRGB form of the size that IS written shares its bits with the
+    // linear one -- which curve applies is the reading, not the writing.
+    TEST_CHECK(ctx, Fluxion_TextureCompress_GetPixelLayout(FLUXION_RHI_FORMAT_ASTC_4X4_SRGB) == FLUXION_TEXTURE_COMPRESS_PIXELS_RGBA8);
+}
+
 void Test_BlockCompress_Run(TestContext* ctx)
 {
     ASolidBlockSurvivesExactly(ctx);
@@ -394,4 +513,8 @@ void Test_BlockCompress_Run(TestContext* ctx)
     BC6HKeepsValuesAboveOne(ctx);
     BC6HRefusesNothingAndInventsNothingBelowZero(ctx);
     TheOutputSizeIsTheFormatsOwnAnswer(ctx);
+    AnAstcBlockCarriesItsConfigurationWhereTheFormatSaysItDoes(ctx);
+    AnAstcBlockOfOneColourComesBackUntouched(ctx);
+    AnAstcGradientHasFourPositionsAndNoMore(ctx);
+    TheAstcSizesWithNoEncoderSayNoRatherThanGuess(ctx);
 }

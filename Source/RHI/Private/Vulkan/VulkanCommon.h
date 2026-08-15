@@ -273,6 +273,7 @@ FluxionRHIQueueType Fluxion_RHIVulkan_ResolveCommandListQueueType(FluxionRHIComm
 
 void Fluxion_RHIVulkan_CommandListCopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer);
 void Fluxion_RHIVulkan_CommandListCopyTextureToBuffer(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, u32 mipLevel, u32 arrayLayer, FluxionRHIBufferHandle dst, usize dstOffset);
+bool Fluxion_RHIVulkan_DeviceIsFormatSupported(FluxionRHIDeviceHandle device, FluxionRHIFormat format);
 
 // Portable resource state -> Vulkan (layout, access2, stage2) triple --
 // shared by CommandList barriers and by resource creation (initial

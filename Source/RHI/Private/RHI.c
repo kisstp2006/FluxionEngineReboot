@@ -285,6 +285,12 @@ void Fluxion_RHI_CommandList_CopyTextureToBuffer(FluxionRHICommandListHandle com
     s_backend->CommandListCopyTextureToBuffer(commandList, src, mipLevel, arrayLayer, dst, dstOffset);
 }
 
+bool Fluxion_RHI_Device_IsFormatSupported(FluxionRHIDeviceHandle device, FluxionRHIFormat format)
+{
+    if (s_backend == NULL) return false;
+    return s_backend->DeviceIsFormatSupported(device, format);
+}
+
 void Fluxion_RHI_CommandList_Barrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)
 {
     if (s_backend == NULL) return;

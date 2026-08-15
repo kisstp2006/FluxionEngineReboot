@@ -43,6 +43,7 @@ typedef struct FluxionRHIBackendVTable
     void (*CommandListCopyTexture)(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, FluxionRHITextureHandle dst);
     void (*CommandListCopyBufferToTexture)(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer);
     void (*CommandListCopyTextureToBuffer)(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, u32 mipLevel, u32 arrayLayer, FluxionRHIBufferHandle dst, usize dstOffset);
+    bool (*DeviceIsFormatSupported)(FluxionRHIDeviceHandle device, FluxionRHIFormat format);
     void (*CommandListBarrier)(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount);
     void (*CommandListSetBindGroup)(FluxionRHICommandListHandle commandList, u32 groupIndex, FluxionRHIBindGroupHandle bindGroup);
 

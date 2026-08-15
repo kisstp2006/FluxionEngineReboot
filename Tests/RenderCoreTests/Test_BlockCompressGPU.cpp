@@ -372,12 +372,20 @@ void CompareOneFormatAgainstTheHardware(TestContext* ctx, const GpuFixture& fixt
     compressedDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
     compressedDesc.debugName = "BlockCompressGPU.Compressed";
 
-    FluxionRHITextureHandle compressed = Fluxion_RHI_CreateTexture(fixture.device, &compressedDesc);
-    if (!FLUXION_HANDLE_IS_VALID(compressed))
+    // Asked before creating, not after. A backend told to make a texture
+    // in a format the hardware does not have reports an error, and a
+    // build with validation on stops on a reported error -- so a check
+    // that discovered the answer by trying would take the whole run down
+    // on any machine without the format.
+    if (!Fluxion_RHI_Device_IsFormatSupported(fixture.device, format))
     {
-        FLUXION_LOG_WARN("RenderCoreTests", "%s: %s is not available on this adapter -- skipping it.", backendName, formatName);
+        FLUXION_LOG_WARN("RenderCoreTests", "%s: this adapter has no %s -- that encoder is NOT checked here.", backendName, formatName);
         return;
     }
+
+    FluxionRHITextureHandle compressed = Fluxion_RHI_CreateTexture(fixture.device, &compressedDesc);
+    TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(compressed));
+    if (!FLUXION_HANDLE_IS_VALID(compressed)) return;
 
     if (!UploadCompressedLevel(fixture, compressed, format, blocks))
     {
@@ -592,6 +600,13 @@ void CompareOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const cha
     CompareOneFormatAgainstTheHardware(ctx, fixture, FLUXION_RHI_FORMAT_BC5_UNORM, "BC5_UNORM", backendName, 1);
     CompareOneFormatAgainstTheHardware(ctx, fixture, FLUXION_RHI_FORMAT_BC4_UNORM, "BC4_UNORM", backendName, 1);
     CompareOneFormatAgainstTheHardware(ctx, fixture, FLUXION_RHI_FORMAT_BC6H_UFLOAT, "BC6H_UFLOAT", backendName, 0);
+
+    // ASTC is here so that the first device which supports it checks this
+    // encoder without anyone remembering to ask. No desktop GPU does --
+    // neither the discrete one this was written against nor the software
+    // rasteriser -- so on a desktop it skips and says so, which is the
+    // honest reading of "not checked" rather than "checked and fine".
+    CompareOneFormatAgainstTheHardware(ctx, fixture, FLUXION_RHI_FORMAT_ASTC_4X4_UNORM, "ASTC_4X4_UNORM", backendName, 0);
 
     Fluxion_RenderGraphPassRegistry_Shutdown();
     DestroyGpuFixture(fixture);

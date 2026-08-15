@@ -452,6 +452,21 @@ void Fluxion_RHID3D12_CommandListCopyTextureToBuffer(FluxionRHICommandListHandle
     cl->list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 }
 
+bool Fluxion_RHID3D12_DeviceIsFormatSupported(FluxionRHIDeviceHandle device, FluxionRHIFormat format)
+{
+    FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_ResolveDevice(device);
+    if (deviceState == nullptr) return false;
+
+    const DXGI_FORMAT native = Fluxion_RHID3D12_MapFormat(format);
+    if (native == DXGI_FORMAT_UNKNOWN) return false;
+
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {};
+    support.Format = native;
+    if (FAILED(deviceState->device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support)))) return false;
+
+    return (support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) != 0;
+}
+
 void Fluxion_RHID3D12_CommandListBarrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)
 {
     FluxionRHID3D12CommandList* cl = Fluxion_RHID3D12_RequireRecording(commandList);

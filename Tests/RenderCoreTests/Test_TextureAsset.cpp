@@ -222,24 +222,108 @@ void OnlyColourIsStoredWithAnSrgbCurve(TestContext* ctx)
     TEST_CHECK(ctx, !Fluxion_TextureAsset_IsUsageSRGB(FLUXION_TEXTURE_USAGE_GRAYSCALE));
     TEST_CHECK(ctx, !Fluxion_TextureAsset_IsUsageSRGB(FLUXION_TEXTURE_USAGE_HDR));
 
-    // Every usage cooks to a format this module can actually lay out --
-    // otherwise the preset would name something no texture could be
-    // written in.
+    // Every usage cooks to a format this module can actually lay out, in
+    // every combination of compression and block family -- otherwise a
+    // preset would name something no texture could be written in, and
+    // only on one kind of machine.
     for (int i = 0; i < FLUXION_TEXTURE_USAGE_COUNT; ++i)
     {
-        const FluxionRHIFormat format = Fluxion_TextureAsset_GetUsageFormat((FluxionTextureUsage)i);
-        TEST_CHECK(ctx, format != FLUXION_RHI_FORMAT_UNKNOWN);
-        TEST_CHECK(ctx, Fluxion_TextureAsset_GetLevelByteSize(format, 4, 4) > 0);
+        for (int compression = 0; compression < FLUXION_TEXTURE_COMPRESSION_COUNT; ++compression)
+        {
+            for (int family = 0; family <= (int)FLUXION_TEXTURE_BLOCK_FAMILY_ASTC; ++family)
+            {
+                const FluxionRHIFormat format = Fluxion_TextureAsset_GetCookedFormat(
+                    (FluxionTextureUsage)i, (FluxionTextureCompression)compression, (FluxionTextureBlockFamily)family);
+
+                TEST_CHECK(ctx, format != FLUXION_RHI_FORMAT_UNKNOWN);
+                TEST_CHECK(ctx, Fluxion_TextureAsset_GetLevelByteSize(format, 4, 4) > 0);
+
+                // THE COLOUR SPACE IS THE FORMAT -- and it must stay the
+                // same answer whether or not the texture is compressed and
+                // whichever family it lands in. A colour map that came out
+                // linear because it was compressed would be washed out
+                // with nothing to point at.
+                TEST_CHECK(ctx, Fluxion_RHI_IsFormatSRGB(format) == Fluxion_TextureAsset_IsUsageSRGB((FluxionTextureUsage)i));
+
+                // And a compressed answer is actually compressed, which is
+                // the whole reason for asking.
+                TEST_CHECK(ctx, Fluxion_RHI_IsFormatCompressed(format) == (compression == FLUXION_TEXTURE_COMPRESSION_BLOCK));
+            }
+        }
     }
 
-    // And the answer is read off the format rather than kept beside it:
-    // whatever the format says, the sRGB question agrees with it.
-    for (int i = 0; i < FLUXION_TEXTURE_USAGE_COUNT; ++i)
-    {
-        const FluxionRHIFormat format = Fluxion_TextureAsset_GetUsageFormat((FluxionTextureUsage)i);
-        const bool formatIsSrgb = format == FLUXION_RHI_FORMAT_R8G8B8A8_SRGB || format == FLUXION_RHI_FORMAT_B8G8R8A8_SRGB;
-        TEST_CHECK(ctx, Fluxion_TextureAsset_IsUsageSRGB((FluxionTextureUsage)i) == formatIsSrgb);
-    }
+    // Uncompressed and compressed are different answers, not the same one
+    // twice: a setting that changed nothing would look like it worked.
+    TEST_CHECK(ctx, Fluxion_TextureAsset_GetCookedFormat(FLUXION_TEXTURE_USAGE_COLOR_SRGB, FLUXION_TEXTURE_COMPRESSION_BLOCK, FLUXION_TEXTURE_BLOCK_FAMILY_BC)
+                    != Fluxion_TextureAsset_GetCookedFormat(FLUXION_TEXTURE_USAGE_COLOR_SRGB, FLUXION_TEXTURE_COMPRESSION_NONE, FLUXION_TEXTURE_BLOCK_FAMILY_BC));
+
+    // The two families are different answers too, which is the reason a
+    // texture cooked for both exists twice.
+    TEST_CHECK(ctx, Fluxion_TextureAsset_GetCookedFormat(FLUXION_TEXTURE_USAGE_COLOR_SRGB, FLUXION_TEXTURE_COMPRESSION_BLOCK, FLUXION_TEXTURE_BLOCK_FAMILY_BC)
+                    != Fluxion_TextureAsset_GetCookedFormat(FLUXION_TEXTURE_USAGE_COLOR_SRGB, FLUXION_TEXTURE_COMPRESSION_BLOCK, FLUXION_TEXTURE_BLOCK_FAMILY_ASTC));
+
+    // A normal map compressed for desktop hardware lands in the
+    // two-channel format. Said here so that whatever samples one has to
+    // meet this expectation rather than discover it.
+    TEST_CHECK(ctx, Fluxion_TextureAsset_GetCookedFormat(FLUXION_TEXTURE_USAGE_NORMAL_MAP, FLUXION_TEXTURE_COMPRESSION_BLOCK, FLUXION_TEXTURE_BLOCK_FAMILY_BC)
+                    == FLUXION_RHI_FORMAT_BC5_UNORM);
+
+    // A compression value nothing knows is refused rather than guessed at.
+    TEST_CHECK(ctx, Fluxion_TextureAsset_GetCookedFormat(FLUXION_TEXTURE_USAGE_COLOR_SRGB, (FluxionTextureCompression)99, FLUXION_TEXTURE_BLOCK_FAMILY_BC)
+                    == FLUXION_RHI_FORMAT_UNKNOWN);
+}
+
+// Settings written by an older build are still readable, and settings
+// written by a newer one are refused rather than misread.
+void OlderSettingsAreFilledInAndNewerOnesAreRefused(TestContext* ctx)
+{
+    const FluxionTextureImportSettings current = Fluxion_TextureAsset_DefaultImportSettings(FLUXION_TEXTURE_USAGE_COLOR_SRGB);
+    TEST_CHECK(ctx, current.compression == (u32)FLUXION_TEXTURE_COMPRESSION_BLOCK);
+
+    // What this build writes, read back unchanged.
+    FluxionTextureImportSettings roundTrip{};
+    TEST_CHECK(ctx, Fluxion_TextureAsset_ReadImportSettings(&current, sizeof(current), &roundTrip));
+    TEST_CHECK(ctx, std::memcmp(&roundTrip, &current, sizeof(current)) == 0);
+
+    // What the previous version wrote: the same bytes, one field shorter.
+    // Everything cooked then was uncompressed, and that is what it has to
+    // read back as -- not whatever happened to sit past the end.
+    std::vector<u8> older(sizeof(FluxionTextureImportSettings) - sizeof(u32));
+    std::memcpy(older.data(), &current, older.size());
+    u32 olderVersion = 1;
+    std::memcpy(older.data(), &olderVersion, sizeof(olderVersion));
+
+    FluxionTextureImportSettings fromOlder{};
+    TEST_CHECK(ctx, Fluxion_TextureAsset_ReadImportSettings(older.data(), older.size(), &fromOlder));
+    TEST_CHECK(ctx, fromOlder.compression == (u32)FLUXION_TEXTURE_COMPRESSION_NONE);
+    TEST_CHECK(ctx, fromOlder.usage == current.usage);
+    TEST_CHECK(ctx, fromOlder.maxAnisotropy == current.maxAnisotropy);
+    TEST_CHECK(ctx, fromOlder.version == FLUXION_TEXTURE_IMPORT_SETTINGS_VERSION);
+
+    // A version this build has never heard of. Refused: a setting misread
+    // is a texture silently cooked wrong, which no later run would notice.
+    FluxionTextureImportSettings newer = current;
+    newer.version = FLUXION_TEXTURE_IMPORT_SETTINGS_VERSION + 1;
+    FluxionTextureImportSettings fromNewer{};
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_ReadImportSettings(&newer, sizeof(newer), &fromNewer));
+
+    // And bytes too short to hold even the version.
+    const u8 stub[2] = { 0, 0 };
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_ReadImportSettings(stub, sizeof(stub), &fromNewer));
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_ReadImportSettings(nullptr, 0, &fromNewer));
+
+    // Bytes that claim a version they are too short to be. Accepting
+    // these would leave whichever fields ran out holding defaults nobody
+    // wrote down -- a texture cooked to settings nobody chose, which no
+    // later run could notice.
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_ReadImportSettings(&current, sizeof(current) - sizeof(u32), &fromNewer));
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_ReadImportSettings(older.data(), older.size() - 1, &fromNewer));
+
+    // A version of zero names nothing. Refused rather than treated as the
+    // oldest one, because zero is also what an all-zero buffer looks like.
+    FluxionTextureImportSettings versionless = current;
+    versionless.version = 0;
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_ReadImportSettings(&versionless, sizeof(versionless), &fromNewer));
 }
 
 void TheDefaultsFollowTheUsage(TestContext* ctx)
@@ -298,5 +382,6 @@ extern "C" void Test_TextureAsset_Run(TestContext* ctx)
     RefusesWhatItShould(ctx);
     TheTypeShipsCookedAndClaimsNoSourceFormat(ctx);
     OnlyColourIsStoredWithAnSrgbCurve(ctx);
+    OlderSettingsAreFilledInAndNewerOnesAreRefused(ctx);
     TheDefaultsFollowTheUsage(ctx);
 }

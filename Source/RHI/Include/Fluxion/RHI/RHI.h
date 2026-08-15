@@ -80,6 +80,20 @@ void Fluxion_RHI_Device_CollectGarbage(FluxionRHIDeviceHandle device);
 // backend (e.g. ShaderProgram compiling to GLSL/DXIL/SPIR-V).
 FluxionRHIBackendType Fluxion_RHI_GetDeviceBackendType(FluxionRHIDeviceHandle device);
 
+// Whether this device can hold a sampled texture in this format at all.
+//
+// Asked BEFORE creating one rather than after. A backend told to create a
+// texture in a format it does not have does not simply hand back an
+// invalid handle: it reports an error, and a build with validation
+// switched on treats a reported error as a fault and stops. So "can you"
+// and "please do" have to be two different questions, and this is the
+// first one.
+//
+// Which formats exist is not a property of the backend but of the
+// hardware behind it: no desktop GPU reads ASTC, most mobile ones do not
+// read BC, and a cook target picks between them on exactly this answer.
+bool Fluxion_RHI_Device_IsFormatSupported(FluxionRHIDeviceHandle device, FluxionRHIFormat format);
+
 typedef enum FluxionRHIQueueType
 {
     FLUXION_RHI_QUEUE_TYPE_GRAPHICS = 0,

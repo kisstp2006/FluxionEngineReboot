@@ -155,3 +155,6 @@ void Fluxion_BC7_DecodeBlock(const u8 block[16], u8 outTexels[64]);
 
 void Fluxion_BC6H_EncodeBlock(const f32 texels[64], u8 outBlock[16]);
 void Fluxion_BC6H_DecodeBlock(const u8 block[16], f32 outTexels[64]);
+
+void Fluxion_ASTC_EncodeBlock(const u8 texels[64], u8 outBlock[16]);
+void Fluxion_ASTC_DecodeBlock(const u8 block[16], u8 outTexels[64]);

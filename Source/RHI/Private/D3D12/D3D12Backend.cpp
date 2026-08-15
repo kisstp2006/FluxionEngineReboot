@@ -530,6 +530,7 @@ static const FluxionRHIBackendVTable s_d3d12VTable = {
     Fluxion_RHID3D12_CommandListCopyTexture,
     Fluxion_RHID3D12_CommandListCopyBufferToTexture,
     Fluxion_RHID3D12_CommandListCopyTextureToBuffer,
+    Fluxion_RHID3D12_DeviceIsFormatSupported,
     Fluxion_RHID3D12_CommandListBarrier,
     Fluxion_RHID3D12_CommandListSetBindGroup,
 
