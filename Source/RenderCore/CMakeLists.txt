@@ -9,6 +9,7 @@ engine_embed_shader_library(
     FILES
         Fluxion/Math.jsl
         Fluxion/Surface.jsl
+        Fluxion/Material.jsl
         Fluxion/Pass/Forward.jsl
         Fluxion/Pass/DepthOnly.jsl
 )

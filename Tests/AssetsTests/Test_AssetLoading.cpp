@@ -8,6 +8,7 @@
 #include <Fluxion/Assets/Assets.hpp>
 #include <Fluxion/Core/Jobs/JobSystem.h>
 
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 
@@ -20,11 +21,16 @@ namespace
 // reaches can be looked at.
 #define ASSET_TEST_UPLOADED_TYPE_NAME "TestUploaded"
 
+// Atomic because the loading half runs on worker threads: `loads` is
+// incremented from several at once, and a plain int would lose some of
+// them. It did -- this check passed on one machine and failed on another
+// until the counters were made atomic, which is what a data race looks
+// like from the outside.
 struct UploadCounters
 {
-    int loads = 0;
-    int finalizes = 0;
-    int unloads = 0;
+    std::atomic<int> loads{ 0 };
+    std::atomic<int> finalizes{ 0 };
+    std::atomic<int> unloads{ 0 };
     bool failFinalize = false;
 };
 
@@ -37,7 +43,7 @@ struct UploadedObject
 bool Uploaded_Load(const u8* bytes, usize size, void** outObject, void* userData)
 {
     UploadCounters* counters = static_cast<UploadCounters*>(userData);
-    ++counters->loads;
+    counters->loads.fetch_add(1, std::memory_order_relaxed);
 
     if (size >= sizeof(TestBlob::text)) return false;
 
@@ -57,7 +63,7 @@ bool Uploaded_Load(const u8* bytes, usize size, void** outObject, void* userData
 bool Uploaded_Finalize(void* object, void* userData)
 {
     UploadCounters* counters = static_cast<UploadCounters*>(userData);
-    ++counters->finalizes;
+    counters->finalizes.fetch_add(1, std::memory_order_relaxed);
 
     if (counters->failFinalize) return false;
 
@@ -68,7 +74,7 @@ bool Uploaded_Finalize(void* object, void* userData)
 void Uploaded_Unload(void* object, void* userData)
 {
     UploadCounters* counters = static_cast<UploadCounters*>(userData);
-    ++counters->unloads;
+    counters->unloads.fetch_add(1, std::memory_order_relaxed);
     Fluxion_Allocator_Free(Fluxion_DefaultAllocator(), object, sizeof(UploadedObject));
 }
 

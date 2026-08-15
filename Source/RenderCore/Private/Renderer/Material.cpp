@@ -4,10 +4,12 @@
 // spec's file list, nothing here actually requires C++.
 
 #include <Fluxion/RenderCore/Renderer/Material.h>
+#include <Fluxion/RenderCore/Renderer/MaterialParameters.h>
 
 #include "RendererInternal.h"
 
 #include <Fluxion/Foundation/Assert.h>
+#include <Fluxion/Foundation/Log.h>
 
 #include <cstring>
 
@@ -42,6 +44,11 @@ struct FluxionMaterialRecord
 
     bool dirty = false;
 
+    // Not a shader parameter and not derivable from one: it decides which
+    // pass a draw belongs to and what blend state its pipeline is built
+    // with, both settled before any shader runs.
+    FluxionMaterialAlphaMode alphaMode = FLUXION_MATERIAL_ALPHA_OPAQUE;
+
     FluxionRHIBufferHandle uniformBuffer{ FLUXION_HANDLE_INVALID_INDEX, 0 }; // valid only when uniformBufferSize > 0
     FluxionRHIBindGroupLayoutHandle bindGroupLayout{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     FluxionRHIBindGroupHandle bindGroup{ FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -64,6 +71,85 @@ i32 FindParam(const FluxionMaterialRecord* record, const char* name, FluxionMate
         if (record->params[i].kind == kind && std::strcmp(record->params[i].name, name) == 0) return (i32)i;
     }
     return -1;
+}
+
+// What each parameter the engine understands is called, and what kind it
+// has to be. One table, so a name and its kind cannot drift apart -- and
+// the same strings Fluxion/Material.jsl declares, which is the whole of
+// the agreement between the two files.
+struct CanonicalParameter
+{
+    const char* name;
+    FluxionMaterialParameterKind kind;
+};
+
+const CanonicalParameter kCanonicalParameters[FLUXION_MATERIAL_PARAM_COUNT] = {
+    { "baseColorFactor", FLUXION_MATERIAL_PARAMETER_VEC4 },
+    { "metallicFactor", FLUXION_MATERIAL_PARAMETER_FLOAT },
+    { "roughnessFactor", FLUXION_MATERIAL_PARAMETER_FLOAT },
+    { "reflectance", FLUXION_MATERIAL_PARAMETER_FLOAT },
+    { "emissiveFactor", FLUXION_MATERIAL_PARAMETER_VEC3 },
+    { "normalScale", FLUXION_MATERIAL_PARAMETER_FLOAT },
+    { "occlusionStrength", FLUXION_MATERIAL_PARAMETER_FLOAT },
+    { "alphaCutoff", FLUXION_MATERIAL_PARAMETER_FLOAT },
+};
+
+const char* const kCanonicalTextures[FLUXION_MATERIAL_TEXTURE_COUNT] = {
+    "baseColorMap",
+    "metallicRoughnessMap",
+    "normalMap",
+    "occlusionMap",
+    "emissiveMap",
+};
+
+// A parameter of the right kind, or -1.
+i32 FindCanonical(const FluxionMaterialRecord* record, FluxionMaterialParameter parameter)
+{
+    if ((u32)parameter >= (u32)FLUXION_MATERIAL_PARAM_COUNT) return -1;
+    return FindParam(record, kCanonicalParameters[parameter].name, kCanonicalParameters[parameter].kind);
+}
+
+// Whether a shader used one of the engine's own parameter names to mean
+// something else.
+//
+// Refused rather than tolerated. A material declaring `metallicFactor` as
+// a colour is not a material with an unusual parameter -- it is one whose
+// metallic value can never be set, and every attempt would answer false
+// with nothing to say why. Better to say it once, here, naming the
+// parameter and what it should have been.
+bool CanonicalKindsAgree(const FluxionMaterialRecord* record)
+{
+    bool ok = true;
+
+    for (u32 i = 0; i < record->paramCount; ++i)
+    {
+        const FluxionMaterialParameterInfo& declared = record->params[i];
+
+        for (u32 c = 0; c < (u32)FLUXION_MATERIAL_PARAM_COUNT; ++c)
+        {
+            if (std::strcmp(declared.name, kCanonicalParameters[c].name) != 0) continue;
+            if (declared.kind == kCanonicalParameters[c].kind) break;
+
+            FLUXION_LOG_ERROR("Material", "'%s' is one of the engine's own parameters and has to be declared with its own kind", declared.name);
+            ok = false;
+            break;
+        }
+
+        // A texture name used for something that is not a texture is the
+        // same mistake, and worth the same answer.
+        if (declared.kind == FLUXION_MATERIAL_PARAMETER_TEXTURE) continue;
+
+        for (u32 t = 0; t < (u32)FLUXION_MATERIAL_TEXTURE_COUNT; ++t)
+        {
+            if (std::strcmp(declared.name, kCanonicalTextures[t]) != 0) continue;
+
+            FLUXION_LOG_ERROR("Material", "'%s' is one of the engine's own texture slots and has to be declared as a texture", declared.name);
+            ok = false;
+            break;
+        }
+    }
+
+    return ok;
 }
 
 } // namespace
@@ -93,6 +179,12 @@ extern "C" FluxionMaterialHandle Fluxion_Material_Create(FluxionRHIDeviceHandle 
         bufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
         bufferDesc.debugName = "Fluxion.Material.UniformBuffer";
         record.uniformBuffer = Fluxion_RHI_CreateBuffer(device, &bufferDesc);
+    }
+
+    if (!CanonicalKindsAgree(&record))
+    {
+        if (FLUXION_HANDLE_IS_VALID(record.uniformBuffer)) Fluxion_RHI_DestroyBuffer(record.uniformBuffer);
+        return invalid;
     }
 
     record.bindGroupLayout = FluxionRendererInternal_ShaderProgram_GetMaterialBindGroupLayout(program);
@@ -244,4 +336,134 @@ extern "C" FluxionRHIBindGroupHandle FluxionRendererInternal_Material_GetBindGro
     FluxionMaterialRecord* record = Resolve(material);
     FluxionRHIBindGroupHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     return record != nullptr ? record->bindGroup : invalid;
+}
+
+// --- The parameters the engine itself understands ------------------------
+
+extern "C" const char* Fluxion_Material_GetParameterName(FluxionMaterialParameter parameter)
+{
+    if ((u32)parameter >= (u32)FLUXION_MATERIAL_PARAM_COUNT) return nullptr;
+    return kCanonicalParameters[parameter].name;
+}
+
+extern "C" FluxionMaterialParameterType Fluxion_Material_GetParameterType(FluxionMaterialParameter parameter)
+{
+    if ((u32)parameter >= (u32)FLUXION_MATERIAL_PARAM_COUNT) return FLUXION_MATERIAL_PARAM_TYPE_FLOAT;
+
+    switch (kCanonicalParameters[parameter].kind)
+    {
+        case FLUXION_MATERIAL_PARAMETER_VEC3: return FLUXION_MATERIAL_PARAM_TYPE_VEC3;
+        case FLUXION_MATERIAL_PARAMETER_VEC4: return FLUXION_MATERIAL_PARAM_TYPE_VEC4;
+        default: return FLUXION_MATERIAL_PARAM_TYPE_FLOAT;
+    }
+}
+
+extern "C" const char* Fluxion_Material_GetTextureSlotName(FluxionMaterialTextureSlot slot)
+{
+    if ((u32)slot >= (u32)FLUXION_MATERIAL_TEXTURE_COUNT) return nullptr;
+    return kCanonicalTextures[slot];
+}
+
+extern "C" bool Fluxion_Material_HasParameter(FluxionMaterialHandle material, FluxionMaterialParameter parameter)
+{
+    const FluxionMaterialRecord* record = Resolve(material);
+    if (record == nullptr) return false;
+    return FindCanonical(record, parameter) >= 0;
+}
+
+extern "C" bool Fluxion_Material_HasTextureSlot(FluxionMaterialHandle material, FluxionMaterialTextureSlot slot)
+{
+    const FluxionMaterialRecord* record = Resolve(material);
+    if (record == nullptr || (u32)slot >= (u32)FLUXION_MATERIAL_TEXTURE_COUNT) return false;
+    return FindParam(record, kCanonicalTextures[slot], FLUXION_MATERIAL_PARAMETER_TEXTURE) >= 0;
+}
+
+namespace
+{
+
+// Every canonical setter comes down to this: find the parameter, and copy
+// exactly as many bytes as its kind has. The kind cannot be wrong here --
+// a material that declared one of these names as something else was
+// refused when it was created.
+bool WriteCanonical(FluxionMaterialHandle material, FluxionMaterialParameter parameter, const void* value, usize size)
+{
+    FluxionMaterialRecord* record = Resolve(material);
+    if (record == nullptr) return false;
+
+    const i32 index = FindCanonical(record, parameter);
+    if (index < 0) return false;
+
+    FLUXION_ASSERT_MSG(record->params[index].size >= size, "Material: a parameter's declared size is smaller than its own kind");
+    if (record->params[index].size < size) return false;
+
+    std::memcpy(record->cpuBuffer + record->params[index].offset, value, size);
+    record->dirty = true;
+    return true;
+}
+
+} // namespace
+
+extern "C" bool Fluxion_Material_SetBaseColor(FluxionMaterialHandle material, FluxionVec4 baseColor)
+{
+    return WriteCanonical(material, FLUXION_MATERIAL_PARAM_BASE_COLOR, &baseColor, sizeof(baseColor));
+}
+
+extern "C" bool Fluxion_Material_SetMetallic(FluxionMaterialHandle material, f32 metallic)
+{
+    return WriteCanonical(material, FLUXION_MATERIAL_PARAM_METALLIC, &metallic, sizeof(metallic));
+}
+
+extern "C" bool Fluxion_Material_SetRoughness(FluxionMaterialHandle material, f32 perceptualRoughness)
+{
+    return WriteCanonical(material, FLUXION_MATERIAL_PARAM_ROUGHNESS, &perceptualRoughness, sizeof(perceptualRoughness));
+}
+
+extern "C" bool Fluxion_Material_SetReflectance(FluxionMaterialHandle material, f32 reflectance)
+{
+    return WriteCanonical(material, FLUXION_MATERIAL_PARAM_REFLECTANCE, &reflectance, sizeof(reflectance));
+}
+
+extern "C" bool Fluxion_Material_SetEmissive(FluxionMaterialHandle material, FluxionVec3 emissive)
+{
+    return WriteCanonical(material, FLUXION_MATERIAL_PARAM_EMISSIVE, &emissive, sizeof(emissive));
+}
+
+extern "C" bool Fluxion_Material_SetNormalScale(FluxionMaterialHandle material, f32 normalScale)
+{
+    return WriteCanonical(material, FLUXION_MATERIAL_PARAM_NORMAL_SCALE, &normalScale, sizeof(normalScale));
+}
+
+extern "C" bool Fluxion_Material_SetOcclusionStrength(FluxionMaterialHandle material, f32 occlusionStrength)
+{
+    return WriteCanonical(material, FLUXION_MATERIAL_PARAM_OCCLUSION_STRENGTH, &occlusionStrength, sizeof(occlusionStrength));
+}
+
+extern "C" bool Fluxion_Material_SetAlphaCutoff(FluxionMaterialHandle material, f32 alphaCutoff)
+{
+    return WriteCanonical(material, FLUXION_MATERIAL_PARAM_ALPHA_CUTOFF, &alphaCutoff, sizeof(alphaCutoff));
+}
+
+extern "C" bool Fluxion_Material_SetTextureSlot(FluxionMaterialHandle material, FluxionMaterialTextureSlot slot,
+                                                FluxionRHITextureViewHandle view, FluxionRHISamplerHandle sampler)
+{
+    if ((u32)slot >= (u32)FLUXION_MATERIAL_TEXTURE_COUNT) return false;
+    return Fluxion_Material_SetTexture(material, kCanonicalTextures[slot], view, sampler);
+}
+
+extern "C" void Fluxion_Material_SetAlphaMode(FluxionMaterialHandle material, FluxionMaterialAlphaMode mode)
+{
+    FluxionMaterialRecord* record = Resolve(material);
+    if (record == nullptr) return;
+    record->alphaMode = mode;
+}
+
+extern "C" FluxionMaterialAlphaMode Fluxion_Material_GetAlphaMode(FluxionMaterialHandle material)
+{
+    const FluxionMaterialRecord* record = Resolve(material);
+
+    // Opaque for a handle that names nothing: a caller sorting draws gets
+    // the cheapest answer rather than one that would put a dead material
+    // into the blended pass.
+    if (record == nullptr) return FLUXION_MATERIAL_ALPHA_OPAQUE;
+    return record->alphaMode;
 }

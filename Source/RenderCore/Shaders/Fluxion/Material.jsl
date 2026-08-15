@@ -1,0 +1,64 @@
+#ifndef FLUXION_MATERIAL_INCLUDED
+#define FLUXION_MATERIAL_INCLUDED
+
+#include "Fluxion/Surface.jsl"
+
+// The parameters a standard surface is described by, declared once.
+//
+// A material may declare whatever it likes -- the engine reads a shader's
+// own reflected parameters and always has. What this file adds is a set
+// of names that MEAN something to the engine: it can offer a base colour
+// setter only because it knows which parameter the base colour is, and it
+// can sort a draw by how it blends only because it knows where to look.
+//
+// So these names are not a convention to follow loosely. A material that
+// declares `metallicFactor` as something other than a single number is
+// not a material with an unusual parameter; it is a material whose
+// metallic value the engine will refuse to set, and it is told so when it
+// is created rather than left to wonder why nothing moves.
+//
+// A material need not declare all of them. One that has no emissive
+// simply does not include that parameter, and the engine reports it as
+// absent rather than writing into a slot that is not there.
+
+[Uniform(Material)] Vector4 baseColorFactor;
+[Uniform(Material)] float metallicFactor;
+[Uniform(Material)] float roughnessFactor;
+[Uniform(Material)] float reflectance;
+[Uniform(Material)] Vector3 emissiveFactor;
+[Uniform(Material)] float normalScale;
+[Uniform(Material)] float occlusionStrength;
+[Uniform(Material)] float alphaCutoff;
+
+// A surface built from the parameters above and nothing else.
+//
+// A material that has no more to say than "these are my values" writes
+//
+//     SurfaceData EvaluateSurface() { return StandardSurface(); }
+//
+// and is done. One that has more to say starts here and changes what it
+// needs, which is why this returns a surface rather than being the entry
+// point itself.
+//
+// The base colour carries opacity in its fourth channel because that is
+// how it is authored and stored -- one value, painted together. It is
+// split here, once, so that nothing downstream has to remember which
+// channel the opacity was in.
+SurfaceData StandardSurface()
+{
+    SurfaceData surface = DefaultSurface();
+
+    surface.baseColor = baseColorFactor.xyz;
+    surface.opacity = baseColorFactor.w;
+
+    surface.metallic = Saturate(metallicFactor);
+    surface.perceptualRoughness = clamp(roughnessFactor, FLUXION_MIN_PERCEPTUAL_ROUGHNESS, 1.0);
+    surface.reflectance = Saturate(reflectance);
+
+    surface.emissive = emissiveFactor;
+    surface.ambientOcclusion = 1.0;
+
+    return surface;
+}
+
+#endif
