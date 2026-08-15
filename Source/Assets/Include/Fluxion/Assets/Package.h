@@ -63,6 +63,15 @@ typedef struct FluxionPackageBuildDesc
     // not a silent omission -- there is no second scheme in a built game
     // for them to have gone to.
     char scheme[FLUXION_VFS_MAX_SCHEME_LENGTH + 1];
+
+    // Which cooked form to take, for the assets that have more than one.
+    //
+    // Empty asks for the one that suits every build, which is what most
+    // assets have and all of them had before compressed textures existed.
+    // An asset with no entry for this target falls back to that one, so a
+    // mesh does not have to be listed under every target a project ships
+    // to.
+    char cookTarget[FLUXION_ASSET_COOK_TARGET_NAME_LENGTH + 1];
 } FluxionPackageBuildDesc;
 
 typedef enum FluxionPackageOutcome

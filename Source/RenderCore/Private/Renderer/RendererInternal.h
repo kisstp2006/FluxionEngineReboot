@@ -187,6 +187,15 @@ typedef struct FluxionMaterialParameterInfo
     u32 samplerBinding;  // sampler binding -- FLUXION_MATERIAL_PARAMETER_TEXTURE only
 } FluxionMaterialParameterInfo;
 
+// Giving a loaded texture to a device.
+//
+// Exposed inside this module so the built-in one-pixel textures go
+// through the very same upload every other texture does -- a second way
+// to make a texture would be tested only by whether the picture looked
+// right.
+struct FluxionTextureAsset;
+bool FluxionRendererInternal_TextureAsset_Upload(struct FluxionTextureAsset* asset, FluxionRHIDeviceHandle device, FluxionRHIQueueHandle queue);
+
 bool FluxionRendererInternal_ShaderProgram_IsCompute(FluxionShaderProgramHandle program);
 FluxionRHIShaderHandle FluxionRendererInternal_ShaderProgram_GetVertexShader(FluxionShaderProgramHandle program);
 FluxionRHIShaderHandle FluxionRendererInternal_ShaderProgram_GetFragmentShader(FluxionShaderProgramHandle program);

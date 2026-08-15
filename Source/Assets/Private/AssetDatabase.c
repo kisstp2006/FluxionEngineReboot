@@ -10,11 +10,21 @@
 
 #define FLUXION_ASSET_DATABASE_LOG_CATEGORY "AssetDatabase"
 
+// One cooked form as the database keeps it: the target it is for, and
+// where its path sits in the text pool.
+typedef struct FluxionAssetCookedFormEntry
+{
+    char target[FLUXION_ASSET_COOK_TARGET_NAME_LENGTH + 1];
+    u32 pathOffset;
+} FluxionAssetCookedFormEntry;
+
 static FluxionAllocator* s_allocator = NULL;
-static FluxionDynamicArray s_records;      // FluxionAssetRecord
-static FluxionDynamicArray s_text;         // char
-static FluxionDynamicArray s_dependencies; // FluxionUUID
-static FluxionHashMap s_byId;              // FluxionUUID -> u32 record index
+static FluxionDynamicArray s_records;        // FluxionAssetRecord
+static FluxionDynamicArray s_text;           // char
+static FluxionDynamicArray s_dependencies;   // FluxionUUID
+static FluxionDynamicArray s_cookedForms;    // FluxionAssetCookedFormEntry
+static FluxionDynamicArray s_importSettings; // u8
+static FluxionHashMap s_byId;                // FluxionUUID -> u32 record index
 static bool s_initialized = false;
 
 // The text pool always begins with a lone terminator, so offset zero is
@@ -26,6 +36,8 @@ static void Fluxion_AssetDatabase_ResetPools(void)
     Fluxion_DynamicArray_Clear(&s_records);
     Fluxion_DynamicArray_Clear(&s_text);
     Fluxion_DynamicArray_Clear(&s_dependencies);
+    Fluxion_DynamicArray_Clear(&s_cookedForms);
+    Fluxion_DynamicArray_Clear(&s_importSettings);
 
     const char terminator = '\0';
     Fluxion_DynamicArray_Push(&s_text, &terminator);
@@ -39,6 +51,8 @@ void Fluxion_AssetDatabase_Init(FluxionAllocator* allocator)
     Fluxion_DynamicArray_Init(&s_records, s_allocator, sizeof(FluxionAssetRecord));
     Fluxion_DynamicArray_Init(&s_text, s_allocator, sizeof(char));
     Fluxion_DynamicArray_Init(&s_dependencies, s_allocator, sizeof(FluxionUUID));
+    Fluxion_DynamicArray_Init(&s_cookedForms, s_allocator, sizeof(FluxionAssetCookedFormEntry));
+    Fluxion_DynamicArray_Init(&s_importSettings, s_allocator, sizeof(u8));
     Fluxion_HashMap_Init(&s_byId, s_allocator, sizeof(FluxionUUID), sizeof(u32), Fluxion_HashBytes64, Fluxion_BytesEqual);
 
     s_initialized = true;
@@ -50,6 +64,8 @@ void Fluxion_AssetDatabase_Shutdown(void)
     if (!s_initialized) return;
 
     Fluxion_HashMap_Destroy(&s_byId);
+    Fluxion_DynamicArray_Destroy(&s_importSettings);
+    Fluxion_DynamicArray_Destroy(&s_cookedForms);
     Fluxion_DynamicArray_Destroy(&s_dependencies);
     Fluxion_DynamicArray_Destroy(&s_text);
     Fluxion_DynamicArray_Destroy(&s_records);
@@ -95,6 +111,65 @@ static bool Fluxion_AssetDatabase_CheckLength(const char* text, usize limit, con
     return false;
 }
 
+// Copies one asset's cooked forms into the pool, from whichever of the
+// two ways the caller used to say where its bytes are.
+static bool Fluxion_AssetDatabase_PushCookedForms(const FluxionAssetDesc* desc, u32* outOffset, u32* outCount)
+{
+    *outOffset = (u32)s_cookedForms.count;
+    *outCount = 0;
+
+    if (desc->cookedPath != NULL && desc->cookedPath[0] != '\0')
+    {
+        FluxionAssetCookedFormEntry entry;
+        memset(&entry, 0, sizeof(entry));
+        entry.pathOffset = Fluxion_AssetDatabase_PushText(desc->cookedPath);
+        Fluxion_DynamicArray_Push(&s_cookedForms, &entry);
+        *outCount = 1;
+        return true;
+    }
+
+    if (desc->cookedForms == NULL || desc->cookedFormCount == 0) return true;
+
+    if (desc->cookedFormCount > FLUXION_ASSET_MAX_COOKED_FORMS)
+    {
+        FLUXION_LOG_ERROR(FLUXION_ASSET_DATABASE_LOG_CATEGORY, "an asset has more cooked forms than this database holds");
+        return false;
+    }
+
+    for (u32 i = 0; i < desc->cookedFormCount; ++i)
+    {
+        const FluxionAssetCookedForm* form = &desc->cookedForms[i];
+
+        if (!Fluxion_AssetDatabase_CheckLength(form->path, FLUXION_ASSET_MAX_PATH_LENGTH, "an asset cooked path")) return false;
+
+        // Two entries for one target would make which one a build takes
+        // depend on the order they happened to be written in.
+        for (u32 j = 0; j < i; ++j)
+        {
+            if (strcmp(desc->cookedForms[j].target, form->target) != 0) continue;
+            FLUXION_LOG_ERROR(FLUXION_ASSET_DATABASE_LOG_CATEGORY, "an asset names the cook target '%s' twice", form->target);
+            return false;
+        }
+
+        const usize targetLength = strlen(form->target);
+        if (targetLength > FLUXION_ASSET_COOK_TARGET_NAME_LENGTH)
+        {
+            FLUXION_LOG_ERROR(FLUXION_ASSET_DATABASE_LOG_CATEGORY, "a cook target name is longer than this database holds");
+            return false;
+        }
+
+        FluxionAssetCookedFormEntry entry;
+        memset(&entry, 0, sizeof(entry));
+        memcpy(entry.target, form->target, targetLength);
+        entry.pathOffset = Fluxion_AssetDatabase_PushText(form->path);
+
+        Fluxion_DynamicArray_Push(&s_cookedForms, &entry);
+        ++(*outCount);
+    }
+
+    return true;
+}
+
 bool Fluxion_AssetDatabase_Add(const FluxionAssetDesc* desc, FluxionUUID* outId)
 {
     if (!s_initialized || !desc) return false;
@@ -102,6 +177,20 @@ bool Fluxion_AssetDatabase_Add(const FluxionAssetDesc* desc, FluxionUUID* outId)
     if (!Fluxion_AssetDatabase_CheckLength(desc->name, FLUXION_ASSET_MAX_NAME_LENGTH, "an asset name")) return false;
     if (!Fluxion_AssetDatabase_CheckLength(desc->sourcePath, FLUXION_ASSET_MAX_PATH_LENGTH, "an asset source path")) return false;
     if (!Fluxion_AssetDatabase_CheckLength(desc->cookedPath, FLUXION_ASSET_MAX_PATH_LENGTH, "an asset cooked path")) return false;
+
+    // Two ways of saying where the bytes are is two things that can
+    // disagree, so saying it twice is refused rather than resolved.
+    if (desc->cookedPath != NULL && desc->cookedPath[0] != '\0' && desc->cookedFormCount > 0)
+    {
+        FLUXION_LOG_ERROR(FLUXION_ASSET_DATABASE_LOG_CATEGORY, "an asset gives both a cooked path and a list of cooked forms");
+        return false;
+    }
+
+    if (desc->importSettingsSize > FLUXION_ASSET_MAX_IMPORT_SETTINGS_BYTES)
+    {
+        FLUXION_LOG_ERROR(FLUXION_ASSET_DATABASE_LOG_CATEGORY, "an asset's import settings are larger than this database holds");
+        return false;
+    }
 
     const FluxionUUID id = Fluxion_UUID_IsNil(desc->id) ? Fluxion_UUID_Generate() : desc->id;
 
@@ -118,7 +207,18 @@ bool Fluxion_AssetDatabase_Add(const FluxionAssetDesc* desc, FluxionUUID* outId)
     record.version = desc->version;
     record.nameOffset = Fluxion_AssetDatabase_PushText(desc->name);
     record.sourcePathOffset = Fluxion_AssetDatabase_PushText(desc->sourcePath);
-    record.cookedPathOffset = Fluxion_AssetDatabase_PushText(desc->cookedPath);
+
+    if (!Fluxion_AssetDatabase_PushCookedForms(desc, &record.cookedOffset, &record.cookedCount)) return false;
+
+    record.importSettingsOffset = (u32)s_importSettings.count;
+    record.importSettingsSize = (desc->importSettings != NULL) ? desc->importSettingsSize : 0u;
+    record.importSettingsHash = 0;
+    if (record.importSettingsSize > 0)
+    {
+        const u8* bytes = (const u8*)desc->importSettings;
+        for (u32 i = 0; i < record.importSettingsSize; ++i) Fluxion_DynamicArray_Push(&s_importSettings, &bytes[i]);
+        record.importSettingsHash = Fluxion_HashBytes64(bytes, record.importSettingsSize);
+    }
 
     record.dependencyOffset = (u32)s_dependencies.count;
     record.dependencyCount = desc->dependencies ? desc->dependencyCount : 0;
@@ -193,9 +293,69 @@ const char* Fluxion_AssetDatabase_GetSourcePath(const FluxionAssetRecord* record
     return record ? Fluxion_AssetDatabase_TextAt(record->sourcePathOffset) : "";
 }
 
+static const FluxionAssetCookedFormEntry* Fluxion_AssetDatabase_CookedFormAt(const FluxionAssetRecord* record, u32 index)
+{
+    if (!s_initialized || !record || index >= record->cookedCount) return NULL;
+    if (record->cookedOffset + index >= s_cookedForms.count) return NULL;
+    return (const FluxionAssetCookedFormEntry*)Fluxion_DynamicArray_At(&s_cookedForms, record->cookedOffset + index);
+}
+
+u32 Fluxion_AssetDatabase_GetCookedFormCount(const FluxionAssetRecord* record)
+{
+    return record ? record->cookedCount : 0u;
+}
+
+const char* Fluxion_AssetDatabase_GetCookedFormTargetAt(const FluxionAssetRecord* record, u32 index)
+{
+    const FluxionAssetCookedFormEntry* entry = Fluxion_AssetDatabase_CookedFormAt(record, index);
+    return entry ? entry->target : "";
+}
+
+const char* Fluxion_AssetDatabase_GetCookedFormPathAt(const FluxionAssetRecord* record, u32 index)
+{
+    const FluxionAssetCookedFormEntry* entry = Fluxion_AssetDatabase_CookedFormAt(record, index);
+    return entry ? Fluxion_AssetDatabase_TextAt(entry->pathOffset) : "";
+}
+
+// The one that suits every build, or the first there is -- what a caller
+// that does not care which build is asking for.
 const char* Fluxion_AssetDatabase_GetCookedPath(const FluxionAssetRecord* record)
 {
-    return record ? Fluxion_AssetDatabase_TextAt(record->cookedPathOffset) : "";
+    if (!record || record->cookedCount == 0) return "";
+
+    for (u32 i = 0; i < record->cookedCount; ++i)
+    {
+        const FluxionAssetCookedFormEntry* entry = Fluxion_AssetDatabase_CookedFormAt(record, i);
+        if (entry && entry->target[0] == '\0') return Fluxion_AssetDatabase_TextAt(entry->pathOffset);
+    }
+
+    return Fluxion_AssetDatabase_GetCookedFormPathAt(record, 0);
+}
+
+const char* Fluxion_AssetDatabase_GetCookedPathForTarget(const FluxionAssetRecord* record, const char* target)
+{
+    if (!record) return "";
+    if (target == NULL || target[0] == '\0') return Fluxion_AssetDatabase_GetCookedPath(record);
+
+    for (u32 i = 0; i < record->cookedCount; ++i)
+    {
+        const FluxionAssetCookedFormEntry* entry = Fluxion_AssetDatabase_CookedFormAt(record, i);
+        if (entry && strcmp(entry->target, target) == 0) return Fluxion_AssetDatabase_TextAt(entry->pathOffset);
+    }
+
+    // Falling back to the general one, so an asset cooked once for
+    // everything need not list every target it does not care about.
+    return Fluxion_AssetDatabase_GetCookedPath(record);
+}
+
+const void* Fluxion_AssetDatabase_GetImportSettings(const FluxionAssetRecord* record, u32* outSize)
+{
+    if (outSize) *outSize = 0;
+    if (!s_initialized || !record || record->importSettingsSize == 0) return NULL;
+    if (record->importSettingsOffset + record->importSettingsSize > s_importSettings.count) return NULL;
+
+    if (outSize) *outSize = record->importSettingsSize;
+    return Fluxion_DynamicArray_At(&s_importSettings, record->importSettingsOffset);
 }
 
 const FluxionUUID* Fluxion_AssetDatabase_GetDependencies(const FluxionAssetRecord* record, u32* outCount)
@@ -280,16 +440,37 @@ bool Fluxion_AssetDatabase_SerializeFiltered(FluxionStream* stream, const Fluxio
         FluxionAssetRecord* record = (FluxionAssetRecord*)Fluxion_DynamicArray_At(&s_records, i);
         if (filter && filter->shouldWrite && !filter->shouldWrite(record, userData)) continue;
 
-        const char* cookedPath = Fluxion_AssetDatabase_GetCookedPath(record);
-        if (filter && filter->cookedPathFor) cookedPath = filter->cookedPathFor(record, userData);
-
         Fluxion_Stream_SerializeBytes(stream, record->id.bytes, sizeof(record->id.bytes));
         Fluxion_Stream_SerializeU64(stream, &record->type);
         Fluxion_Stream_SerializeU32(stream, &record->version);
 
         Fluxion_AssetDatabase_WriteText(stream, Fluxion_AssetDatabase_GetName(record));
         Fluxion_AssetDatabase_WriteText(stream, includeSourcePaths ? Fluxion_AssetDatabase_GetSourcePath(record) : "");
-        Fluxion_AssetDatabase_WriteText(stream, cookedPath ? cookedPath : "");
+
+        // A build that says where the bytes ended up gets ONE cooked form
+        // out, under the general target -- because by then there is only
+        // one: the packager picked a target and put that one in. An index
+        // that still listed the others would name files the package does
+        // not contain.
+        if (filter && filter->cookedPathFor)
+        {
+            const char* shipped = filter->cookedPathFor(record, userData);
+
+            u32 formCount = 1;
+            Fluxion_Stream_SerializeU32(stream, &formCount);
+            Fluxion_AssetDatabase_WriteText(stream, "");
+            Fluxion_AssetDatabase_WriteText(stream, shipped ? shipped : "");
+        }
+        else
+        {
+            u32 formCount = record->cookedCount;
+            Fluxion_Stream_SerializeU32(stream, &formCount);
+            for (u32 f = 0; f < formCount; ++f)
+            {
+                Fluxion_AssetDatabase_WriteText(stream, Fluxion_AssetDatabase_GetCookedFormTargetAt(record, f));
+                Fluxion_AssetDatabase_WriteText(stream, Fluxion_AssetDatabase_GetCookedFormPathAt(record, f));
+            }
+        }
 
         u32 dependencyCount = record->dependencyCount;
         Fluxion_Stream_SerializeU32(stream, &dependencyCount);
@@ -297,6 +478,20 @@ bool Fluxion_AssetDatabase_SerializeFiltered(FluxionStream* stream, const Fluxio
         {
             FluxionUUID* dependency = (FluxionUUID*)Fluxion_DynamicArray_At(&s_dependencies, record->dependencyOffset + d);
             Fluxion_Stream_SerializeBytes(stream, dependency->bytes, sizeof(dependency->bytes));
+        }
+
+        // Import settings travel with the record even into a shipped
+        // index. They are small, and they are what a re-import compares
+        // against -- a project rebuilt from a package it shipped would
+        // otherwise re-cook everything on the first run.
+        u32 settingsSize = 0;
+        const void* settings = Fluxion_AssetDatabase_GetImportSettings(record, &settingsSize);
+        Fluxion_Stream_SerializeU32(stream, &settingsSize);
+        if (settingsSize > 0)
+        {
+            u8 scratch[FLUXION_ASSET_MAX_IMPORT_SETTINGS_BYTES];
+            memcpy(scratch, settings, settingsSize);
+            Fluxion_Stream_SerializeBytes(stream, scratch, settingsSize);
         }
     }
 
@@ -331,7 +526,6 @@ bool Fluxion_AssetDatabase_Serialize(FluxionStream* stream)
 
         char name[FLUXION_ASSET_MAX_NAME_LENGTH + 1];
         char sourcePath[FLUXION_ASSET_MAX_PATH_LENGTH + 1];
-        char cookedPath[FLUXION_ASSET_MAX_PATH_LENGTH + 1];
 
         FluxionUUID id;
         Fluxion_Stream_SerializeBytes(stream, id.bytes, sizeof(id.bytes));
@@ -340,7 +534,21 @@ bool Fluxion_AssetDatabase_Serialize(FluxionStream* stream)
 
         Fluxion_AssetDatabase_ReadText(stream, name, sizeof(name));
         Fluxion_AssetDatabase_ReadText(stream, sourcePath, sizeof(sourcePath));
-        Fluxion_AssetDatabase_ReadText(stream, cookedPath, sizeof(cookedPath));
+
+        FluxionAssetCookedForm forms[FLUXION_ASSET_MAX_COOKED_FORMS];
+        char formPaths[FLUXION_ASSET_MAX_COOKED_FORMS][FLUXION_ASSET_MAX_PATH_LENGTH + 1];
+        u32 formCount = 0;
+        Fluxion_Stream_SerializeU32(stream, &formCount);
+
+        if (Fluxion_Stream_HasOverflowed(stream) || formCount > FLUXION_ASSET_MAX_COOKED_FORMS) return false;
+
+        for (u32 f = 0; f < formCount; ++f)
+        {
+            memset(&forms[f], 0, sizeof(forms[f]));
+            Fluxion_AssetDatabase_ReadText(stream, forms[f].target, sizeof(forms[f].target));
+            Fluxion_AssetDatabase_ReadText(stream, formPaths[f], sizeof(formPaths[f]));
+            forms[f].path = formPaths[f];
+        }
 
         u32 dependencyCount = 0;
         Fluxion_Stream_SerializeU32(stream, &dependencyCount);
@@ -363,12 +571,26 @@ bool Fluxion_AssetDatabase_Serialize(FluxionStream* stream)
             Fluxion_Stream_SerializeBytes(stream, dependencies[d].bytes, sizeof(dependencies[d].bytes));
         }
 
+        u32 settingsSize = 0;
+        Fluxion_Stream_SerializeU32(stream, &settingsSize);
+
+        u8 settings[FLUXION_ASSET_MAX_IMPORT_SETTINGS_BYTES];
+        if (settingsSize > FLUXION_ASSET_MAX_IMPORT_SETTINGS_BYTES)
+        {
+            if (heapDependencies) Fluxion_Allocator_Free(s_allocator, heapDependencies, dependencyCount * sizeof(FluxionUUID));
+            return false;
+        }
+        if (settingsSize > 0) Fluxion_Stream_SerializeBytes(stream, settings, settingsSize);
+
         desc.id = id;
         desc.name = name;
         desc.sourcePath = sourcePath;
-        desc.cookedPath = cookedPath;
+        desc.cookedForms = (formCount > 0) ? forms : NULL;
+        desc.cookedFormCount = formCount;
         desc.dependencies = dependencies;
         desc.dependencyCount = dependencyCount;
+        desc.importSettings = (settingsSize > 0) ? settings : NULL;
+        desc.importSettingsSize = settingsSize;
 
         const bool added = Fluxion_AssetDatabase_Add(&desc, NULL);
 

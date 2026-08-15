@@ -17,6 +17,7 @@ void Test_MeshAsset_Run(TestContext* ctx);
 void Test_ShaderLibrary_Run(TestContext* ctx);
 void Test_SurfaceData_Run(TestContext* ctx);
 void Test_MaterialParameters_Run(TestContext* ctx);
+void Test_TextureAsset_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -39,6 +40,7 @@ int main(void)
     Test_ShaderLibrary_Run(&ctx);
     Test_SurfaceData_Run(&ctx);
     Test_MaterialParameters_Run(&ctx);
+    Test_TextureAsset_Run(&ctx);
 
     if (ctx.failures == 0)
     {

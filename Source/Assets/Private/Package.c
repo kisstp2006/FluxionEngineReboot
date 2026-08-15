@@ -504,6 +504,12 @@ bool Fluxion_Package_Build(const FluxionPackageBuildDesc* desc, const char* outp
     const u32 assetCount = Fluxion_AssetDatabase_GetCount();
     const char* scheme = (desc && desc->scheme[0] != '\0') ? desc->scheme : "assets";
 
+    // Empty means the general form, which is what Fluxion_AssetDatabase_
+    // GetCookedPathForTarget already does with an empty name -- so a
+    // build that says nothing about targets behaves exactly as it did
+    // before there were any.
+    const char* cookTarget = (desc != NULL) ? desc->cookTarget : "";
+
     FluxionPackageBuilder builder;
     Fluxion_DynamicArray_Init(&builder.text, allocator, sizeof(char));
     Fluxion_DynamicArray_Init(&builder.items, allocator, sizeof(FluxionPackageBuildItem));
@@ -558,8 +564,9 @@ bool Fluxion_Package_Build(const FluxionPackageBuildDesc* desc, const char* outp
             continue;
         }
 
-        const char* fullPath = (policy == FLUXION_ASSET_SHIP_SOURCE) ? Fluxion_AssetDatabase_GetSourcePath(record)
-                                                                    : Fluxion_AssetDatabase_GetCookedPath(record);
+            const char* fullPath = (policy == FLUXION_ASSET_SHIP_SOURCE)
+                                   ? Fluxion_AssetDatabase_GetSourcePath(record)
+                                   : Fluxion_AssetDatabase_GetCookedPathForTarget(record, cookTarget);
 
         char pathScheme[FLUXION_VFS_MAX_SCHEME_LENGTH + 1];
         char relative[FLUXION_VFS_MAX_PATH];

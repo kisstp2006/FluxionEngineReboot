@@ -22,13 +22,40 @@ extern "C" {
 
 // What this build writes and the newest it will read. A file from a newer
 // build is refused rather than half understood.
-#define FLUXION_ASSET_DATABASE_VERSION 1
+#define FLUXION_ASSET_DATABASE_VERSION 2
 
 // A path in this database is a path in the file system above, so it is
 // bounded by the same thing rather than by a second number that could
 // disagree with it. A name is only ever read by a person.
 #define FLUXION_ASSET_MAX_PATH_LENGTH (FLUXION_VFS_MAX_PATH - 1)
 #define FLUXION_ASSET_MAX_NAME_LENGTH 127
+
+// How long a cook target's name may be, and how many one asset may have.
+#define FLUXION_ASSET_COOK_TARGET_NAME_LENGTH 31
+#define FLUXION_ASSET_MAX_COOKED_FORMS 8
+
+// The largest per-asset import settings blob the database will hold.
+// Generous: these are a handful of numbers and flags for every type there
+// is reason to expect.
+#define FLUXION_ASSET_MAX_IMPORT_SETTINGS_BYTES 512
+
+// One cooked form of an asset, and which builds it is for.
+//
+// NAMED, NOT AN OPERATING SYSTEM. What makes two cooked forms differ is
+// what the hardware will accept -- a texture compressed one way for one
+// family of GPUs and another way for another -- and that does not line up
+// with which system is running. A name lets a project draw the line where
+// its own content actually differs.
+//
+// An empty name means "suits every build", which is what almost
+// everything is: a mesh is cooked once and that is the end of it. A build
+// asking for a target this asset has no entry for falls back to that one,
+// so nothing has to list every target it does not care about.
+typedef struct FluxionAssetCookedForm
+{
+    char target[FLUXION_ASSET_COOK_TARGET_NAME_LENGTH + 1];
+    const char* path;
+} FluxionAssetCookedForm;
 
 // Text and dependency lists both live in shared pools rather than in the
 // record. This is the one table that grows with the size of a project, so
@@ -52,9 +79,23 @@ typedef struct FluxionAssetRecord
     // be forgotten at one of the places that sets these.
     u32 nameOffset;
     u32 sourcePathOffset;
-    u32 cookedPathOffset;
     u32 dependencyOffset;
     u32 dependencyCount;
+
+    // Into the database's cooked-form pool. An asset with no cooked form
+    // at all has a count of zero, which is what an asset that only ever
+    // ships as its source looks like.
+    u32 cookedOffset;
+    u32 cookedCount;
+
+    // Into the database's import-settings pool, and a hash of the bytes.
+    //
+    // The hash is what makes re-importing decidable: source unchanged and
+    // settings unchanged means the cooked form is still right, and
+    // comparing the bytes every time would mean reading them every time.
+    u32 importSettingsOffset;
+    u32 importSettingsSize;
+    u64 importSettingsHash;
 } FluxionAssetRecord;
 
 typedef struct FluxionAssetDesc
@@ -70,12 +111,30 @@ typedef struct FluxionAssetDesc
     // resolves nothing, and two assets may share one.
     const char* name;
     const char* sourcePath;
+
+    // The common case, said briefly: one cooked form that suits every
+    // build. Exactly equivalent to a single entry in `cookedForms` with
+    // an empty target.
+    //
+    // Giving both this and `cookedForms` is refused rather than merged --
+    // two ways of saying where the bytes are is two things that can
+    // disagree.
     const char* cookedPath;
+
+    const FluxionAssetCookedForm* cookedForms;
+    u32 cookedFormCount;
 
     u32 version;
 
     const FluxionUUID* dependencies;
     u32 dependencyCount;
+
+    // Whatever this asset's TYPE makes of them. The database stores the
+    // bytes and hashes them; it does not read them, and could not -- a
+    // plugin's own asset type brings its own settings through the same
+    // field.
+    const void* importSettings;
+    u32 importSettingsSize;
 } FluxionAssetDesc;
 
 void Fluxion_AssetDatabase_Init(FluxionAllocator* allocator);
@@ -106,7 +165,26 @@ const FluxionAssetRecord* Fluxion_AssetDatabase_GetAt(u32 index);
 
 const char* Fluxion_AssetDatabase_GetName(const FluxionAssetRecord* record);
 const char* Fluxion_AssetDatabase_GetSourcePath(const FluxionAssetRecord* record);
+// The cooked form that suits every build, or the first one there is.
+// Empty when the asset has none.
 const char* Fluxion_AssetDatabase_GetCookedPath(const FluxionAssetRecord* record);
+
+// The cooked form for one build, falling back to the one that suits every
+// build. Empty when there is neither.
+//
+// A NULL or empty `target` asks for the general one directly.
+const char* Fluxion_AssetDatabase_GetCookedPathForTarget(const FluxionAssetRecord* record, const char* target);
+
+u32 Fluxion_AssetDatabase_GetCookedFormCount(const FluxionAssetRecord* record);
+const char* Fluxion_AssetDatabase_GetCookedFormTargetAt(const FluxionAssetRecord* record, u32 index);
+const char* Fluxion_AssetDatabase_GetCookedFormPathAt(const FluxionAssetRecord* record, u32 index);
+
+// The bytes this asset's type was given at import time. NULL with a zero
+// size when there are none.
+//
+// Handed back as bytes because that is what they are here: the database
+// stores and hashes them, and only the asset type knows what they mean.
+const void* Fluxion_AssetDatabase_GetImportSettings(const FluxionAssetRecord* record, u32* outSize);
 const FluxionUUID* Fluxion_AssetDatabase_GetDependencies(const FluxionAssetRecord* record, u32* outCount);
 
 // Reads or writes the whole database, depending on the stream's mode.

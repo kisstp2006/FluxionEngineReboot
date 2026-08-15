@@ -423,6 +423,60 @@ void ADamagedPackageIsRefused(TestContext& ctx)
     Fluxion_Vfs_Shutdown();
 }
 
+// An asset cooked more than once ships the form the build asked for, and
+// only that one. Without this the package would carry every variant and
+// a mobile build would be paying for desktop bytes it cannot even read.
+void TheBuildTakesItsOwnCookedForm(TestContext& ctx)
+{
+    const std::filesystem::path root = MakeDirectory("cook-target");
+    if (root.empty())
+    {
+        TEST_CHECK(ctx, false);
+        return;
+    }
+
+    TEST_CHECK(ctx, Fluxion_AssetSystem_Init(nullptr));
+    TEST_CHECK(ctx, Fluxion_Vfs_Mount("assets", Fluxion_VfsDirectorySource_Create(root.string().c_str())));
+
+    FluxionAssetTypeDesc blob = MakeBlobTypeDesc();
+    TEST_CHECK(ctx, Fluxion_AssetTypes_Register(&blob));
+
+    TEST_CHECK(ctx, WriteText(root / "Brick.desktop.blob", "DESKTOP-BYTES"));
+    TEST_CHECK(ctx, WriteText(root / "Brick.mobile.blob", "MOBILE-BYTES"));
+
+    const FluxionAssetCookedForm forms[] = {
+        { "desktop", "assets://Brick.desktop.blob" },
+        { "mobile", "assets://Brick.mobile.blob" },
+    };
+
+    FluxionAssetDesc desc{};
+    desc.type = BlobTypeId();
+    desc.name = "Brick";
+    desc.cookedForms = forms;
+    desc.cookedFormCount = 2;
+
+    FluxionUUID id{};
+    TEST_CHECK(ctx, Fluxion_AssetDatabase_Add(&desc, &id));
+
+    const std::filesystem::path packagePath = root / "Mobile.fluxpak";
+
+    FluxionPackageBuildDesc build{};
+    std::memcpy(build.cookTarget, "mobile", sizeof("mobile"));
+
+    TEST_CHECK(ctx, Fluxion_Package_Build(&build, packagePath.string().c_str(), nullptr));
+
+    const std::vector<u8> bytes = ReadWholeFile(packagePath);
+    TEST_CHECK(ctx, !bytes.empty());
+    TEST_CHECK(ctx, Contains(bytes, "MOBILE-BYTES"));
+    TEST_CHECK(ctx, !Contains(bytes, "DESKTOP-BYTES"));
+
+    // And the shipped index points at the one form that is in there --
+    // not at a path naming a file the package does not contain.
+    TEST_CHECK(ctx, !Contains(bytes, "Brick.desktop.blob"));
+
+    Fluxion_AssetSystem_Shutdown();
+}
+
 } // namespace
 
 void Test_Package_Run(TestContext& ctx)
@@ -436,4 +490,5 @@ void Test_Package_Run(TestContext& ctx)
     MissingBytesAreAnErrorNotAnOmission(ctx);
     TheGameLoadsFromThePackage(ctx);
     ADamagedPackageIsRefused(ctx);
+    TheBuildTakesItsOwnCookedForm(ctx);
 }

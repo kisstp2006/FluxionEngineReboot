@@ -17,6 +17,7 @@ engine_add_test(
         Test_ShaderLibrary.cpp
         Test_SurfaceData.cpp
         Test_MaterialParameters.cpp
+        Test_TextureAsset.cpp
     DEPENDENCIES
         Fluxion::RenderCore
         Fluxion::RHI
@@ -39,4 +40,5 @@ engine_add_header_selfcontained_test(
         Fluxion/RenderCore/Renderer/MeshAsset.h
         Fluxion/RenderCore/Renderer/MaterialShader.h
         Fluxion/RenderCore/Renderer/MaterialParameters.h
+        Fluxion/RenderCore/Renderer/TextureAsset.h
 )

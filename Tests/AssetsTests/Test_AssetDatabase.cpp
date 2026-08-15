@@ -211,6 +211,210 @@ void RefusesANewerFormat(TestContext& ctx)
     Fluxion_AssetDatabase_Shutdown();
 }
 
+// An asset can be cooked more than once -- one form per kind of hardware
+// that wants different bytes. Everything that was cooked once still works
+// unchanged, which is most things.
+void CookedFormsPerTarget(TestContext& ctx)
+{
+    Fluxion_AssetDatabase_Init(nullptr);
+
+    // The shorthand: one form, suits every build.
+    FluxionUUID simple{};
+    FluxionAssetDesc mesh = MakeDesc("Mesh", nullptr, "assets://Cube.fluxmesh");
+    TEST_CHECK(ctx, Fluxion_AssetDatabase_Add(&mesh, &simple));
+
+    const FluxionAssetRecord* meshRecord = Fluxion_AssetDatabase_Find(simple);
+    TEST_CHECK(ctx, meshRecord != nullptr);
+    if (meshRecord)
+    {
+        TEST_CHECK(ctx, Fluxion_AssetDatabase_GetCookedFormCount(meshRecord) == 1);
+        TEST_CHECK(ctx, std::strcmp(Fluxion_AssetDatabase_GetCookedPath(meshRecord), "assets://Cube.fluxmesh") == 0);
+
+        // Asked for a target it has never heard of, it still answers --
+        // an asset cooked once for everything must not have to list every
+        // target a project happens to ship to.
+        TEST_CHECK(ctx, std::strcmp(Fluxion_AssetDatabase_GetCookedPathForTarget(meshRecord, "mobile"), "assets://Cube.fluxmesh") == 0);
+    }
+
+    // Two forms, one per kind of hardware.
+    const FluxionAssetCookedForm forms[] = {
+        { "desktop", "assets://Brick.desktop.fluxtex" },
+        { "mobile", "assets://Brick.mobile.fluxtex" },
+    };
+
+    FluxionAssetDesc texture = MakeDesc("Brick", "assets://Brick.png", nullptr);
+    texture.cookedForms = forms;
+    texture.cookedFormCount = 2;
+
+    FluxionUUID textureId{};
+    TEST_CHECK(ctx, Fluxion_AssetDatabase_Add(&texture, &textureId));
+
+    const FluxionAssetRecord* textureRecord = Fluxion_AssetDatabase_Find(textureId);
+    TEST_CHECK(ctx, textureRecord != nullptr);
+    if (textureRecord)
+    {
+        TEST_CHECK(ctx, Fluxion_AssetDatabase_GetCookedFormCount(textureRecord) == 2);
+        TEST_CHECK(ctx, std::strcmp(Fluxion_AssetDatabase_GetCookedPathForTarget(textureRecord, "desktop"), "assets://Brick.desktop.fluxtex") == 0);
+        TEST_CHECK(ctx, std::strcmp(Fluxion_AssetDatabase_GetCookedPathForTarget(textureRecord, "mobile"), "assets://Brick.mobile.fluxtex") == 0);
+
+        // No general form and no match: it falls back to the first rather
+        // than to nothing, because a build with something to draw beats a
+        // build with a hole in it.
+        const char* unknown = Fluxion_AssetDatabase_GetCookedPathForTarget(textureRecord, "console");
+        TEST_CHECK(ctx, unknown[0] != '\0');
+    }
+
+    // Saying it twice, two ways, is refused rather than resolved.
+    FluxionAssetDesc both = MakeDesc("Both", nullptr, "assets://both.blob");
+    both.cookedForms = forms;
+    both.cookedFormCount = 2;
+    TEST_CHECK(ctx, !Fluxion_AssetDatabase_Add(&both, nullptr));
+
+    // And so is naming one target twice: which one a build took would
+    // otherwise depend on the order they were written in.
+    const FluxionAssetCookedForm duplicated[] = {
+        { "desktop", "assets://one.fluxtex" },
+        { "desktop", "assets://two.fluxtex" },
+    };
+    FluxionAssetDesc twice = MakeDesc("Twice", nullptr, nullptr);
+    twice.cookedForms = duplicated;
+    twice.cookedFormCount = 2;
+    TEST_CHECK(ctx, !Fluxion_AssetDatabase_Add(&twice, nullptr));
+
+    Fluxion_AssetDatabase_Shutdown();
+}
+
+// The database stores import settings and hashes them; it does not read
+// them. The hash is what makes re-importing decidable without reading the
+// bytes again.
+void ImportSettingsAreBytesWithAHash(TestContext& ctx)
+{
+    Fluxion_AssetDatabase_Init(nullptr);
+
+    struct MadeUpSettings
+    {
+        u32 usage;
+        f32 scale;
+        bool flipGreen;
+    };
+
+    MadeUpSettings settings{ 3u, 0.5f, true };
+
+    FluxionAssetDesc desc = MakeDesc("Settings", "assets://a.png", "assets://a.fluxtex");
+    desc.importSettings = &settings;
+    desc.importSettingsSize = (u32)sizeof(settings);
+
+    FluxionUUID id{};
+    TEST_CHECK(ctx, Fluxion_AssetDatabase_Add(&desc, &id));
+
+    const FluxionAssetRecord* record = Fluxion_AssetDatabase_Find(id);
+    TEST_CHECK(ctx, record != nullptr);
+    if (record)
+    {
+        u32 size = 0;
+        const void* stored = Fluxion_AssetDatabase_GetImportSettings(record, &size);
+        TEST_CHECK(ctx, stored != nullptr);
+        TEST_CHECK(ctx, size == sizeof(settings));
+        if (stored && size == sizeof(settings)) TEST_CHECK(ctx, std::memcmp(stored, &settings, size) == 0);
+
+        TEST_CHECK(ctx, record->importSettingsHash != 0);
+    }
+
+    // Different settings, different hash -- which is the whole use of it:
+    // a re-import compares hashes rather than reading every blob.
+    MadeUpSettings other{ 3u, 0.5f, false };
+    FluxionAssetDesc second = MakeDesc("Other", "assets://b.png", "assets://b.fluxtex");
+    second.importSettings = &other;
+    second.importSettingsSize = (u32)sizeof(other);
+
+    FluxionUUID otherId{};
+    TEST_CHECK(ctx, Fluxion_AssetDatabase_Add(&second, &otherId));
+
+    const FluxionAssetRecord* first = Fluxion_AssetDatabase_Find(id);
+    const FluxionAssetRecord* secondRecord = Fluxion_AssetDatabase_Find(otherId);
+    if (first && secondRecord) TEST_CHECK(ctx, first->importSettingsHash != secondRecord->importSettingsHash);
+
+    // An asset with none says so rather than handing back somebody
+    // else's bytes.
+    FluxionAssetDesc bare = MakeDesc("Bare", nullptr, "assets://c.blob");
+    FluxionUUID bareId{};
+    TEST_CHECK(ctx, Fluxion_AssetDatabase_Add(&bare, &bareId));
+
+    const FluxionAssetRecord* bareRecord = Fluxion_AssetDatabase_Find(bareId);
+    if (bareRecord)
+    {
+        u32 size = 1;
+        TEST_CHECK(ctx, Fluxion_AssetDatabase_GetImportSettings(bareRecord, &size) == nullptr);
+        TEST_CHECK(ctx, size == 0);
+    }
+
+    // Larger than the database holds is refused, not truncated.
+    u8 tooBig[FLUXION_ASSET_MAX_IMPORT_SETTINGS_BYTES + 1]{};
+    FluxionAssetDesc huge = MakeDesc("Huge", nullptr, "assets://d.blob");
+    huge.importSettings = tooBig;
+    huge.importSettingsSize = (u32)sizeof(tooBig);
+    TEST_CHECK(ctx, !Fluxion_AssetDatabase_Add(&huge, nullptr));
+
+    Fluxion_AssetDatabase_Shutdown();
+}
+
+// The round trip has to survive the new fields too, and byte-identically
+// -- a cooked form or a settings blob landing at the wrong offset is
+// exactly what every individually-checked value can still look right
+// through.
+void RoundTripCarriesFormsAndSettings(TestContext& ctx)
+{
+    Fluxion_AssetDatabase_Init(nullptr);
+
+    const FluxionAssetCookedForm forms[] = {
+        { "desktop", "assets://Brick.desktop.fluxtex" },
+        { "mobile", "assets://Brick.mobile.fluxtex" },
+    };
+    const u8 settings[] = { 1, 2, 3, 4, 5, 6, 7 };
+
+    FluxionAssetDesc desc = MakeDesc("Brick", "assets://Brick.png", nullptr);
+    desc.cookedForms = forms;
+    desc.cookedFormCount = 2;
+    desc.importSettings = settings;
+    desc.importSettingsSize = (u32)sizeof(settings);
+
+    FluxionUUID id{};
+    TEST_CHECK(ctx, Fluxion_AssetDatabase_Add(&desc, &id));
+
+    std::vector<u8> first(64 * 1024, 0);
+    FluxionStream writer;
+    Fluxion_MemoryStream_InitWriter(&writer, first.data(), first.size());
+    TEST_CHECK(ctx, Fluxion_AssetDatabase_Serialize(&writer));
+    const usize firstSize = Fluxion_Stream_GetPosition(&writer);
+
+    FluxionStream reader;
+    Fluxion_MemoryStream_InitReader(&reader, first.data(), firstSize);
+    TEST_CHECK(ctx, Fluxion_AssetDatabase_Serialize(&reader));
+
+    const FluxionAssetRecord* record = Fluxion_AssetDatabase_Find(id);
+    TEST_CHECK(ctx, record != nullptr);
+    if (record)
+    {
+        TEST_CHECK(ctx, Fluxion_AssetDatabase_GetCookedFormCount(record) == 2);
+        TEST_CHECK(ctx, std::strcmp(Fluxion_AssetDatabase_GetCookedPathForTarget(record, "mobile"), "assets://Brick.mobile.fluxtex") == 0);
+
+        u32 size = 0;
+        const void* stored = Fluxion_AssetDatabase_GetImportSettings(record, &size);
+        TEST_CHECK(ctx, size == sizeof(settings));
+        if (stored && size == sizeof(settings)) TEST_CHECK(ctx, std::memcmp(stored, settings, size) == 0);
+    }
+
+    std::vector<u8> second(64 * 1024, 0);
+    FluxionStream rewriter;
+    Fluxion_MemoryStream_InitWriter(&rewriter, second.data(), second.size());
+    TEST_CHECK(ctx, Fluxion_AssetDatabase_Serialize(&rewriter));
+
+    TEST_CHECK(ctx, Fluxion_Stream_GetPosition(&rewriter) == firstSize);
+    TEST_CHECK(ctx, std::memcmp(first.data(), second.data(), firstSize) == 0);
+
+    Fluxion_AssetDatabase_Shutdown();
+}
+
 } // namespace
 
 void Test_AssetDatabase_Run(TestContext& ctx)
@@ -221,4 +425,7 @@ void Test_AssetDatabase_Run(TestContext& ctx)
     Dependencies(ctx);
     RoundTripIsByteIdentical(ctx);
     RefusesANewerFormat(ctx);
+    CookedFormsPerTarget(ctx);
+    ImportSettingsAreBytesWithAHash(ctx);
+    RoundTripCarriesFormsAndSettings(ctx);
 }
