@@ -23,7 +23,7 @@ enum class TokenKind
 
     // Value/control-flow keywords.
     KwTrue, KwFalse,
-    KwIf, KwElse, KwFor, KwWhile, KwReturn,
+    KwIf, KwElse, KwFor, KwWhile, KwReturn, KwDiscard,
     KwConst, KwStruct,
 
     // Punctuation/operators.

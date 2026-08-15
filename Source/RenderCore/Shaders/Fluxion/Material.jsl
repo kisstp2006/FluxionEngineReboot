@@ -101,6 +101,7 @@ SurfaceData StandardSurface()
     Vector4 baseColor = baseColorFactor * texture(baseColorMap, vUV);
     surface.baseColor = baseColor.xyz;
     surface.opacity = baseColor.w;
+    surface.alphaCutoff = alphaCutoff;
 
     // Green is roughness and blue is metallic, which is the arrangement
     // the two are authored and stored in: one map, two numbers, and the

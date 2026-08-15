@@ -20,13 +20,16 @@
 void main() {
   SurfaceData surface = EvaluateSurface();
 
-  // Only the opacity. Everything else the material worked out is
-  // discarded by the compiler, because nothing downstream reads it.
-  //
-  // A pixel being dropped entirely for a low opacity is not done here:
-  // this language has no way to say it yet. Until it does, this pass
-  // records what the opacity was, and the alpha test belongs to whoever
-  // reads it.
+  // The same test the forward pass makes, from the same function, so that
+  // the two cannot disagree about which pixels exist -- see
+  // SurfaceFailsAlphaTest for what happens when they do.
+  if (SurfaceFailsAlphaTest(surface))
+  {
+    discard;
+  }
+
+  // Only the opacity. Everything else the material worked out is dropped
+  // by the compiler, because nothing downstream reads it.
   return Vector4(surface.opacity, surface.opacity, surface.opacity, surface.opacity);
 }
 

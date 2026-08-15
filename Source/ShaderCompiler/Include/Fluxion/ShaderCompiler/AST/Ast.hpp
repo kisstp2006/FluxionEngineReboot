@@ -136,7 +136,7 @@ struct AssignExpr : Expr
 
 // --- Statements ----------------------------------------------------------
 
-enum class StmtKind { Expr, VarDecl, Block, If, For, While, Return };
+enum class StmtKind { Expr, VarDecl, Block, If, For, While, Return, Discard };
 
 struct Stmt
 {
@@ -148,6 +148,11 @@ struct Stmt
 using StmtPtr = std::unique_ptr<Stmt>;
 
 struct ExprStmt : Stmt { ExprPtr expr; ExprStmt() : Stmt(StmtKind::Expr) {} };
+
+// This pixel does not exist. Carries nothing: unlike a return, there is
+// no value, and unlike a break there is nowhere it goes to -- the whole
+// invocation stops and writes nothing at all.
+struct DiscardStmt : Stmt { DiscardStmt() : Stmt(StmtKind::Discard) {} };
 
 struct VarDeclStmt : Stmt
 {

@@ -22,6 +22,7 @@ const std::unordered_map<std::string, TokenKind>& Keywords()
         { "if", TokenKind::KwIf }, { "else", TokenKind::KwElse },
         { "for", TokenKind::KwFor }, { "while", TokenKind::KwWhile },
         { "return", TokenKind::KwReturn },
+        { "discard", TokenKind::KwDiscard },
         { "const", TokenKind::KwConst }, { "struct", TokenKind::KwStruct },
     };
     return table;

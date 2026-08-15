@@ -337,11 +337,20 @@ private:
         if (Match(TokenKind::KwFor)) return ParseFor(loc);
         if (Match(TokenKind::KwWhile)) return ParseWhile(loc);
         if (Match(TokenKind::KwReturn)) return ParseReturn(loc);
+        if (Match(TokenKind::KwDiscard)) return ParseDiscard(loc);
         if (IsTypeStart()) return ParseVarDeclStatement(loc);
 
         auto stmt = std::make_unique<ExprStmt>();
         stmt->location = loc;
         stmt->expr = ParseExpression();
+        Expect(TokenKind::Semicolon, "';'");
+        return stmt;
+    }
+
+    StmtPtr ParseDiscard(SourceLocation loc)
+    {
+        auto stmt = std::make_unique<DiscardStmt>();
+        stmt->location = loc;
         Expect(TokenKind::Semicolon, "';'");
         return stmt;
     }

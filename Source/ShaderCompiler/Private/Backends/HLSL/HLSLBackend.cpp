@@ -383,6 +383,13 @@ private:
                 m_out << ";\n";
                 break;
             }
+            case StmtKind::Discard: {
+                // Spelled the same in both target languages, which is
+                // luck rather than design -- and the reason it is written
+                // out at each backend rather than shared.
+                Indent(depth); m_out << "discard;\n";
+                break;
+            }
         }
     }
 

@@ -253,6 +253,11 @@ private:
                 if (s.value) AnalyzeExpr(*s.value);
                 break;
             }
+            case StmtKind::Discard:
+                // Nothing to check here. It carries no expression, and
+                // WHERE it is allowed depends on the stage, which this
+                // pass does not know -- BuildIR does, and says so there.
+                break;
         }
     }
 

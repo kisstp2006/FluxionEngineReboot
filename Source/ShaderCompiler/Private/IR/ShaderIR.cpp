@@ -70,10 +70,73 @@ struct GroupState
 
 } // namespace
 
+// Whether a `discard` appears anywhere under this statement.
+//
+// Only the fragment stage has pixels to drop. A vertex shader saying it
+// is a real error, and one that reached a backend would come back as a
+// message about generated text nobody wrote -- so it is caught here,
+// where the stage is known and the source location still is too.
+static const Stmt* FindDiscard(const Stmt& stmt)
+{
+    switch (stmt.kind)
+    {
+        case StmtKind::Discard:
+            return &stmt;
+
+        case StmtKind::Block: {
+            const auto& block = static_cast<const BlockStmt&>(stmt);
+            for (const StmtPtr& inner : block.statements)
+            {
+                if (const Stmt* found = FindDiscard(*inner)) return found;
+            }
+            return nullptr;
+        }
+
+        case StmtKind::If: {
+            const auto& branch = static_cast<const IfStmt&>(stmt);
+            if (branch.thenBranch)
+            {
+                if (const Stmt* found = FindDiscard(*branch.thenBranch)) return found;
+            }
+            if (branch.elseBranch) return FindDiscard(*branch.elseBranch);
+            return nullptr;
+        }
+
+        case StmtKind::For: {
+            const auto& loop = static_cast<const ForStmt&>(stmt);
+            return loop.body ? FindDiscard(*loop.body) : nullptr;
+        }
+
+        case StmtKind::While: {
+            const auto& loop = static_cast<const WhileStmt&>(stmt);
+            return loop.body ? FindDiscard(*loop.body) : nullptr;
+        }
+
+        default:
+            return nullptr;
+    }
+}
+
 ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList& diagnostics, const IRBuildOptions& options)
 {
     ShaderIRModule module;
     module.stage = stage;
+
+    if (stage != ShaderStage::Fragment)
+    {
+        for (const DeclPtr& decl : program.declarations)
+        {
+            if (decl->kind != DeclKind::Function) continue;
+            const auto* function = static_cast<const FunctionDecl*>(decl.get());
+            if (!function->body) continue;
+
+            if (const Stmt* found = FindDiscard(*function->body))
+            {
+                diagnostics.AddError(found->location,
+                    "'discard' only means something in a fragment shader -- there are no pixels to drop in any other stage");
+            }
+        }
+    }
 
     int nextInputLocation = 0;
     int nextOutputLocation = 0;

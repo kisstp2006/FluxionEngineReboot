@@ -95,6 +95,9 @@ struct Configuration
 
     f32 exposure;
     f32 tonemapWhitePoint;
+
+    f32 opacity;
+    f32 alphaCutoff;
 };
 
 struct Rgb
@@ -335,7 +338,8 @@ Rgb RenderOne(TestContext* ctx, LightingRig& rig, const Configuration& configura
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(material));
     if (!FLUXION_HANDLE_IS_VALID(material)) return result;
 
-    Fluxion_Material_SetBaseColor(material, FluxionVec4{ configuration.baseColor[0], configuration.baseColor[1], configuration.baseColor[2], 1.0f });
+    Fluxion_Material_SetBaseColor(material, FluxionVec4{ configuration.baseColor[0], configuration.baseColor[1], configuration.baseColor[2], configuration.opacity });
+    Fluxion_Material_SetAlphaCutoff(material, configuration.alphaCutoff);
     Fluxion_Material_SetMetallic(material, configuration.metallic);
     Fluxion_Material_SetRoughness(material, configuration.roughness);
     Fluxion_Material_SetReflectance(material, 0.5f);
@@ -446,6 +450,12 @@ Configuration BaseConfiguration()
     // further down.
     configuration.exposure = 1.0f;
     configuration.tonemapWhitePoint = 0.0f;
+
+    // Fully opaque, and no alpha test -- a threshold of zero is never
+    // reached, so every check above this one is about a pixel that is
+    // certainly there.
+    configuration.opacity = 1.0f;
+    configuration.alphaCutoff = 0.0f;
 
     // Straight at the surface, which faces the camera.
     configuration.sunDirection[2] = 1.0f;
@@ -645,6 +655,52 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     // post-processing arrives later -- would be much worse than one
     // applied not at all.
     TEST_CHECK(ctx, untouchedColor.r > 2.99f && untouchedColor.r < 3.01f);
+
+    // --- The alpha test --------------------------------------------------
+    //
+    // Emissive and no light, so a pixel that IS drawn is unmistakable and
+    // one that is not is exactly the colour the pass cleared to.
+    Configuration cutoutBase = BaseConfiguration();
+    cutoutBase.sunColor[0] = 0.0f;
+    cutoutBase.sunColor[1] = 0.0f;
+    cutoutBase.sunColor[2] = 0.0f;
+    cutoutBase.ambient[0] = 0.0f;
+    cutoutBase.ambient[1] = 0.0f;
+    cutoutBase.ambient[2] = 0.0f;
+    cutoutBase.emissive[0] = 1.0f;
+    cutoutBase.emissive[1] = 1.0f;
+    cutoutBase.emissive[2] = 1.0f;
+
+    Configuration kept = cutoutBase;
+    kept.name = "opacity above the cutoff";
+    kept.opacity = 0.9f;
+    kept.alphaCutoff = 0.5f;
+    const Rgb keptColor = RenderOne(ctx, rig, kept);
+    TEST_CHECK(ctx, keptColor.r > 0.9f);
+
+    Configuration dropped = cutoutBase;
+    dropped.name = "opacity below the cutoff";
+    dropped.opacity = 0.1f;
+    dropped.alphaCutoff = 0.5f;
+    const Rgb droppedColor = RenderOne(ctx, rig, dropped);
+
+    // Nothing was written, so what comes back is what the pass cleared
+    // to. Black is a weak thing to assert on its own -- an unlit surface
+    // is also black -- which is why this one is emissive: the same
+    // configuration WITH the pixel kept came back at nearly one, on the
+    // line above.
+    TEST_CHECK(ctx, droppedColor.r < 0.01f);
+    TEST_CHECK(ctx, droppedColor.g < 0.01f);
+    TEST_CHECK(ctx, droppedColor.b < 0.01f);
+
+    // And a threshold of zero means no test at all, not a test that
+    // everything passes: an almost transparent pixel is still drawn.
+    Configuration noTest = cutoutBase;
+    noTest.name = "no cutoff at all";
+    noTest.opacity = 0.001f;
+    noTest.alphaCutoff = 0.0f;
+    const Rgb noTestColor = RenderOne(ctx, rig, noTest);
+    TEST_CHECK(ctx, noTestColor.r > 0.9f);
 
     Fluxion_TextureDefaults_Shutdown();
     DestroyRig(rig);

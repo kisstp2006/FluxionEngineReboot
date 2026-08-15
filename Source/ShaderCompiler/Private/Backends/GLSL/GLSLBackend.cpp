@@ -302,6 +302,10 @@ private:
                 m_out << ";\n";
                 break;
             }
+            case StmtKind::Discard: {
+                Indent(depth); m_out << "discard;\n";
+                break;
+            }
         }
     }
 

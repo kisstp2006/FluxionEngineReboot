@@ -23,6 +23,13 @@
 void main() {
   SurfaceData surface = EvaluateSurface();
 
+  // Before anything is worked out about the pixel, because a pixel that
+  // is not there is not worth lighting.
+  if (SurfaceFailsAlphaTest(surface))
+  {
+    discard;
+  }
+
   // Normalized here rather than trusted. What the vertex stage produced
   // was unit length at each corner, and what arrived is the average of
   // three of those -- which is shorter, by more the more curved the

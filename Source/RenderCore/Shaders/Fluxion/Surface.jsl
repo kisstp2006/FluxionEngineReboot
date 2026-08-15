@@ -75,6 +75,21 @@ struct SurfaceData
     // it. An opaque pass does not read this at all.
     float opacity;
 
+    // The opacity below which the pixel is not drawn at all.
+    //
+    // ZERO MEANS NO ALPHA TEST, and that is the default. Not a sentinel
+    // chosen for convenience: an opacity is never below zero, so the
+    // comparison is simply never true, and a pass can write the test out
+    // unconditionally without asking whether this material wanted one.
+    // The alternative -- a separate flag saying whether to test -- would
+    // be a second place to say the same thing, and a material with the
+    // flag off and a threshold set would be two statements that disagree.
+    //
+    // Which PASS a draw goes to, and whether the pipeline blends, is
+    // decided on the other side in Fluxion_Material_SetAlphaMode. This is
+    // only the per-pixel half.
+    float alphaCutoff;
+
     uint shadingModel;
 };
 
@@ -97,8 +112,23 @@ SurfaceData DefaultSurface()
     surface.ambientOcclusion = 1.0;
     surface.emissive = Vector3(0.0, 0.0, 0.0);
     surface.opacity = 1.0;
+    surface.alphaCutoff = 0.0;
     surface.shadingModel = FLUXION_SHADING_MODEL_LIT;
     return surface;
+}
+
+// Whether this pixel fails the material's alpha test.
+//
+// Written here rather than in each pass for a reason that matters more
+// than tidiness: the depth pass and the forward pass MUST agree, to the
+// last bit, about which pixels exist. If the depth pass keeps a pixel the
+// forward pass drops, the depth buffer holds a surface nothing ever
+// shaded; if it drops one the forward pass keeps, that pixel is shaded
+// and then fails the depth test against a surface behind it. Both look
+// like a shadowing or sorting bug and neither is.
+bool SurfaceFailsAlphaTest(SurfaceData surface)
+{
+    return surface.opacity < surface.alphaCutoff;
 }
 
 // The microfacet alpha the lighting maths actually wants, from the
