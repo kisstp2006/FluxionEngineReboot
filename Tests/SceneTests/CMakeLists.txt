@@ -13,9 +13,11 @@ engine_add_test(
         Test_TransformUpdate.cpp
         Test_Systems.cpp
         Test_ScriptReflection.cpp
+        Test_SceneSerialization.cpp
         Test_EntityUUID.cpp
         Test_CommandBuffer.cpp
         Test_World.cpp
+        Test_SceneAssetReferences.cpp
     DEPENDENCIES
         Fluxion::Scene
         Fluxion::Script
@@ -23,6 +25,9 @@ engine_add_test(
         # directly, so it sees what a component running on top of them
         # sees.
         Fluxion::Application
+        # The asset reference checks name the field type an asset
+        # reference is recognised by.
+        Fluxion::Assets
     NO_EXCEPTIONS
     NO_RTTI
 )
@@ -36,6 +41,8 @@ engine_add_header_selfcontained_test(
         Fluxion/Scene/Transform.h
         Fluxion/Scene/SystemScheduler.h
         Fluxion/Scene/ScriptReflection.h
+        Fluxion/Scene/SceneSerialization.h
+        Fluxion/Scene/Prefab.h
         Fluxion/Scene/World.hpp
         Fluxion/Scene/SceneScript.hpp
         Fluxion/Scene/EngineScript.hpp

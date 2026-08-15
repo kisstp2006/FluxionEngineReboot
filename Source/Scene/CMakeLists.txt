@@ -18,4 +18,8 @@ engine_add_module(
         # The clock and the input state a script reads. Neither appears in
         # a header of this module.
         Fluxion::Application
+        # Recognising a component field that points at an asset. Only the
+        # field's declared type is needed, and that does not appear in a
+        # header of this module either.
+        Fluxion::Assets
 )

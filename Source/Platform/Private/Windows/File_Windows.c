@@ -79,6 +79,15 @@ i64 Fluxion_Platform_FileSize(FluxionFile* file)
     return (i64)size.QuadPart;
 }
 
+bool Fluxion_Platform_FileSeek(FluxionFile* file, i64 offset)
+{
+    if (!file->handle || offset < 0) return false;
+
+    LARGE_INTEGER distance;
+    distance.QuadPart = offset;
+    return SetFilePointerEx((HANDLE)file->handle, distance, NULL, FILE_BEGIN) != 0;
+}
+
 bool Fluxion_Platform_FileExists(const char* path)
 {
     DWORD attributes = GetFileAttributesA(path);
@@ -88,4 +97,16 @@ bool Fluxion_Platform_FileExists(const char* path)
 bool Fluxion_Platform_FileDelete(const char* path)
 {
     return DeleteFileA(path) != 0;
+}
+
+bool Fluxion_Platform_DirectoryExists(const char* path)
+{
+    DWORD attributes = GetFileAttributesA(path);
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+bool Fluxion_Platform_DirectoryCreate(const char* path)
+{
+    if (CreateDirectoryA(path, NULL)) return true;
+    return GetLastError() == ERROR_ALREADY_EXISTS && Fluxion_Platform_DirectoryExists(path);
 }

@@ -3,6 +3,7 @@
 #include <Fluxion/Core/Reflection/TypeId.h>
 #include <Fluxion/Foundation/Math.h>
 #include <Fluxion/Foundation/Types.h>
+#include <Fluxion/Foundation/UUID.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -91,6 +92,25 @@ typedef struct FluxionScriptComponent
 } FluxionScriptComponent;
 
 FluxionTypeId Fluxion_ScriptComponent_TypeId(void);
+
+// Where a copy came from.
+//
+// Only the objects made by copying a prefab carry this -- which is what
+// storage grouped by composition is for: the ones that did not, do not
+// pay for it.
+//
+// Two ids rather than one, because a prefab holds several objects and a
+// copy of it holds several too: the first says which prefab, the second
+// says which of ITS objects this one was copied from. Without the second,
+// telling a copy what it should look like would mean guessing which
+// original it corresponds to.
+typedef struct FluxionPrefabLink
+{
+    FluxionUUID prefab;
+    FluxionUUID sourceEntity;
+} FluxionPrefabLink;
+
+FluxionTypeId Fluxion_PrefabLink_TypeId(void);
 
 #ifdef __cplusplus
 }

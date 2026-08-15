@@ -38,7 +38,9 @@ static inline bool Fluxion_Stream_IsReading(const FluxionStream* stream) { retur
 static inline bool Fluxion_Stream_IsWriting(const FluxionStream* stream) { return stream->mode == FLUXION_STREAM_WRITE; }
 
 // Every Serialize* function is symmetric: the same call reads or writes
-// depending on stream->mode (FArchive's <<-both-ways pattern). All
+// depending on stream->mode, so the shape of a record is written down
+// once rather than once per direction -- two copies being the way a
+// reader and a writer come to disagree about the same bytes. All
 // multi-byte values are explicitly encoded/decoded least-significant-
 // byte-first on the wire, regardless of host byte order -- not a
 // memcpy-of-the-native-representation assumption.

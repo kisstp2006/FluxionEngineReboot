@@ -1,5 +1,6 @@
 #include <Fluxion/Platform/File.h>
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <sys/stat.h>
@@ -68,6 +69,12 @@ i64 Fluxion_Platform_FileSize(FluxionFile* file)
     return (i64)st.st_size;
 }
 
+bool Fluxion_Platform_FileSeek(FluxionFile* file, i64 offset)
+{
+    if (!file->handle || offset < 0) return false;
+    return lseek((int)(intptr_t)file->handle, (off_t)offset, SEEK_SET) == (off_t)offset;
+}
+
 bool Fluxion_Platform_FileExists(const char* path)
 {
     struct stat st;
@@ -77,4 +84,16 @@ bool Fluxion_Platform_FileExists(const char* path)
 bool Fluxion_Platform_FileDelete(const char* path)
 {
     return unlink(path) == 0;
+}
+
+bool Fluxion_Platform_DirectoryExists(const char* path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+bool Fluxion_Platform_DirectoryCreate(const char* path)
+{
+    if (mkdir(path, 0755) == 0) return true;
+    return errno == EEXIST && Fluxion_Platform_DirectoryExists(path);
 }

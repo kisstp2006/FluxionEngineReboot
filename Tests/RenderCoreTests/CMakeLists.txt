@@ -13,6 +13,7 @@ engine_add_test(
         Test_MemoryDomains.c
         Test_RenderView.c
         Test_RendererFrame.cpp
+        Test_MeshAsset.cpp
     DEPENDENCIES
         Fluxion::RenderCore
         Fluxion::RHI
@@ -31,4 +32,6 @@ engine_add_header_selfcontained_test(
         Fluxion/RenderCore/RenderGraph/RenderGraphPass.h
         Fluxion/RenderCore/RenderGraph/RenderGraphPassRegistry.h
         Fluxion/RenderCore/RenderGraph/RenderGraph.h
+        Fluxion/RenderCore/Renderer/MeshBuffer.h
+        Fluxion/RenderCore/Renderer/MeshAsset.h
 )

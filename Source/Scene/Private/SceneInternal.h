@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Fluxion/Foundation/Serialization/Stream.h>
 #include <Fluxion/Scene/EntityCommandBuffer.h>
 #include <Fluxion/Scene/Scene.h>
 #include <Fluxion/Scene/SystemScheduler.h>
@@ -404,6 +405,21 @@ void Fluxion_SceneInternal_UpdateTransforms(FluxionSceneRecord* record);
 // Says this object and everything below it now sit one level deeper or
 // shallower than they did, following a change of parent.
 void Fluxion_SceneInternal_UpdateSubtreeDepth(FluxionSceneRecord* record, FluxionGameObjectHandle object, u32 depth);
+
+// --- Saving and loading -------------------------------------------------
+
+// Writes `root` and everything below it, or the whole scene when `root`
+// names nothing. What a subtree leaves behind -- the parent it hung from,
+// anything it pointed at outside itself -- is written as naming nothing,
+// because a file that named them could not say what they were.
+bool Fluxion_SceneInternal_SaveSubtree(FluxionSceneHandle scene, FluxionGameObjectHandle root, FluxionStream* stream);
+
+// Adds a copy of what the stream holds to a scene, rather than replacing
+// what is there: every object gets an id of its own, references inside
+// are remapped to point within the copy, and each object is told which of
+// the original's objects it came from. `outRoot` receives the copy's root.
+bool Fluxion_SceneInternal_InstantiateInto(FluxionSceneHandle scene, FluxionStream* stream, FluxionUUID prefab,
+                                            FluxionGameObjectHandle* outRoot);
 
 // --- Systems ------------------------------------------------------------
 

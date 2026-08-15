@@ -76,6 +76,47 @@ FluxionTypeId Fluxion_ScriptComponent_TypeId(void)
     return FLUXION_TYPE_ID_OF(FluxionScriptComponent);
 }
 
+FluxionTypeId Fluxion_PrefabLink_TypeId(void)
+{
+    return FLUXION_TYPE_ID_OF(FluxionPrefabLink);
+}
+
+// Both ids are written out: which prefab a copy came from, and which of
+// its objects. Losing either would leave a copy that cannot be told what
+// it ought to look like.
+#define FLUXION_SCENE_PREFAB_LINK_PROPERTY_COUNT 2
+
+static FluxionPropertyInfo s_prefabLinkProperties[FLUXION_SCENE_PREFAB_LINK_PROPERTY_COUNT];
+static FluxionTypeInfo s_prefabLinkType;
+
+static bool Fluxion_ScenePrefabLink_EnsureRegistered(void)
+{
+    const FluxionTypeId id = Fluxion_PrefabLink_TypeId();
+
+    if (!Fluxion_Reflection_IsInitialized()) return false;
+    if (Fluxion_Reflection_FindTypeById(id) != NULL) return true;
+
+    {
+        const FluxionPropertyInfo described[FLUXION_SCENE_PREFAB_LINK_PROPERTY_COUNT] =
+        {
+            FLUXION_REFLECT_PROPERTY(FluxionPrefabLink, prefab, FLUXION_TYPE_ID_OF(FluxionUUID), FLUXION_PROPERTY_FLAG_NONE),
+            FLUXION_REFLECT_PROPERTY(FluxionPrefabLink, sourceEntity, FLUXION_TYPE_ID_OF(FluxionUUID), FLUXION_PROPERTY_FLAG_NONE),
+        };
+        memcpy(s_prefabLinkProperties, described, sizeof(described));
+    }
+
+    s_prefabLinkType.name = Fluxion_StringView_FromCStr("FluxionPrefabLink");
+    s_prefabLinkType.id = id;
+    s_prefabLinkType.kind = FLUXION_TYPE_KIND_STRUCT;
+    s_prefabLinkType.size = sizeof(FluxionPrefabLink);
+    s_prefabLinkType.version = 1;
+    s_prefabLinkType.members = Fluxion_Span_Make(s_prefabLinkProperties,
+        FLUXION_SCENE_PREFAB_LINK_PROPERTY_COUNT, sizeof(FluxionPropertyInfo));
+    s_prefabLinkType.methods = Fluxion_Span_Make(NULL, 0, sizeof(FluxionMethodInfo));
+
+    return Fluxion_Reflection_RegisterType(&s_prefabLinkType);
+}
+
 // The script link carries nothing worth writing out: the number in it
 // points into a table that only exists while the program runs. What a
 // saved scene records about scripts is which classes were attached and
@@ -116,7 +157,10 @@ bool Fluxion_SceneTransform_EnsureRegistered(void)
     // Asked of the registry rather than remembered in a flag: the registry
     // can be taken down and brought up again, and a flag would then say
     // the type is registered when it no longer is.
-    if (Fluxion_Reflection_FindTypeById(id) != NULL) return Fluxion_SceneScriptLink_EnsureRegistered();
+    if (Fluxion_Reflection_FindTypeById(id) != NULL)
+    {
+        return Fluxion_SceneScriptLink_EnsureRegistered() && Fluxion_ScenePrefabLink_EnsureRegistered();
+    }
 
     Fluxion_SceneTransform_DescribeProperties();
 
@@ -130,7 +174,8 @@ bool Fluxion_SceneTransform_EnsureRegistered(void)
     s_transformType.methods = Fluxion_Span_Make(NULL, 0, sizeof(FluxionMethodInfo));
 
     if (!Fluxion_Reflection_RegisterType(&s_transformType)) return false;
-    return Fluxion_SceneScriptLink_EnsureRegistered();
+    if (!Fluxion_SceneScriptLink_EnsureRegistered()) return false;
+    return Fluxion_ScenePrefabLink_EnsureRegistered();
 }
 
 // --- Reaching one object's transform -------------------------------------

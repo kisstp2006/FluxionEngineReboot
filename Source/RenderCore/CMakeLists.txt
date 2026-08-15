@@ -5,6 +5,9 @@ engine_add_module(
     PUBLIC_DEPENDENCIES
         Fluxion::RHI
         Fluxion::Foundation
+        # MeshAsset.h names an asset type by its id, so whoever includes
+        # it sees the asset headers too.
+        Fluxion::Assets
     PRIVATE_DEPENDENCIES
         pdjson
         Fluxion::ShaderCompiler

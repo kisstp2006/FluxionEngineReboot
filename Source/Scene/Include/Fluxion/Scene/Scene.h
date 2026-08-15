@@ -49,6 +49,19 @@ FLUXION_DEFINE_HANDLE(FluxionGameObjectHandle);
 // typedef rather than a second type, so the two cannot drift apart.
 typedef FluxionGameObjectHandle FluxionEntityHandle;
 
+// The id a component field holding one of those handles is described by.
+//
+// It matters that there is exactly one. A saved reference is recognised
+// by the TYPE of the field holding it rather than by a flag someone had
+// to remember to set -- a forgotten flag would write the raw index and
+// generation, which name nothing at all once the program that wrote them
+// has ended, and would do it without a word.
+//
+// So the two spellings above must not become two ids. Behind a function
+// because the id is worked out from a name, and a name written out twice
+// is a name that can be written out differently twice.
+FluxionTypeId Fluxion_EntityHandle_TypeId(void);
+
 // An invalid handle of either kind, so a caller answering "there is none"
 // never has to write the two numbers out.
 FluxionSceneHandle Fluxion_Scene_InvalidHandle(void);

@@ -20,6 +20,11 @@ FluxionGameObjectHandle Fluxion_GameObject_InvalidHandle(void)
     return invalid;
 }
 
+FluxionTypeId Fluxion_EntityHandle_TypeId(void)
+{
+    return FLUXION_TYPE_ID_OF(FluxionEntityHandle);
+}
+
 FluxionSceneRecord* Fluxion_SceneInternal_Resolve(FluxionSceneHandle scene)
 {
     FluxionSceneRecord* record;

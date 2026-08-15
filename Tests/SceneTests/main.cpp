@@ -15,9 +15,11 @@ void Test_Archetype_Run(TestContext& ctx);
 void Test_TransformUpdate_Run(TestContext& ctx);
 void Test_Systems_Run(TestContext& ctx);
 void Test_ScriptReflection_Run(TestContext& ctx);
+void Test_SceneSerialization_Run(TestContext& ctx);
 void Test_EntityUUID_Run(TestContext& ctx);
 void Test_CommandBuffer_Run(TestContext& ctx);
 void Test_World_Run(TestContext& ctx);
+void Test_SceneAssetReferences_Run(TestContext& ctx);
 
 int main()
 {
@@ -42,9 +44,11 @@ int main()
     Test_TransformUpdate_Run(ctx);
     Test_Systems_Run(ctx);
     Test_ScriptReflection_Run(ctx);
+    Test_SceneSerialization_Run(ctx);
     Test_EntityUUID_Run(ctx);
     Test_CommandBuffer_Run(ctx);
     Test_World_Run(ctx);
+    Test_SceneAssetReferences_Run(ctx);
 
     Fluxion_Reflection_Shutdown();
 

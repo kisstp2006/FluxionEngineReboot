@@ -97,8 +97,17 @@ jobs:
       # provides a virtual X server for ApplicationTests to actually open
       # a window against -- the runner itself is headless, unlike a local
       # WSL2/WSLg setup which already has a real DISPLAY.
-      - name: Install X11 and Vulkan dev packages
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libvulkan-dev xvfb
+      #
+      # The three OpenGL packages are one per thing find_package(OpenGL)
+      # looks for: libopengl-dev has libOpenGL.so, libglx-dev has
+      # libGLX.so, libgl-dev has the GL headers. The RHI asks for OpenGL
+      # as REQUIRED on desktop Linux, and deliberately so -- a Linux
+      # machine HAS desktop GL, and missing dev packages are an
+      # incomplete environment rather than a target without the
+      # capability. Quietly dropping the backend instead would let CI go
+      # green on a build that ships one renderer fewer than it says.
+      - name: Install X11, OpenGL and Vulkan dev packages
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libgl-dev libglx-dev libopengl-dev libvulkan-dev xvfb
 
       - name: Check CMake version
         run: cmake --version
@@ -142,8 +151,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install X11 and Vulkan dev packages
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libvulkan-dev xvfb
+      # Same set as the build job above, and for the same reasons.
+      - name: Install X11, OpenGL and Vulkan dev packages
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libgl-dev libglx-dev libopengl-dev libvulkan-dev xvfb
 
       - name: Configure (ASan + UBSan)
         run: cmake --preset linux-gcc -DFLUXION_ENABLE_ASAN=ON
