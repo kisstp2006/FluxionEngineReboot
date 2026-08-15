@@ -275,7 +275,7 @@ bool BuildRig(TestContext* ctx, LightingRig& rig, FluxionRHIBackendType backend,
     colorDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
     colorDesc.debugName = "LightingGPU.Color";
     rig.color = Fluxion_RHI_CreateTexture(rig.device, &colorDesc);
-    FluxionRHITextureViewDesc colorViewDesc = { rig.color, kColorFormat, 0, 1, 0, 1 };
+    FluxionRHITextureViewDesc colorViewDesc = { rig.color, kColorFormat, 0, 1, 0, 1, FLUXION_RHI_TEXTURE_DIMENSION_2D };
     rig.colorView = Fluxion_RHI_CreateTextureView(rig.device, &colorViewDesc);
 
     FluxionRHITextureDesc depthDesc = colorDesc;
@@ -283,7 +283,7 @@ bool BuildRig(TestContext* ctx, LightingRig& rig, FluxionRHIBackendType backend,
     depthDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_DEPTH_STENCIL;
     depthDesc.debugName = "LightingGPU.Depth";
     rig.depth = Fluxion_RHI_CreateTexture(rig.device, &depthDesc);
-    FluxionRHITextureViewDesc depthViewDesc = { rig.depth, depthDesc.format, 0, 1, 0, 1 };
+    FluxionRHITextureViewDesc depthViewDesc = { rig.depth, depthDesc.format, 0, 1, 0, 1, FLUXION_RHI_TEXTURE_DIMENSION_2D };
     rig.depthView = Fluxion_RHI_CreateTextureView(rig.device, &depthViewDesc);
 
     FluxionRenderTargetDesc targetDesc{};

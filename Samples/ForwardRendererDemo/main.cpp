@@ -510,7 +510,7 @@ int main(int argc, char** argv)
     FluxionRHITextureHandle albedoTexture = Fluxion_RHI_CreateTexture(device, &albedoTextureDesc);
     FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTexture(albedoTexture));
 
-    FluxionRHITextureViewDesc albedoViewDesc = { albedoTexture, albedoTextureDesc.format, 0, kMipLevels, 0, 1 };
+    FluxionRHITextureViewDesc albedoViewDesc = { albedoTexture, albedoTextureDesc.format, 0, kMipLevels, 0, 1, FLUXION_RHI_TEXTURE_DIMENSION_2D };
     FluxionRHITextureViewHandle albedoView = Fluxion_RHI_CreateTextureView(device, &albedoViewDesc);
     FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTextureView(albedoView));
 
@@ -547,7 +547,7 @@ int main(int argc, char** argv)
     FluxionRHITextureHandle depthTexture = Fluxion_RHI_CreateTexture(device, &depthTextureDesc);
     FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTexture(depthTexture));
 
-    FluxionRHITextureViewDesc depthViewDesc = { depthTexture, depthTextureDesc.format, 0, 1, 0, 1 };
+    FluxionRHITextureViewDesc depthViewDesc = { depthTexture, depthTextureDesc.format, 0, 1, 0, 1, FLUXION_RHI_TEXTURE_DIMENSION_2D };
     FluxionRHITextureViewHandle depthView = Fluxion_RHI_CreateTextureView(device, &depthViewDesc);
     FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTextureView(depthView));
 
@@ -1213,7 +1213,7 @@ int main(int argc, char** argv)
 
         FluxionRHITextureHandle backbuffer = Fluxion_RHI_Swapchain_GetTexture(swapchain, imageIndex);
 
-        FluxionRHITextureViewDesc backbufferViewDesc = { backbuffer, swapchainDesc.format, 0, 1, 0, 1 };
+        FluxionRHITextureViewDesc backbufferViewDesc = { backbuffer, swapchainDesc.format, 0, 1, 0, 1, FLUXION_RHI_TEXTURE_DIMENSION_2D };
         FluxionRHITextureViewHandle backbufferView = Fluxion_RHI_CreateTextureView(device, &backbufferViewDesc);
 
         FluxionRenderTargetDesc targetDesc{};

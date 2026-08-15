@@ -8,6 +8,8 @@
 
 #include "VulkanCommon.h"
 
+#include <Fluxion/Foundation/Log.h>
+
 static FluxionRHIVulkanSlot s_bufferSlots[FLUXION_RHI_VULKAN_MAX_BUFFERS];
 static FluxionRHIVulkanBuffer s_buffers[FLUXION_RHI_VULKAN_MAX_BUFFERS];
 
@@ -195,6 +197,28 @@ FluxionRHITextureHandle Fluxion_RHIVulkan_CreateTexture(FluxionRHIDeviceHandle d
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
+    // A cube is six square layers that a view may read as one thing
+    // sampled by direction. The image itself is an ordinary array; the
+    // flag is what makes such a view legal, and it has to be asked for at
+    // creation because an image cannot be given it afterwards.
+    //
+    // Refused rather than corrected when the shape does not fit: a
+    // description that says CUBE and brings four layers is a mistake
+    // somewhere else, and quietly making an array out of it would move
+    // the failure to whichever shader sampled it.
+    if (desc->dimension == FLUXION_RHI_TEXTURE_DIMENSION_CUBE)
+    {
+        if (imageInfo.arrayLayers != FLUXION_RHI_CUBE_FACE_COUNT || desc->width != desc->height)
+        {
+            FLUXION_LOG_ERROR("RHI.Vulkan",
+                "a cube texture needs six square layers; this one has %u layers at %ux%u",
+                imageInfo.arrayLayers, desc->width, desc->height);
+            Fluxion_RHIVulkan_PoolFree(s_textureSlots, FLUXION_RHI_VULKAN_MAX_TEXTURES, index, generation);
+            return invalid;
+        }
+        imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    }
+
     VmaAllocationCreateInfo allocInfo = {};
     allocInfo.usage = Fluxion_RHIVulkan_MapMemoryClass(desc->memoryClass);
 
@@ -292,7 +316,12 @@ FluxionRHITextureViewHandle Fluxion_RHIVulkan_CreateTextureView(FluxionRHIDevice
     VkImageViewCreateInfo viewInfo = {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = texture->image;
-    viewInfo.viewType = texture->arrayLayers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+    // What the SHADER sees, which need not be what the image is: the same
+    // six layers are a cube to one view and an ordinary array to another,
+    // and rendering into a single face wants the second.
+    viewInfo.viewType = desc->dimension == FLUXION_RHI_TEXTURE_DIMENSION_CUBE
+                            ? VK_IMAGE_VIEW_TYPE_CUBE
+                            : (texture->arrayLayers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D);
     viewInfo.format = format;
     viewInfo.subresourceRange.aspectMask = isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = desc->baseMipLevel;

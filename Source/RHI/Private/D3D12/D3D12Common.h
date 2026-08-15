@@ -233,6 +233,11 @@ struct FluxionRHID3D12TextureView
     FluxionRHITextureHandle texture{};
     FluxionRHIFormat format = FLUXION_RHI_FORMAT_UNKNOWN;
     u32 baseMipLevel = 0, mipLevelCount = 1, baseArrayLayer = 0, arrayLayerCount = 1;
+
+    // Kept because the resource cannot say it. A cube is an ordinary
+    // six-slice array here -- the difference is entirely in the view that
+    // reads it, and that view is built later, when a bind group is made.
+    FluxionRHITextureDimension dimension = FLUXION_RHI_TEXTURE_DIMENSION_2D;
     // Set (non-zero size) only when the owning texture's usage flags make
     // that view type meaningful -- see CreateTextureView in
     // D3D12Resources.cpp. Both live in the device's non-shader-visible

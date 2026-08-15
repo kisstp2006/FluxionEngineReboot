@@ -44,6 +44,28 @@ typedef struct FluxionRHIBufferDesc
 #define FLUXION_RHI_TEXTURE_USAGE_TRANSFER_SRC  ((u32)(1u << 4))
 #define FLUXION_RHI_TEXTURE_USAGE_TRANSFER_DST  ((u32)(1u << 5))
 
+// What shape a texture is, which is not the same question as how big.
+//
+// A cube map is six square layers that a shader samples by DIRECTION
+// rather than by coordinate, and that is a property of the texture, not
+// of how many layers it happens to have: six layers of a wall atlas are
+// not a cube. So it is said outright.
+typedef enum FluxionRHITextureDimension
+{
+    // Zero, so every description written before this existed still means
+    // what it meant.
+    FLUXION_RHI_TEXTURE_DIMENSION_2D = 0,
+
+    // Exactly six array layers, in the order every one of these backends
+    // agrees on: +X, -X, +Y, -Y, +Z, -Z. One order, written down once,
+    // because a face order that differed per backend would give a sky
+    // that is merely rotated -- which looks like an artist's mistake
+    // rather than a bug.
+    FLUXION_RHI_TEXTURE_DIMENSION_CUBE,
+} FluxionRHITextureDimension;
+
+#define FLUXION_RHI_CUBE_FACE_COUNT 6
+
 typedef struct FluxionRHITextureDesc
 {
     u32 width;
@@ -56,6 +78,14 @@ typedef struct FluxionRHITextureDesc
     u32 usageFlags;    // FLUXION_RHI_TEXTURE_USAGE_*
     FluxionRHIMemoryClass memoryClass;
     const char* debugName; // optional, may be NULL
+
+    // Added at the end on purpose: several callers build one of these
+    // with a positional initializer, and a field in the middle would
+    // silently shift every value after it.
+    //
+    // A CUBE description must have six array layers and equal width and
+    // height. Anything else is refused rather than reinterpreted.
+    FluxionRHITextureDimension dimension;
 } FluxionRHITextureDesc;
 
 typedef enum FluxionRHIFilter

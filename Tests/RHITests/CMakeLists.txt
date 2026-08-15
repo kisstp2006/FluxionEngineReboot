@@ -4,6 +4,7 @@ set(RHITESTS_SOURCES
     Test_Handles.c
     Test_Format.c
     Test_CompressedUpload.c
+    Test_Cubemap.c
     Test_Capabilities.c
     Test_NullBackend.c
     Test_NativeHandle.c

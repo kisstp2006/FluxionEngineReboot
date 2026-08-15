@@ -394,7 +394,7 @@ void CompareOneFormatAgainstTheHardware(TestContext* ctx, const GpuFixture& fixt
         return;
     }
 
-    FluxionRHITextureViewDesc compressedViewDesc = { compressed, format, 0, 1, 0, 1 };
+    FluxionRHITextureViewDesc compressedViewDesc = { compressed, format, 0, 1, 0, 1, FLUXION_RHI_TEXTURE_DIMENSION_2D };
     FluxionRHITextureViewHandle compressedView = Fluxion_RHI_CreateTextureView(fixture.device, &compressedViewDesc);
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(compressedView));
 
@@ -422,7 +422,7 @@ void CompareOneFormatAgainstTheHardware(TestContext* ctx, const GpuFixture& fixt
     FluxionRHITextureHandle color = Fluxion_RHI_CreateTexture(fixture.device, &colorDesc);
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(color));
 
-    FluxionRHITextureViewDesc colorViewDesc = { color, colorDesc.format, 0, 1, 0, 1 };
+    FluxionRHITextureViewDesc colorViewDesc = { color, colorDesc.format, 0, 1, 0, 1, FLUXION_RHI_TEXTURE_DIMENSION_2D };
     FluxionRHITextureViewHandle colorView = Fluxion_RHI_CreateTextureView(fixture.device, &colorViewDesc);
 
     FluxionRHITextureDesc depthDesc = compressedDesc;
@@ -430,7 +430,7 @@ void CompareOneFormatAgainstTheHardware(TestContext* ctx, const GpuFixture& fixt
     depthDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_DEPTH_STENCIL;
     depthDesc.debugName = "BlockCompressGPU.Depth";
     FluxionRHITextureHandle depth = Fluxion_RHI_CreateTexture(fixture.device, &depthDesc);
-    FluxionRHITextureViewDesc depthViewDesc = { depth, depthDesc.format, 0, 1, 0, 1 };
+    FluxionRHITextureViewDesc depthViewDesc = { depth, depthDesc.format, 0, 1, 0, 1, FLUXION_RHI_TEXTURE_DIMENSION_2D };
     FluxionRHITextureViewHandle depthView = Fluxion_RHI_CreateTextureView(fixture.device, &depthViewDesc);
 
     FluxionShaderProgramDesc programDesc{};

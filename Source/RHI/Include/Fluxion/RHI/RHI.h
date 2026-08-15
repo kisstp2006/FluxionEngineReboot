@@ -239,6 +239,15 @@ typedef struct FluxionRHITextureViewDesc
     u32 mipLevelCount;
     u32 baseArrayLayer;
     u32 arrayLayerCount;
+
+    // How the shader reads it, which need not be how it was made: a cube
+    // texture viewed as CUBE is sampled by direction, and the same
+    // texture viewed as 2D is six ordinary layers -- which is what
+    // rendering into one face needs.
+    //
+    // At the end, and zero meaning 2D, so every positional initializer
+    // written before this existed still says what it said.
+    FluxionRHITextureDimension dimension;
 } FluxionRHITextureViewDesc;
 
 FluxionRHITextureViewHandle Fluxion_RHI_CreateTextureView(FluxionRHIDeviceHandle device, const FluxionRHITextureViewDesc* desc);

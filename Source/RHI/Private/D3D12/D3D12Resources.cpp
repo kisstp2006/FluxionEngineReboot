@@ -13,6 +13,8 @@
 
 #include "D3D12Common.h"
 
+#include <Fluxion/Foundation/Log.h>
+
 static D3D12_HEAP_TYPE Fluxion_RHID3D12_MapHeapType(FluxionRHIMemoryClass memoryClass)
 {
     switch (memoryClass)
@@ -159,6 +161,21 @@ FluxionRHITextureHandle Fluxion_RHID3D12_CreateTexture(FluxionRHIDeviceHandle de
     FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_ResolveDevice(device);
     if (deviceState == nullptr || desc == nullptr) return invalid;
 
+    // Asked here even though nothing in this backend's resource needs
+    // to know: a cube is six ordinary slices to D3D12, and only the view
+    // makes it a cube. So a description with the wrong shape would create
+    // perfectly well and fail later, at a view, with nothing left to say
+    // which description was wrong. The other backends refuse it at
+    // creation, and a rule that held on two backends out of three would
+    // be worse than no rule.
+    if (desc->dimension == FLUXION_RHI_TEXTURE_DIMENSION_CUBE &&
+        (desc->arrayLayers != FLUXION_RHI_CUBE_FACE_COUNT || desc->width != desc->height))
+    {
+        FLUXION_LOG_ERROR("RHI.D3D12", "a cube texture needs six square layers; this one has %u layers at %ux%u",
+            desc->arrayLayers, desc->width, desc->height);
+        return invalid;
+    }
+
     u32 index, generation;
     if (!Fluxion_RHID3D12_PoolAllocate(s_textureSlots, FLUXION_RHI_D3D12_MAX_TEXTURES, &index, &generation)) return invalid;
 
@@ -287,6 +304,7 @@ FluxionRHITextureViewHandle Fluxion_RHID3D12_CreateTextureView(FluxionRHIDeviceH
     view->mipLevelCount = desc->mipLevelCount;
     view->baseArrayLayer = desc->baseArrayLayer;
     view->arrayLayerCount = desc->arrayLayerCount;
+    view->dimension = desc->dimension;
 
     DXGI_FORMAT nativeFormat = Fluxion_RHID3D12_MapFormat(desc->format);
 

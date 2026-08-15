@@ -104,7 +104,7 @@ extern "C" void Test_RendererFrame_Run(TestContext* ctx)
     colorTextureDesc.debugName = "Test_RendererFrame.Color";
     FluxionRHITextureHandle colorTexture = Fluxion_RHI_CreateTexture(fixture.device, &colorTextureDesc);
 
-    FluxionRHITextureViewDesc colorViewDesc = { colorTexture, colorTextureDesc.format, 0, 1, 0, 1 };
+    FluxionRHITextureViewDesc colorViewDesc = { colorTexture, colorTextureDesc.format, 0, 1, 0, 1, FLUXION_RHI_TEXTURE_DIMENSION_2D };
     FluxionRHITextureViewHandle colorView = Fluxion_RHI_CreateTextureView(fixture.device, &colorViewDesc);
 
     FluxionRenderTargetDesc targetDesc;

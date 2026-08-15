@@ -28,7 +28,7 @@ void Test_NativeHandle_Run(TestContext* ctx)
     FluxionRHINativeHandle nativeBuffer = Fluxion_RHI_GetNativeBufferHandle(buffer);
     TEST_CHECK(ctx, nativeBuffer.value == NULL);
 
-    FluxionRHITextureDesc textureDesc = { 4, 4, 1, 1, 1, 1, FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, FLUXION_RHI_TEXTURE_USAGE_SAMPLED, FLUXION_RHI_MEMORY_CLASS_GPU_ONLY, NULL };
+    FluxionRHITextureDesc textureDesc = { 4, 4, 1, 1, 1, 1, FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, FLUXION_RHI_TEXTURE_USAGE_SAMPLED, FLUXION_RHI_MEMORY_CLASS_GPU_ONLY, NULL, FLUXION_RHI_TEXTURE_DIMENSION_2D };
     FluxionRHITextureHandle texture = Fluxion_RHI_CreateTexture(device, &textureDesc);
     FluxionRHINativeHandle nativeTexture = Fluxion_RHI_GetNativeTextureHandle(texture);
     TEST_CHECK(ctx, nativeTexture.value == NULL);

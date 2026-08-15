@@ -168,9 +168,23 @@ FluxionRHIBindGroupHandle Fluxion_RHID3D12_CreateBindGroup(FluxionRHIDeviceHandl
                 D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
                 srvDesc.Format = Fluxion_RHID3D12_MapFormat(viewState->format);
                 srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                srvDesc.Texture2D.MostDetailedMip = viewState->baseMipLevel;
-                srvDesc.Texture2D.MipLevels = viewState->mipLevelCount;
+
+                // A cube map has no separate resource shape here -- it is
+                // six array slices, and only this view makes it a cube.
+                // Which is why the view had to remember being one.
+                if (viewState->dimension == FLUXION_RHI_TEXTURE_DIMENSION_CUBE)
+                {
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                    srvDesc.TextureCube.MostDetailedMip = viewState->baseMipLevel;
+                    srvDesc.TextureCube.MipLevels = viewState->mipLevelCount;
+                    srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+                }
+                else
+                {
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srvDesc.Texture2D.MostDetailedMip = viewState->baseMipLevel;
+                    srvDesc.Texture2D.MipLevels = viewState->mipLevelCount;
+                }
                 deviceState->device->CreateShaderResourceView(textureState->resource.Get(), &srvDesc, Fluxion_RHID3D12_HeapCpuHandle(&deviceState->cbvSrvUavAllocator, srvBase + srvCursor));
             }
             ++srvCursor;

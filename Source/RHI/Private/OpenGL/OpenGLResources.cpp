@@ -2,6 +2,8 @@
 // persistent-mapping choices are explained at their use sites below.
 
 #include "OpenGLCommon.h"
+
+#include <Fluxion/Foundation/Log.h>
 #include "OpenGLFunctions.h"
 
 // --- Buffers -------------------------------------------------------------
@@ -147,6 +149,9 @@ FluxionRHIOpenGLTexture* Fluxion_RHIOpenGL_ResolveTexture(FluxionRHITextureHandl
 
 static GLenum Fluxion_RHIOpenGL_PickTextureTarget(const FluxionRHITextureDesc* desc)
 {
+    // Asked before the layer count, because six layers alone do not make
+    // a cube: six layers of a wall atlas are six layers.
+    if (desc->dimension == FLUXION_RHI_TEXTURE_DIMENSION_CUBE) return GL_TEXTURE_CUBE_MAP;
     if (desc->arrayLayers > 1) return GL_TEXTURE_2D_ARRAY;
     if (desc->depth > 1) return GL_TEXTURE_3D;
     return GL_TEXTURE_2D;
@@ -171,9 +176,26 @@ FluxionRHITextureHandle Fluxion_RHIOpenGL_CreateTexture(FluxionRHIDeviceHandle d
     textureState->arrayLayers = desc->arrayLayers > 0 ? desc->arrayLayers : 1;
     textureState->format = desc->format;
 
+    if (desc->dimension == FLUXION_RHI_TEXTURE_DIMENSION_CUBE &&
+        (textureState->arrayLayers != FLUXION_RHI_CUBE_FACE_COUNT || desc->width != desc->height))
+    {
+        FLUXION_LOG_ERROR("RHI.OpenGL", "a cube texture needs six square layers; this one has %u layers at %ux%u",
+            textureState->arrayLayers, desc->width, desc->height);
+        Fluxion_RHIOpenGL_PoolFree(s_textureSlots, FLUXION_RHI_OPENGL_MAX_TEXTURES, index, generation);
+        return invalid;
+    }
+
     GLenum internalFormat = Fluxion_RHIOpenGL_MapSizedInternalFormat(desc->format);
     glCreateTextures(textureState->target, 1, &textureState->name);
-    if (textureState->target == GL_TEXTURE_2D)
+    if (textureState->target == GL_TEXTURE_CUBE_MAP)
+    {
+        // Two dimensions, not three: a cube map's storage call takes one
+        // face's size and allocates all six. Handing it the layer count
+        // as a depth is the mistake this branch exists to avoid.
+        glTextureStorage2D(textureState->name, (GLsizei)textureState->mipLevels, internalFormat,
+            (GLsizei)textureState->width, (GLsizei)textureState->height);
+    }
+    else if (textureState->target == GL_TEXTURE_2D)
     {
         glTextureStorage2D(textureState->name, (GLsizei)textureState->mipLevels, internalFormat, (GLsizei)textureState->width, (GLsizei)textureState->height);
     }
