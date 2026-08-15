@@ -9,6 +9,7 @@
 #include "OpenGLFunctions.h"
 
 #include <Fluxion/Application/Window/Window.h>
+#include <Fluxion/Foundation/Log.h>
 
 // --- Command list state ------------------------------------------------------
 
@@ -360,25 +361,6 @@ void Fluxion_RHIOpenGL_CommandListCopyTexture(FluxionRHICommandListHandle comman
     glCopyImageSubData(srcState->name, srcState->target, 0, 0, 0, 0, dstState->name, dstState->target, 0, 0, 0, 0, (GLsizei)width, (GLsizei)height, (GLsizei)depth);
 }
 
-// Bytes per texel for the color formats the contract can upload --
-// mirrors the Vulkan backend's own table, for the same reason.
-static u32 Fluxion_RHIOpenGL_FormatTexelSize(FluxionRHIFormat format)
-{
-    switch (format)
-    {
-        case FLUXION_RHI_FORMAT_R8G8B8A8_UNORM:
-        case FLUXION_RHI_FORMAT_R8G8B8A8_SRGB:
-        case FLUXION_RHI_FORMAT_B8G8R8A8_UNORM:
-        case FLUXION_RHI_FORMAT_B8G8R8A8_SRGB:
-        case FLUXION_RHI_FORMAT_R32_FLOAT: return 4;
-        case FLUXION_RHI_FORMAT_R16G16B16A16_FLOAT:
-        case FLUXION_RHI_FORMAT_R32G32_FLOAT: return 8;
-        case FLUXION_RHI_FORMAT_R32G32B32_FLOAT: return 12;
-        case FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT: return 16;
-        default: return 0;
-    }
-}
-
 void Fluxion_RHIOpenGL_CommandListCopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer)
 {
     if (!Fluxion_RHIOpenGL_RequireRecording(commandList, "CopyBufferToTexture")) return;
@@ -389,6 +371,63 @@ void Fluxion_RHIOpenGL_CommandListCopyBufferToTexture(FluxionRHICommandListHandl
     u32 width = dstState->width >> mipLevel; if (width == 0) width = 1;
     u32 height = dstState->height >> mipLevel; if (height == 0) height = 1;
 
+    // The contract lays rows out FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT
+    // apart (see RHI.h), where a row is a row of BLOCKS -- the same thing
+    // as a row of texels only for the uncompressed formats. Asked of the
+    // format rather than worked out here, so this cannot disagree with
+    // what the caller packed.
+    const FluxionRHIFormatInfo formatInfo = Fluxion_RHI_GetFormatInfo(dstState->format);
+    const usize rowBytes = Fluxion_RHI_GetFormatRowBytes(dstState->format, width);
+    const usize alignedRowBytes = (rowBytes + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT;
+
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, srcState->name);
+
+    if (formatInfo.compressed)
+    {
+        // One call per row of blocks, each handed exactly the bytes of
+        // that row.
+        //
+        // GL can be told about a padded compressed layout through the
+        // UNPACK_COMPRESSED_BLOCK_* state instead, in one call -- but then
+        // the imageSize argument has to agree with a byte count the
+        // driver computes from that state, and drivers have not always
+        // agreed on whether the final row's padding counts. A row at a
+        // time needs none of that: every call is handed a tightly packed
+        // rectangle, which is the case the specification is unambiguous
+        // about.
+        const u32 blockRows = Fluxion_RHI_GetFormatBlockRows(dstState->format, height);
+        for (u32 blockRow = 0; blockRow < blockRows; ++blockRow)
+        {
+            const u32 yOffset = blockRow * formatInfo.blockHeight;
+
+            // The last row of blocks in a level whose height is not a
+            // whole number of blocks still holds a whole block, but the
+            // rectangle it covers stops at the edge of the level -- which
+            // is the one case a sub-region of a compressed texture is
+            // allowed not to be block-sized.
+            const u32 rowHeight = (yOffset + formatInfo.blockHeight <= height) ? formatInfo.blockHeight : (height - yOffset);
+            const usize rowOffset = srcOffset + (usize)blockRow * alignedRowBytes;
+
+            if (dstState->target == GL_TEXTURE_2D_ARRAY)
+            {
+                glCompressedTextureSubImage3D(dstState->name, (GLint)mipLevel, 0, (GLint)yOffset, (GLint)arrayLayer,
+                                              (GLsizei)width, (GLsizei)rowHeight, 1,
+                                              Fluxion_RHIOpenGL_MapSizedInternalFormat(dstState->format),
+                                              (GLsizei)rowBytes, (const void*)rowOffset);
+            }
+            else
+            {
+                glCompressedTextureSubImage2D(dstState->name, (GLint)mipLevel, 0, (GLint)yOffset,
+                                              (GLsizei)width, (GLsizei)rowHeight,
+                                              Fluxion_RHIOpenGL_MapSizedInternalFormat(dstState->format),
+                                              (GLsizei)rowBytes, (const void*)rowOffset);
+            }
+        }
+
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        return;
+    }
+
     GLenum pixelFormat, pixelType;
     Fluxion_RHIOpenGL_MapPixelTransferFormat(dstState->format, &pixelFormat, &pixelType);
 
@@ -397,14 +436,10 @@ void Fluxion_RHIOpenGL_CommandListCopyBufferToTexture(FluxionRHICommandListHandl
     // pointer whenever one is bound -- this is the DSA-era equivalent of
     // a buffer-to-image copy, since core GL has no direct analog to
     // vkCmdCopyBufferToImage.
-    // The contract lays rows out FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT
-    // apart (see RHI.h); UNPACK_ROW_LENGTH expresses that stride in
-    // texels, and is reset afterwards so no later unpack inherits it.
-    const u32 texelSize = Fluxion_RHIOpenGL_FormatTexelSize(dstState->format);
-    const u32 alignedRowBytes = (u32)((width * texelSize + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT);
-    if (texelSize != 0) glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(alignedRowBytes / texelSize));
+    // UNPACK_ROW_LENGTH expresses the padded stride in texels, and is
+    // reset afterwards so no later unpack inherits it.
+    if (formatInfo.blockBytes != 0) glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(alignedRowBytes / formatInfo.blockBytes));
 
-    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, srcState->name);
     if (dstState->target == GL_TEXTURE_2D_ARRAY)
     {
         glTextureSubImage3D(dstState->name, (GLint)mipLevel, 0, 0, (GLint)arrayLayer, (GLsizei)width, (GLsizei)height, 1, pixelFormat, pixelType, (const void*)srcOffset);
@@ -415,6 +450,50 @@ void Fluxion_RHIOpenGL_CommandListCopyBufferToTexture(FluxionRHICommandListHandl
     }
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+}
+
+void Fluxion_RHIOpenGL_CommandListCopyTextureToBuffer(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, u32 mipLevel, u32 arrayLayer, FluxionRHIBufferHandle dst, usize dstOffset)
+{
+    if (!Fluxion_RHIOpenGL_RequireRecording(commandList, "CopyTextureToBuffer")) return;
+    FluxionRHIOpenGLTexture* srcState = Fluxion_RHIOpenGL_ResolveTexture(src);
+    FluxionRHIOpenGLBuffer* dstState = Fluxion_RHIOpenGL_ResolveBuffer(dst);
+    if (srcState == nullptr || dstState == nullptr) return;
+
+    const FluxionRHIFormatInfo formatInfo = Fluxion_RHI_GetFormatInfo(srcState->format);
+    if (formatInfo.compressed)
+    {
+        // Said outright rather than half-done. Reading a compressed level
+        // back means agreeing with the driver about how much padding the
+        // final row of blocks carries, and drivers have not always agreed
+        // -- see the upload path above, which sidesteps the question by
+        // going a row at a time. Nothing needs this direction yet, and an
+        // untested version of it would be worse than none.
+        FLUXION_LOG_ERROR("RHI.OpenGL", "CopyTextureToBuffer: this backend does not read a compressed texture back; the call was dropped");
+        return;
+    }
+
+    u32 width = srcState->width >> mipLevel; if (width == 0) width = 1;
+    u32 height = srcState->height >> mipLevel; if (height == 0) height = 1;
+
+    const usize rowBytes = Fluxion_RHI_GetFormatRowBytes(srcState->format, width);
+    const usize alignedRowBytes = (rowBytes + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT;
+
+    GLenum pixelFormat, pixelType;
+    Fluxion_RHIOpenGL_MapPixelTransferFormat(srcState->format, &pixelFormat, &pixelType);
+
+    // PACK rather than UNPACK: the same state, for the direction that
+    // writes into a buffer instead of reading out of one.
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, dstState->name);
+    if (formatInfo.blockBytes != 0) glPixelStorei(GL_PACK_ROW_LENGTH, (GLint)(alignedRowBytes / formatInfo.blockBytes));
+
+    // glGetTextureSubImage wants the total it is allowed to write, which
+    // with the padded stride above is the padded total.
+    const GLsizei bufferSize = (GLsizei)(alignedRowBytes * height);
+    glGetTextureSubImage(srcState->name, (GLint)mipLevel, 0, 0, (GLint)arrayLayer, (GLsizei)width, (GLsizei)height, 1,
+                         pixelFormat, pixelType, bufferSize, (void*)dstOffset);
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
 }
 
 void Fluxion_RHIOpenGL_CommandListBarrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)

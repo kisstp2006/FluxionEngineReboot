@@ -136,7 +136,15 @@ void Fluxion_RHI_CommandList_CopyTexture(FluxionRHICommandListHandle commandList
 // The layout CopyBufferToTexture reads pixel data in. Every row must
 // start FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT bytes apart, and every
 // mip's data must start at a srcOffset that is a multiple of
-// FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT. These are the strictest
+// FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT.
+//
+// A "row" here is a row of BLOCKS, which is a row of texels only for the
+// formats whose block covers one texel. Fluxion_RHI_GetFormatRowBytes
+// (Format.h) answers how wide one is; asking it rather than multiplying
+// by a bytes-per-texel is what keeps a compressed texture from being
+// staged as though it were eight times its real size -- an error that
+// makes the buffer too big rather than too small, so nothing fails and
+// the picture is simply wrong. These are the strictest
 // backend's rules, adopted for all of them: a layout defined per backend
 // would mean staging data laid out for one is quietly misread by
 // another, and "quietly" is the operative word -- a 256-byte-wide image
@@ -157,6 +165,22 @@ void Fluxion_RHI_CommandList_CopyTexture(FluxionRHICommandListHandle commandList
 // already be in FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION via a prior
 // Barrier call, same as CopyTexture's own destination requirement.
 void Fluxion_RHI_CommandList_CopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer);
+
+// The same journey the other way: one mip level of one array layer of
+// `src` into `dst` at `dstOffset`, in exactly the layout described above
+// -- rows FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT apart, dstOffset a
+// multiple of FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT. `src` must
+// already be in FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE via a prior
+// Barrier call, and `dst` wants a memory class the CPU can read
+// (GPU_TO_CPU/READBACK) if anything is going to look at it.
+//
+// What this is for: asking the GPU what it actually made of something.
+// A compressed texture is decoded by fixed-function hardware, and the
+// only way to find out whether an encoder and that hardware agree is to
+// sample it and read the result back -- an encoder checked against
+// nothing but its own matching decoder agrees with itself and proves
+// nothing.
+void Fluxion_RHI_CommandList_CopyTextureToBuffer(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, u32 mipLevel, u32 arrayLayer, FluxionRHIBufferHandle dst, usize dstOffset);
 
 typedef struct FluxionRHIBarrier
 {

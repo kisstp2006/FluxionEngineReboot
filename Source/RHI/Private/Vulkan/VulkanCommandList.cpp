@@ -32,6 +32,23 @@ VkFormat Fluxion_RHIVulkan_MapFormat(FluxionRHIFormat format)
         case FLUXION_RHI_FORMAT_R32G32_FLOAT: return VK_FORMAT_R32G32_SFLOAT;
         case FLUXION_RHI_FORMAT_D32_FLOAT: return VK_FORMAT_D32_SFLOAT;
         case FLUXION_RHI_FORMAT_D24_UNORM_S8_UINT: return VK_FORMAT_D24_UNORM_S8_UINT;
+
+        case FLUXION_RHI_FORMAT_BC4_UNORM: return VK_FORMAT_BC4_UNORM_BLOCK;
+        case FLUXION_RHI_FORMAT_BC5_UNORM: return VK_FORMAT_BC5_UNORM_BLOCK;
+        case FLUXION_RHI_FORMAT_BC6H_UFLOAT: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+        case FLUXION_RHI_FORMAT_BC7_UNORM: return VK_FORMAT_BC7_UNORM_BLOCK;
+        case FLUXION_RHI_FORMAT_BC7_SRGB: return VK_FORMAT_BC7_SRGB_BLOCK;
+
+        case FLUXION_RHI_FORMAT_ASTC_4X4_UNORM: return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+        case FLUXION_RHI_FORMAT_ASTC_4X4_SRGB: return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+        case FLUXION_RHI_FORMAT_ASTC_4X4_FLOAT: return VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK;
+        case FLUXION_RHI_FORMAT_ASTC_6X6_UNORM: return VK_FORMAT_ASTC_6x6_UNORM_BLOCK;
+        case FLUXION_RHI_FORMAT_ASTC_6X6_SRGB: return VK_FORMAT_ASTC_6x6_SRGB_BLOCK;
+        case FLUXION_RHI_FORMAT_ASTC_6X6_FLOAT: return VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK;
+        case FLUXION_RHI_FORMAT_ASTC_8X8_UNORM: return VK_FORMAT_ASTC_8x8_UNORM_BLOCK;
+        case FLUXION_RHI_FORMAT_ASTC_8X8_SRGB: return VK_FORMAT_ASTC_8x8_SRGB_BLOCK;
+        case FLUXION_RHI_FORMAT_ASTC_8X8_FLOAT: return VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK;
+
         default: return VK_FORMAT_UNDEFINED;
     }
 }
@@ -51,6 +68,27 @@ FluxionRHIFormat Fluxion_RHIVulkan_MapFormatBack(VkFormat format)
         case VK_FORMAT_R32G32_SFLOAT: return FLUXION_RHI_FORMAT_R32G32_FLOAT;
         case VK_FORMAT_D32_SFLOAT: return FLUXION_RHI_FORMAT_D32_FLOAT;
         case VK_FORMAT_D24_UNORM_S8_UINT: return FLUXION_RHI_FORMAT_D24_UNORM_S8_UINT;
+
+        // Kept in step with the table above, and not only for symmetry:
+        // the copy path below asks this what it is holding, so a
+        // compressed format missing from here would be sized as though it
+        // were not compressed.
+        case VK_FORMAT_BC4_UNORM_BLOCK: return FLUXION_RHI_FORMAT_BC4_UNORM;
+        case VK_FORMAT_BC5_UNORM_BLOCK: return FLUXION_RHI_FORMAT_BC5_UNORM;
+        case VK_FORMAT_BC6H_UFLOAT_BLOCK: return FLUXION_RHI_FORMAT_BC6H_UFLOAT;
+        case VK_FORMAT_BC7_UNORM_BLOCK: return FLUXION_RHI_FORMAT_BC7_UNORM;
+        case VK_FORMAT_BC7_SRGB_BLOCK: return FLUXION_RHI_FORMAT_BC7_SRGB;
+
+        case VK_FORMAT_ASTC_4x4_UNORM_BLOCK: return FLUXION_RHI_FORMAT_ASTC_4X4_UNORM;
+        case VK_FORMAT_ASTC_4x4_SRGB_BLOCK: return FLUXION_RHI_FORMAT_ASTC_4X4_SRGB;
+        case VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK: return FLUXION_RHI_FORMAT_ASTC_4X4_FLOAT;
+        case VK_FORMAT_ASTC_6x6_UNORM_BLOCK: return FLUXION_RHI_FORMAT_ASTC_6X6_UNORM;
+        case VK_FORMAT_ASTC_6x6_SRGB_BLOCK: return FLUXION_RHI_FORMAT_ASTC_6X6_SRGB;
+        case VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK: return FLUXION_RHI_FORMAT_ASTC_6X6_FLOAT;
+        case VK_FORMAT_ASTC_8x8_UNORM_BLOCK: return FLUXION_RHI_FORMAT_ASTC_8X8_UNORM;
+        case VK_FORMAT_ASTC_8x8_SRGB_BLOCK: return FLUXION_RHI_FORMAT_ASTC_8X8_SRGB;
+        case VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK: return FLUXION_RHI_FORMAT_ASTC_8X8_FLOAT;
+
         default: return FLUXION_RHI_FORMAT_UNKNOWN;
     }
 }
@@ -421,27 +459,6 @@ void Fluxion_RHIVulkan_CommandListCopyTexture(FluxionRHICommandListHandle comman
     vkCmdCopyImage(cl->commandBuffer, srcState->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstState->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 }
 
-// Bytes per texel for the color formats the contract can upload. Depth
-// formats are absent on purpose: CopyBufferToTexture has no depth-aspect
-// path, and returning a size for one would let a wrong call get further
-// before failing.
-static u32 Fluxion_RHIVulkan_FormatTexelSize(VkFormat format)
-{
-    switch (format)
-    {
-        case VK_FORMAT_R8G8B8A8_UNORM:
-        case VK_FORMAT_R8G8B8A8_SRGB:
-        case VK_FORMAT_B8G8R8A8_UNORM:
-        case VK_FORMAT_B8G8R8A8_SRGB:
-        case VK_FORMAT_R32_SFLOAT: return 4;
-        case VK_FORMAT_R16G16B16A16_SFLOAT:
-        case VK_FORMAT_R32G32_SFLOAT: return 8;
-        case VK_FORMAT_R32G32B32_SFLOAT: return 12;
-        case VK_FORMAT_R32G32B32A32_SFLOAT: return 16;
-        default: return 0;
-    }
-}
-
 void Fluxion_RHIVulkan_CommandListCopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer)
 {
     FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);
@@ -457,15 +474,57 @@ void Fluxion_RHIVulkan_CommandListCopyBufferToTexture(FluxionRHICommandListHandl
     // texels. Zero -- tight packing -- would only agree with the
     // contract for rows that are exactly 256 bytes wide, which is the
     // disagreement the contract exists to rule out.
-    const u32 texelSize = Fluxion_RHIVulkan_FormatTexelSize(dstState->format);
-    const u32 alignedRowBytes = (u32)((width * texelSize + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT);
+    //
+    // A "row" is a row of BLOCKS, which for an uncompressed format is a
+    // row of texels and for a compressed one is not. Asked of the format
+    // rather than worked out here, so that the answer cannot differ from
+    // the one the caller sized its staging buffer with.
+    const FluxionRHIFormat portableFormat = Fluxion_RHIVulkan_MapFormatBack(dstState->format);
+    const FluxionRHIFormatInfo formatInfo = Fluxion_RHI_GetFormatInfo(portableFormat);
+    const usize rowBytes = Fluxion_RHI_GetFormatRowBytes(portableFormat, width);
+    const usize alignedRowBytes = (rowBytes + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT;
 
     VkBufferImageCopy region = {};
     region.bufferOffset = srcOffset;
-    region.bufferRowLength = texelSize != 0 ? alignedRowBytes / texelSize : 0;
+    // Blocks across, back into texels -- which is the unit this field is
+    // in whether or not the format has blocks. The row alignment is 256
+    // and every block size here divides it, so this stays a whole number
+    // of blocks rather than rounding to one.
+    region.bufferRowLength = formatInfo.blockBytes != 0
+                                 ? (u32)(alignedRowBytes / formatInfo.blockBytes) * formatInfo.blockWidth
+                                 : 0;
     region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, arrayLayer, 1 };
     region.imageExtent = { width, height, 1 };
     vkCmdCopyBufferToImage(cl->commandBuffer, srcState->buffer, dstState->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+}
+
+void Fluxion_RHIVulkan_CommandListCopyTextureToBuffer(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, u32 mipLevel, u32 arrayLayer, FluxionRHIBufferHandle dst, usize dstOffset)
+{
+    FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);
+    FluxionRHIVulkanTexture* srcState = Fluxion_RHIVulkan_ResolveTexture(src);
+    FluxionRHIVulkanBuffer* dstState = Fluxion_RHIVulkan_ResolveBuffer(dst);
+    if (cl == nullptr || srcState == nullptr || dstState == nullptr) return;
+
+    u32 width = srcState->width >> mipLevel; if (width == 0) width = 1;
+    u32 height = srcState->height >> mipLevel; if (height == 0) height = 1;
+
+    // The same layout as the upload, said the same way -- see
+    // CommandListCopyBufferToTexture above. The two directions have to
+    // agree about where a row starts, and the surest way to make them
+    // agree is for both to ask the same question of the same table.
+    const FluxionRHIFormat portableFormat = Fluxion_RHIVulkan_MapFormatBack(srcState->format);
+    const FluxionRHIFormatInfo formatInfo = Fluxion_RHI_GetFormatInfo(portableFormat);
+    const usize rowBytes = Fluxion_RHI_GetFormatRowBytes(portableFormat, width);
+    const usize alignedRowBytes = (rowBytes + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) / FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT;
+
+    VkBufferImageCopy region = {};
+    region.bufferOffset = dstOffset;
+    region.bufferRowLength = formatInfo.blockBytes != 0
+                                 ? (u32)(alignedRowBytes / formatInfo.blockBytes) * formatInfo.blockWidth
+                                 : 0;
+    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, arrayLayer, 1 };
+    region.imageExtent = { width, height, 1 };
+    vkCmdCopyImageToBuffer(cl->commandBuffer, srcState->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstState->buffer, 1, &region);
 }
 
 void Fluxion_RHIVulkan_CommandListBarrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)

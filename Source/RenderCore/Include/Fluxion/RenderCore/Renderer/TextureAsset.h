@@ -86,6 +86,34 @@ usize Fluxion_TextureAsset_GetTotalByteSize(FluxionRHIFormat format, u32 width, 
 // zero.
 u32 Fluxion_TextureAsset_GetLevelExtent(u32 base, u32 level);
 
+// --- Staging layout ------------------------------------------------------
+//
+// A cooked file packs its levels tightly, because that is what a file
+// wants. A device wants every row a fixed distance apart and every level
+// beginning on a fixed boundary, and those are not the same layout. The
+// re-laying-out happens in one place, and this is it -- which is also why
+// a texture whose rows already satisfy both (a 256-byte-wide one, say) is
+// exactly the texture that would hide a mistake here.
+//
+// A "row" throughout is a row of BLOCKS. For an uncompressed format that
+// is a row of texels; for a compressed one it is not, and counting texels
+// would read four times past the end of what a level holds.
+typedef struct FluxionTextureLevelPlacement
+{
+    usize sourceOffset;
+    usize stagingOffset;
+    usize sourceRowBytes;
+    usize stagingRowBytes;
+    u32 rows;
+} FluxionTextureLevelPlacement;
+
+// One entry per level of per layer, layer-major, in the order
+// CopyBufferToTexture wants them. Returns the size of the staging buffer
+// they need -- zero if the format cannot be sized, the shape is not real,
+// or `capacity` is too small to say the whole answer.
+usize Fluxion_TextureAsset_PlanUpload(FluxionRHIFormat format, u32 width, u32 height, u32 mipCount, u32 arrayLayers,
+                                      FluxionTextureLevelPlacement* placements, u32 capacity, u32* outCount);
+
 // Writes the cooked form into `stream`, which must be a writer.
 bool Fluxion_TextureAsset_Write(FluxionStream* stream, const FluxionTextureAssetData* data);
 

@@ -279,6 +279,12 @@ void Fluxion_RHI_CommandList_CopyBufferToTexture(FluxionRHICommandListHandle com
     s_backend->CommandListCopyBufferToTexture(commandList, src, srcOffset, dst, mipLevel, arrayLayer);
 }
 
+void Fluxion_RHI_CommandList_CopyTextureToBuffer(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, u32 mipLevel, u32 arrayLayer, FluxionRHIBufferHandle dst, usize dstOffset)
+{
+    if (s_backend == NULL) return;
+    s_backend->CommandListCopyTextureToBuffer(commandList, src, mipLevel, arrayLayer, dst, dstOffset);
+}
+
 void Fluxion_RHI_CommandList_Barrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)
 {
     if (s_backend == NULL) return;

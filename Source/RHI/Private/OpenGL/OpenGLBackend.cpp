@@ -91,6 +91,31 @@ GLenum Fluxion_RHIOpenGL_MapSizedInternalFormat(FluxionRHIFormat format)
         case FLUXION_RHI_FORMAT_R32G32_FLOAT: return GL_RG32F;
         case FLUXION_RHI_FORMAT_D32_FLOAT: return GL_DEPTH_COMPONENT32F;
         case FLUXION_RHI_FORMAT_D24_UNORM_S8_UINT: return GL_DEPTH24_STENCIL8;
+
+        // The BC formats reach desktop GL under their own names: BC4/BC5
+        // as RGTC, BC6H/BC7 as BPTC. Both are core since 3.0 and 4.2
+        // respectively, so no extension check guards them here.
+        case FLUXION_RHI_FORMAT_BC4_UNORM: return GL_COMPRESSED_RED_RGTC1;
+        case FLUXION_RHI_FORMAT_BC5_UNORM: return GL_COMPRESSED_RG_RGTC2;
+        case FLUXION_RHI_FORMAT_BC6H_UFLOAT: return GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT;
+        case FLUXION_RHI_FORMAT_BC7_UNORM: return GL_COMPRESSED_RGBA_BPTC_UNORM;
+        case FLUXION_RHI_FORMAT_BC7_SRGB: return GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM;
+
+        // ASTC's high-dynamic-range blocks are read through the SAME
+        // tokens as its ordinary ones -- the HDR extension adds a decoder,
+        // not a format. So the linear and the floating-point entries
+        // deliberately land on one token here, and it is the sRGB one that
+        // differs.
+        case FLUXION_RHI_FORMAT_ASTC_4X4_UNORM:
+        case FLUXION_RHI_FORMAT_ASTC_4X4_FLOAT: return GL_COMPRESSED_RGBA_ASTC_4x4_KHR;
+        case FLUXION_RHI_FORMAT_ASTC_4X4_SRGB: return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR;
+        case FLUXION_RHI_FORMAT_ASTC_6X6_UNORM:
+        case FLUXION_RHI_FORMAT_ASTC_6X6_FLOAT: return GL_COMPRESSED_RGBA_ASTC_6x6_KHR;
+        case FLUXION_RHI_FORMAT_ASTC_6X6_SRGB: return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR;
+        case FLUXION_RHI_FORMAT_ASTC_8X8_UNORM:
+        case FLUXION_RHI_FORMAT_ASTC_8X8_FLOAT: return GL_COMPRESSED_RGBA_ASTC_8x8_KHR;
+        case FLUXION_RHI_FORMAT_ASTC_8X8_SRGB: return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR;
+
         default: return GL_RGBA8;
     }
 }
@@ -371,6 +396,7 @@ static const FluxionRHIBackendVTable s_openglVTable = {
     Fluxion_RHIOpenGL_CommandListCopyBuffer,
     Fluxion_RHIOpenGL_CommandListCopyTexture,
     Fluxion_RHIOpenGL_CommandListCopyBufferToTexture,
+    Fluxion_RHIOpenGL_CommandListCopyTextureToBuffer,
     Fluxion_RHIOpenGL_CommandListBarrier,
     Fluxion_RHIOpenGL_CommandListSetBindGroup,
 

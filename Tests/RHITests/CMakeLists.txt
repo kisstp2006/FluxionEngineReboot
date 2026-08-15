@@ -2,6 +2,8 @@ set(RHITESTS_SOURCES
     main.c
     Test_BackendAvailability.c
     Test_Handles.c
+    Test_Format.c
+    Test_CompressedUpload.c
     Test_Capabilities.c
     Test_NullBackend.c
     Test_NativeHandle.c

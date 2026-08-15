@@ -32,6 +32,18 @@ DXGI_FORMAT Fluxion_RHID3D12_MapFormat(FluxionRHIFormat format)
         case FLUXION_RHI_FORMAT_R32G32_FLOAT: return DXGI_FORMAT_R32G32_FLOAT;
         case FLUXION_RHI_FORMAT_D32_FLOAT: return DXGI_FORMAT_D32_FLOAT;
         case FLUXION_RHI_FORMAT_D24_UNORM_S8_UINT: return DXGI_FORMAT_D24_UNORM_S8_UINT;
+
+        case FLUXION_RHI_FORMAT_BC4_UNORM: return DXGI_FORMAT_BC4_UNORM;
+        case FLUXION_RHI_FORMAT_BC5_UNORM: return DXGI_FORMAT_BC5_UNORM;
+        case FLUXION_RHI_FORMAT_BC6H_UFLOAT: return DXGI_FORMAT_BC6H_UF16;
+        case FLUXION_RHI_FORMAT_BC7_UNORM: return DXGI_FORMAT_BC7_UNORM;
+        case FLUXION_RHI_FORMAT_BC7_SRGB: return DXGI_FORMAT_BC7_UNORM_SRGB;
+
+        // ASTC is deliberately absent, not forgotten: D3D12 has no ASTC
+        // formats at all, so there is nothing to map one to. UNKNOWN makes
+        // CreateTexture refuse it here, which is the truth -- a cook
+        // targeting this backend picks BC instead, and that choice is made
+        // where the cook target is known rather than papered over here.
         default: return DXGI_FORMAT_UNKNOWN;
     }
 }
@@ -51,6 +63,13 @@ FluxionRHIFormat Fluxion_RHID3D12_MapFormatBack(DXGI_FORMAT format)
         case DXGI_FORMAT_R32G32_FLOAT: return FLUXION_RHI_FORMAT_R32G32_FLOAT;
         case DXGI_FORMAT_D32_FLOAT: return FLUXION_RHI_FORMAT_D32_FLOAT;
         case DXGI_FORMAT_D24_UNORM_S8_UINT: return FLUXION_RHI_FORMAT_D24_UNORM_S8_UINT;
+
+        case DXGI_FORMAT_BC4_UNORM: return FLUXION_RHI_FORMAT_BC4_UNORM;
+        case DXGI_FORMAT_BC5_UNORM: return FLUXION_RHI_FORMAT_BC5_UNORM;
+        case DXGI_FORMAT_BC6H_UF16: return FLUXION_RHI_FORMAT_BC6H_UFLOAT;
+        case DXGI_FORMAT_BC7_UNORM: return FLUXION_RHI_FORMAT_BC7_UNORM;
+        case DXGI_FORMAT_BC7_UNORM_SRGB: return FLUXION_RHI_FORMAT_BC7_SRGB;
+
         default: return FLUXION_RHI_FORMAT_UNKNOWN;
     }
 }
@@ -398,6 +417,37 @@ void Fluxion_RHID3D12_CommandListCopyBufferToTexture(FluxionRHICommandListHandle
     srcLoc.pResource = srcState->resource.Get();
     srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     srcLoc.PlacedFootprint = footprint;
+
+    cl->list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+}
+
+void Fluxion_RHID3D12_CommandListCopyTextureToBuffer(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, u32 mipLevel, u32 arrayLayer, FluxionRHIBufferHandle dst, usize dstOffset)
+{
+    FluxionRHID3D12CommandList* cl = Fluxion_RHID3D12_RequireRecording(commandList);
+    FluxionRHID3D12Texture* srcState = Fluxion_RHID3D12_ResolveTexture(src);
+    FluxionRHID3D12Buffer* dstState = Fluxion_RHID3D12_ResolveBuffer(dst);
+    FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
+    if (cl == nullptr || srcState == nullptr || dstState == nullptr || deviceState == nullptr) return;
+
+    D3D12_RESOURCE_DESC textureDesc = srcState->resource->GetDesc();
+    UINT subresource = mipLevel + arrayLayer * textureDesc.MipLevels;
+
+    // GetCopyableFootprints is the same source of truth the upload uses,
+    // and it already rounds a row up to D3D12's 256-byte pitch -- which is
+    // where FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT came from in the first
+    // place.
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+    deviceState->device->GetCopyableFootprints(&textureDesc, subresource, 1, dstOffset, &footprint, nullptr, nullptr, nullptr);
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource = dstState->resource.Get();
+    dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dstLoc.PlacedFootprint = footprint;
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource = srcState->resource.Get();
+    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLoc.SubresourceIndex = subresource;
 
     cl->list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 }

@@ -603,6 +603,7 @@ extern void Fluxion_RHIVulkan_CommandListDispatch(FluxionRHICommandListHandle, u
 extern void Fluxion_RHIVulkan_CommandListCopyBuffer(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, FluxionRHIBufferHandle, usize, usize);
 extern void Fluxion_RHIVulkan_CommandListCopyTexture(FluxionRHICommandListHandle, FluxionRHITextureHandle, FluxionRHITextureHandle);
 extern void Fluxion_RHIVulkan_CommandListCopyBufferToTexture(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, FluxionRHITextureHandle, u32, u32);
+extern void Fluxion_RHIVulkan_CommandListCopyTextureToBuffer(FluxionRHICommandListHandle, FluxionRHITextureHandle, u32, u32, FluxionRHIBufferHandle, usize);
 extern void Fluxion_RHIVulkan_CommandListBarrier(FluxionRHICommandListHandle, const FluxionRHIBarrier*, u32);
 extern void Fluxion_RHIVulkan_CommandListSetBindGroup(FluxionRHICommandListHandle, u32, FluxionRHIBindGroupHandle);
 extern void Fluxion_RHIVulkan_QueueSubmit(FluxionRHIQueueHandle, const FluxionRHICommandListHandle*, u32, FluxionRHIFenceHandle);
@@ -686,6 +687,7 @@ static const FluxionRHIBackendVTable s_vulkanVTable = {
     Fluxion_RHIVulkan_CommandListCopyBuffer,
     Fluxion_RHIVulkan_CommandListCopyTexture,
     Fluxion_RHIVulkan_CommandListCopyBufferToTexture,
+    Fluxion_RHIVulkan_CommandListCopyTextureToBuffer,
     Fluxion_RHIVulkan_CommandListBarrier,
     Fluxion_RHIVulkan_CommandListSetBindGroup,
 

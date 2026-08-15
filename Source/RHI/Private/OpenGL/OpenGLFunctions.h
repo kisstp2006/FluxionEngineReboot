@@ -40,6 +40,14 @@
     X(PFNGLTEXTURESTORAGE3DPROC, glTextureStorage3D) \
     X(PFNGLTEXTURESUBIMAGE2DPROC, glTextureSubImage2D) \
     X(PFNGLTEXTURESUBIMAGE3DPROC, glTextureSubImage3D) \
+    /* A block-compressed level is handed over whole rather than as
+       texels, so it goes through its own upload entry point -- the
+       ordinary one would want a pixel format and type, and a compressed
+       format has neither. */ \
+    X(PFNGLCOMPRESSEDTEXTURESUBIMAGE2DPROC, glCompressedTextureSubImage2D) \
+    X(PFNGLCOMPRESSEDTEXTURESUBIMAGE3DPROC, glCompressedTextureSubImage3D) \
+    /* The readback direction. GL 4.5 core, same as the rest of DSA. */ \
+    X(PFNGLGETTEXTURESUBIMAGEPROC, glGetTextureSubImage) \
     X(PFNGLTEXTUREVIEWPROC, glTextureView) \
     X(PFNGLBINDTEXTUREUNITPROC, glBindTextureUnit) \
     X(PFNGLGENERATETEXTUREMIPMAPPROC, glGenerateTextureMipmap) \

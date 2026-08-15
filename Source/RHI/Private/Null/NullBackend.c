@@ -468,6 +468,16 @@ static void Fluxion_RHI_Null_CommandListCopyBufferToTexture(FluxionRHICommandLis
     Fluxion_RHI_Null_RequireRecording(commandList, "CopyBufferToTexture");
 }
 
+static void Fluxion_RHI_Null_CommandListCopyTextureToBuffer(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, u32 mipLevel, u32 arrayLayer, FluxionRHIBufferHandle dst, usize dstOffset)
+{
+    FLUXION_UNUSED(src);
+    FLUXION_UNUSED(mipLevel);
+    FLUXION_UNUSED(arrayLayer);
+    FLUXION_UNUSED(dst);
+    FLUXION_UNUSED(dstOffset);
+    Fluxion_RHI_Null_RequireRecording(commandList, "CopyTextureToBuffer");
+}
+
 static void Fluxion_RHI_Null_CommandListBarrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount)
 {
     FLUXION_UNUSED(barriers);
@@ -898,6 +908,7 @@ static const FluxionRHIBackendVTable s_nullVTable = {
     Fluxion_RHI_Null_CommandListCopyBuffer,
     Fluxion_RHI_Null_CommandListCopyTexture,
     Fluxion_RHI_Null_CommandListCopyBufferToTexture,
+    Fluxion_RHI_Null_CommandListCopyTextureToBuffer,
     Fluxion_RHI_Null_CommandListBarrier,
     Fluxion_RHI_Null_CommandListSetBindGroup,
 

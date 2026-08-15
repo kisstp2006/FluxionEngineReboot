@@ -367,6 +367,7 @@ void Fluxion_RHID3D12_DestroyCommandList(FluxionRHICommandListHandle commandList
 ID3D12GraphicsCommandList* Fluxion_RHID3D12_ResolveCommandList(FluxionRHICommandListHandle commandList);
 
 void Fluxion_RHID3D12_CommandListCopyBufferToTexture(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHITextureHandle dst, u32 mipLevel, u32 arrayLayer);
+void Fluxion_RHID3D12_CommandListCopyTextureToBuffer(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, u32 mipLevel, u32 arrayLayer, FluxionRHIBufferHandle dst, usize dstOffset);
 
 DXGI_FORMAT Fluxion_RHID3D12_MapFormat(FluxionRHIFormat format);
 FluxionRHIFormat Fluxion_RHID3D12_MapFormatBack(DXGI_FORMAT format);

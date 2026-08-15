@@ -38,35 +38,15 @@ FluxionAssetTypeId Fluxion_TextureAsset_TypeId(void)
 // Sizes.
 // ---------------------------------------------------------------------
 
-static u32 Fluxion_TextureAsset_BytesPerPixel(FluxionRHIFormat format)
+// Whether this module can size a texture in this format at all. Depth
+// formats are excluded on purpose alongside the ones nothing knows: a
+// texture asset holds pixels a device samples, and a depth target is not
+// one -- letting a size come back for it would only let a wrong call get
+// further before failing.
+static bool Fluxion_TextureAsset_FormatIsSizable(FluxionRHIFormat format)
 {
-    switch (format)
-    {
-        case FLUXION_RHI_FORMAT_R8G8B8A8_UNORM:
-        case FLUXION_RHI_FORMAT_R8G8B8A8_SRGB:
-        case FLUXION_RHI_FORMAT_B8G8R8A8_UNORM:
-        case FLUXION_RHI_FORMAT_B8G8R8A8_SRGB:
-        case FLUXION_RHI_FORMAT_R32_FLOAT:
-            return 4;
-
-        case FLUXION_RHI_FORMAT_R32G32_FLOAT:
-        case FLUXION_RHI_FORMAT_R16G16B16A16_FLOAT:
-            return 8;
-
-        case FLUXION_RHI_FORMAT_R32G32B32_FLOAT:
-            return 12;
-
-        case FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT:
-            return 16;
-
-        // Everything else, including the depth formats and -- for now --
-        // every compressed one. Zero rather than a guess: a size worked
-        // out from a format nothing here understands would be a
-        // confidently wrong number, and an allocation made from it would
-        // be silently too small.
-        default:
-            return 0;
-    }
+    const FluxionRHIFormatInfo info = Fluxion_RHI_GetFormatInfo(format);
+    return info.blockBytes != 0 && !info.depth;
 }
 
 u32 Fluxion_TextureAsset_GetLevelExtent(u32 base, u32 level)
@@ -77,16 +57,20 @@ u32 Fluxion_TextureAsset_GetLevelExtent(u32 base, u32 level)
 
 usize Fluxion_TextureAsset_GetLevelByteSize(FluxionRHIFormat format, u32 width, u32 height)
 {
-    const u32 bytesPerPixel = Fluxion_TextureAsset_BytesPerPixel(format);
-    if (bytesPerPixel == 0 || width == 0 || height == 0) return 0;
+    if (!Fluxion_TextureAsset_FormatIsSizable(format)) return 0;
 
-    return (usize)width * (usize)height * (usize)bytesPerPixel;
+    // Asked of the format rather than multiplied out here. A block format
+    // stores a rectangle of texels as one unit, so a level narrower than
+    // one block still costs a whole one -- and a level of a 4x4-block
+    // format at 4x4 texels or larger is exactly the case where counting
+    // texels instead would happen to agree.
+    return Fluxion_RHI_GetFormatLevelBytes(format, width, height);
 }
 
 usize Fluxion_TextureAsset_GetTotalByteSize(FluxionRHIFormat format, u32 width, u32 height, u32 mipCount, u32 arrayLayers)
 {
     if (mipCount == 0 || arrayLayers == 0) return 0;
-    if (Fluxion_TextureAsset_BytesPerPixel(format) == 0) return 0;
+    if (!Fluxion_TextureAsset_FormatIsSizable(format)) return 0;
 
     usize total = 0;
     for (u32 level = 0; level < mipCount; ++level)
@@ -109,7 +93,7 @@ static bool Fluxion_TextureAsset_DescribesSomethingReal(u32 width, u32 height, u
 {
     if (width == 0 || height == 0 || arrayLayers == 0) return false;
     if (mipCount == 0 || mipCount > FLUXION_TEXTURE_ASSET_MAX_MIPS) return false;
-    if (Fluxion_TextureAsset_BytesPerPixel(format) == 0) return false;
+    if (!Fluxion_TextureAsset_FormatIsSizable(format)) return false;
 
     // More levels than halving the larger side can produce. A file
     // claiming them describes something that cannot exist, and reading it
@@ -273,42 +257,30 @@ static usize Fluxion_TextureAsset_AlignUp(usize value, usize alignment)
     return remainder == 0 ? value : value + (alignment - remainder);
 }
 
-// Where each level sits in the staging buffer.
-//
-// A cooked file packs its levels tightly, because that is what a file
-// wants. A device wants every row a fixed distance apart and every level
-// beginning on a fixed boundary, and those are not the same layout. The
-// re-laying-out happens here, once, at the only point where the two
-// meet -- and it is why a texture whose rows already happen to satisfy
-// both (a 256-byte-wide one, say) is exactly the texture that would hide
-// a mistake here.
-typedef struct FluxionTextureAssetPlacement
+usize Fluxion_TextureAsset_PlanUpload(FluxionRHIFormat format, u32 width, u32 height, u32 mipCount, u32 arrayLayers,
+                                      FluxionTextureLevelPlacement* placements, u32 capacity, u32* outCount)
 {
-    usize sourceOffset;
-    usize stagingOffset;
-    usize sourceRowBytes;
-    usize stagingRowBytes;
-    u32 rows;
-} FluxionTextureAssetPlacement;
+    if (placements == NULL || outCount == NULL) return 0;
+    if (!Fluxion_TextureAsset_DescribesSomethingReal(width, height, mipCount, arrayLayers, format)) return 0;
 
-static usize Fluxion_TextureAsset_PlanUpload(const FluxionTextureAsset* asset, FluxionTextureAssetPlacement* placements, u32 capacity, u32* outCount)
-{
-    const u32 bytesPerPixel = Fluxion_TextureAsset_BytesPerPixel(asset->format);
     usize sourceOffset = 0;
     usize stagingOffset = 0;
     u32 count = 0;
 
-    for (u32 layer = 0; layer < asset->arrayLayers; ++layer)
+    for (u32 layer = 0; layer < arrayLayers; ++layer)
     {
-        for (u32 level = 0; level < asset->mipCount; ++level)
+        for (u32 level = 0; level < mipCount; ++level)
         {
             if (count >= capacity) return 0;
 
-            const u32 levelWidth = Fluxion_TextureAsset_GetLevelExtent(asset->width, level);
-            const u32 levelHeight = Fluxion_TextureAsset_GetLevelExtent(asset->height, level);
+            const u32 levelWidth = Fluxion_TextureAsset_GetLevelExtent(width, level);
+            const u32 levelHeight = Fluxion_TextureAsset_GetLevelExtent(height, level);
 
-            const usize sourceRowBytes = (usize)levelWidth * bytesPerPixel;
+            const usize sourceRowBytes = Fluxion_RHI_GetFormatRowBytes(format, levelWidth);
+            if (sourceRowBytes == 0) return 0;
+
             const usize stagingRowBytes = Fluxion_TextureAsset_AlignUp(sourceRowBytes, FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT);
+            const u32 blockRows = Fluxion_RHI_GetFormatBlockRows(format, levelHeight);
 
             stagingOffset = Fluxion_TextureAsset_AlignUp(stagingOffset, FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
 
@@ -316,11 +288,11 @@ static usize Fluxion_TextureAsset_PlanUpload(const FluxionTextureAsset* asset, F
             placements[count].stagingOffset = stagingOffset;
             placements[count].sourceRowBytes = sourceRowBytes;
             placements[count].stagingRowBytes = stagingRowBytes;
-            placements[count].rows = levelHeight;
+            placements[count].rows = blockRows;
             ++count;
 
-            sourceOffset += sourceRowBytes * levelHeight;
-            stagingOffset += stagingRowBytes * levelHeight;
+            sourceOffset += sourceRowBytes * blockRows;
+            stagingOffset += stagingRowBytes * blockRows;
         }
     }
 
@@ -330,11 +302,11 @@ static usize Fluxion_TextureAsset_PlanUpload(const FluxionTextureAsset* asset, F
 
 static bool Fluxion_TextureAsset_Upload(FluxionTextureAsset* asset, const FluxionTextureAssetContext* context)
 {
-    FluxionTextureAssetPlacement placements[FLUXION_TEXTURE_ASSET_MAX_MIPS * 8];
+    FluxionTextureLevelPlacement placements[FLUXION_TEXTURE_ASSET_MAX_MIPS * 8];
     u32 placementCount = 0;
 
-    const usize stagingSize = Fluxion_TextureAsset_PlanUpload(asset, placements,
-                                                              (u32)(sizeof(placements) / sizeof(placements[0])), &placementCount);
+    const usize stagingSize = Fluxion_TextureAsset_PlanUpload(asset->format, asset->width, asset->height, asset->mipCount, asset->arrayLayers,
+                                                              placements, (u32)(sizeof(placements) / sizeof(placements[0])), &placementCount);
     if (stagingSize == 0 || placementCount == 0) return false;
 
     FluxionRHITextureDesc textureDesc;
@@ -371,7 +343,7 @@ static bool Fluxion_TextureAsset_Upload(FluxionTextureAsset* asset, const Fluxio
 
         for (u32 i = 0; i < placementCount; ++i)
         {
-            const FluxionTextureAssetPlacement* placement = &placements[i];
+            const FluxionTextureLevelPlacement* placement = &placements[i];
             for (u32 row = 0; row < placement->rows; ++row)
             {
                 memcpy(mapped + placement->stagingOffset + (usize)row * placement->stagingRowBytes,
@@ -391,7 +363,11 @@ static bool Fluxion_TextureAsset_Upload(FluxionTextureAsset* asset, const Fluxio
     FluxionRHIBarrier toCopy;
     toCopy.texture = texture;
     toCopy.buffer = noBuffer;
-    toCopy.before = FLUXION_RHI_RESOURCE_STATE_COMMON;
+    // UNDEFINED, not COMMON. The texture was created on the line above
+    // and holds nothing, and a backend told to transition it FROM a state
+    // it was never in has to either preserve contents that do not exist
+    // or complain. It complains.
+    toCopy.before = FLUXION_RHI_RESOURCE_STATE_UNDEFINED;
     toCopy.after = FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION;
     Fluxion_RHI_CommandList_Barrier(commandList, &toCopy, 1);
 
@@ -559,8 +535,7 @@ bool Fluxion_TextureAsset_IsUsageSRGB(FluxionTextureUsage usage)
     // the same thing is two places that can disagree, and the disagreement
     // here would be a picture that looks washed out with nothing to point
     // at.
-    const FluxionRHIFormat format = Fluxion_TextureAsset_GetUsageFormat(usage);
-    return format == FLUXION_RHI_FORMAT_R8G8B8A8_SRGB || format == FLUXION_RHI_FORMAT_B8G8R8A8_SRGB;
+    return Fluxion_RHI_IsFormatSRGB(Fluxion_TextureAsset_GetUsageFormat(usage));
 }
 
 FluxionTextureImportSettings Fluxion_TextureAsset_DefaultImportSettings(FluxionTextureUsage usage)

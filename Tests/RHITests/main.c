@@ -4,6 +4,8 @@
 
 void Test_BackendAvailability_Run(TestContext* ctx);
 void Test_Handles_Run(TestContext* ctx);
+void Test_Format_Run(TestContext* ctx);
+void Test_CompressedUpload_Run(TestContext* ctx);
 void Test_Capabilities_Run(TestContext* ctx);
 void Test_NullBackend_Run(TestContext* ctx);
 void Test_NativeHandle_Run(TestContext* ctx);
@@ -28,6 +30,7 @@ int main(void)
 
     Test_BackendAvailability_Run(&ctx);
     Test_Handles_Run(&ctx);
+    Test_Format_Run(&ctx);
     Test_Capabilities_Run(&ctx);
     Test_NullBackend_Run(&ctx);
     Test_NativeHandle_Run(&ctx);
@@ -37,6 +40,7 @@ int main(void)
     Test_PipelineCacheFile_Run(&ctx);
     Test_Timestamps_Run(&ctx);
     Test_Validation_Run(&ctx);
+    Test_CompressedUpload_Run(&ctx);
 #if defined(_WIN32)
     Test_D3D12Backend_Run(&ctx);
 #endif

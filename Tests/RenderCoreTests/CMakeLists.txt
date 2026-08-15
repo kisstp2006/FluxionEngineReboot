@@ -18,10 +18,14 @@ engine_add_test(
         Test_SurfaceData.cpp
         Test_MaterialParameters.cpp
         Test_TextureAsset.cpp
+        Test_BlockCompressGPU.cpp
     DEPENDENCIES
         Fluxion::RenderCore
         Fluxion::RHI
         Fluxion::ShaderCompiler
+        # The comparison below encodes blocks with this and then asks a
+        # driver whether it agrees about what they say.
+        Fluxion::TextureCompress
         # The shader reload checks start and stop a job system, to cover
         # both the arrangement a real host has and the one where nobody
         # started any workers at all.
