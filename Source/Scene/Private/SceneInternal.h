@@ -387,6 +387,12 @@ void* Fluxion_SceneArchetype_ValueOf(FluxionSceneRecord* record, const FluxionSc
 // runtime condition -- without it no object can be made at all.
 bool Fluxion_SceneTransform_EnsureRegistered(void);
 
+// The three light components. Registered alongside the transform rather
+// than on first use: a scene read back from disk may name one before
+// anything in this process ever created one, and a type the registry has
+// not heard of has no size, so the storage cannot make room for it.
+bool Fluxion_SceneLight_EnsureRegistered(void);
+
 // This object's transform, or null when the handle names no live object.
 FluxionTransform* Fluxion_SceneInternal_Transform(FluxionSceneRecord* record, FluxionGameObjectHandle object);
 

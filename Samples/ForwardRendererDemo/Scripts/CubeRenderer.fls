@@ -42,26 +42,24 @@ class CubeRenderer : Component
 
         if (Input.WasKeyPressed(KeyCode.Tab)) { this.showAxes = !this.showAxes; }
 
-        // A slow wash through the colours, worked out from how long the
-        // demo has been running rather than from a count of frames -- so
-        // it looks the same however fast the machine it is on happens to
-        // be.
-        float pulse = 0.5f + 0.5f * Mathf.Sin(Time.ElapsedTime());
-        Color baseColor = new Color(1.0f, 0.5f + 0.5f * pulse, 1.0f - 0.5f * pulse, 1.0f);
-
-        // These are the engine's own names for what a surface is made
-        // of, not names this demo invented -- which is why a script can
-        // set them at all. Nothing here says anything about lighting: the
-        // material describes the surface and the pass decides what
-        // becomes of it.
-        MaterialValues.SetColor(this.material, "baseColorFactor", baseColor);
-
-        // The roughness swept across its whole range, out of step with
-        // the colour so the two are visibly separate things. This is the
-        // one parameter whose effect is unmistakable in motion: the
-        // highlight tightens into a hard point and spreads back out into
-        // a broad sheen, which is what a reflectance model buys over a
-        // texture multiplied by a light.
+        // The cube keeps the colour the program gave it.
+        //
+        // It used to wash slowly through the colours from here, and that
+        // has been taken out on purpose: what changes on screen now is
+        // the LIGHTING -- a warm sun, a coloured light going round, a blue
+        // one from below -- and a surface whose own colour also cycled
+        // would make it impossible to tell which of the two you were
+        // looking at.
+        //
+        // What is still swept is the roughness, because it is the one
+        // thing that cannot be confused with a light: the highlight
+        // tightens into a hard point and spreads back into a broad sheen
+        // as the light goes past. That is what a reflectance model buys
+        // over a texture multiplied by a light.
+        //
+        // `roughnessFactor` is the engine's own name for it, not one this
+        // demo invented -- which is why a script can set it by name at
+        // all.
         float gloss = 0.5f + 0.5f * Mathf.Sin(Time.ElapsedTime() * 0.37f);
         this.material.SetFloat("roughnessFactor", 0.08f + 0.8f * gloss);
 

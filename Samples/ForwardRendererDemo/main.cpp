@@ -57,6 +57,7 @@
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
 #include <Fluxion/RenderCore/Renderer/TextureDefaults.h>
 #include <Fluxion/Scene/EngineScript.hpp>
+#include <Fluxion/Scene/Light.h>
 #include <Fluxion/Scene/Scene.h>
 #include <Fluxion/Scene/SceneScript.hpp>
 #include <Fluxion/Script/Script.hpp>
@@ -87,6 +88,11 @@ typedef struct FluxionDemoVertex
 
 #define FLUXION_DEMO_FRAMES_IN_FLIGHT 2
 
+// How many of the scene's lights this sample makes room for. Not a limit
+// the engine has -- the light list grows -- only how much this particular
+// program brought.
+#define FLUXION_DEMO_MAX_LIGHTS 16
+
 namespace
 {
 
@@ -115,7 +121,7 @@ void ReportScriptDiagnostics(const Fluxion::Script::DiagnosticList& diagnostics)
 std::string ReadDemoScripts()
 {
     std::string combined;
-    for (const char* scriptFile : { "/Rotator.fls", "/CubeRenderer.fls" })
+    for (const char* scriptFile : { "/Rotator.fls", "/CubeRenderer.fls", "/LightOrbit.fls" })
     {
         std::string contents = ReadFile((std::string(FLUXION_DEMO_SCRIPT_DIR) + scriptFile).c_str());
         if (contents.empty())
@@ -147,6 +153,36 @@ std::string ReadDemoScripts()
 // upload their inputs with a plain memcpy, no transpose step of their
 // own, so the caller must supply already-transposed matrices or the GPU
 // reconstructs the transpose of the matrix actually intended.
+
+// The rotation that turns an object's forward axis -- negative Z, the
+// same one a camera looks down -- to point along `target`.
+//
+// Written out here because Foundation offers identity and multiplication
+// and nothing that builds a rotation from a direction. One place, so the
+// half-angle is not got wrong twice.
+FluxionQuat AimedAlong(FluxionVec3 target)
+{
+    const FluxionVec3 forward = FluxionVec3{ 0.0f, 0.0f, -1.0f };
+    const FluxionVec3 to = Fluxion_Vec3_Normalize(target);
+
+    const f32 dot = forward.x * to.x + forward.y * to.y + forward.z * to.z;
+
+    // Facing exactly backwards has no single answer -- every axis at
+    // right angles to it turns one into the other -- so one is picked
+    // rather than left to a cross product that comes out as zero.
+    if (dot < -0.9999f) return FluxionQuat{ 0.0f, 1.0f, 0.0f, 0.0f };
+    if (dot > 0.9999f) return Fluxion_Quat_Identity();
+
+    const FluxionVec3 axis = Fluxion_Vec3_Cross(forward, to);
+    const f32 s = std::sqrt((1.0f + dot) * 2.0f);
+
+    FluxionQuat q;
+    q.x = axis.x / s;
+    q.y = axis.y / s;
+    q.z = axis.z / s;
+    q.w = s * 0.5f;
+    return q;
+}
 
 FluxionMat4 MakePerspective(f32 fovYRadians, f32 aspect, f32 nearZ, f32 farZ)
 {
@@ -833,6 +869,82 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // The sun, as an object.
+    //
+    // It could have been three numbers on the view, and was until now.
+    // Being an object means it can be moved, turned off, saved with the
+    // scene and read back -- and that a second one is a second object
+    // rather than a change to the renderer.
+    //
+    // Large numbers on purpose: sunlight IS enormous next to a screen,
+    // and the camera further up is what brings it back down. A light
+    // picked to look right without an exposure would have to be repicked
+    // the moment the exposure changed.
+    FluxionGameObjectHandle sunObject = Fluxion_Scene_CreateGameObject(scene, "Sun");
+    {
+        FluxionDirectionalLight sun{};
+        sun.color = FluxionVec3{ 230.0f, 220.0f, 200.0f }; // slightly warm, as daylight is
+        if (Fluxion_GameObject_AddComponent(scene, sunObject, Fluxion_DirectionalLight_TypeId(), &sun) == nullptr)
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a directional light on the sun object.");
+            return 1;
+        }
+
+        // Which way it faces is the object's business, not the light's.
+        // Aimed down and to the right, so it comes from over the camera's
+        // left shoulder and the cube's faces catch it at different angles
+        // as it turns -- which is the whole visible difference between a
+        // lit surface and a flat one.
+        Fluxion_GameObject_SetLocalRotation(scene, sunObject, AimedAlong(FluxionVec3{ 0.4f, -0.7f, -0.6f }));
+    }
+
+    // A point light that goes round the cube, and a spot light aimed up
+    // at it from below.
+    //
+    // Three kinds of light in one scene, which is what makes the falloff
+    // and the cone visible rather than merely present. The moving one is
+    // moved by a script -- nothing in this program says where it is at
+    // any moment, only that it goes round.
+    FluxionGameObjectHandle orbitObject = Fluxion_Scene_CreateGameObject(scene, "OrbitLight");
+    {
+        FluxionPointLight orbit{};
+
+        // Strongly coloured, so which light is lighting which face is
+        // obvious. Bright, for the same reason the sun is: these are real
+        // amounts of light and the camera brings them down.
+        orbit.color = FluxionVec3{ 120.0f, 30.0f, 10.0f };
+
+        // Where it stops mattering. Chosen a little beyond the far side
+        // of the cube, so the falloff reaching zero is something that
+        // happens on screen rather than off it.
+        orbit.range = 6.0f;
+        if (Fluxion_GameObject_AddComponent(scene, orbitObject, Fluxion_PointLight_TypeId(), &orbit) == nullptr)
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a point light on the orbiting object.");
+            return 1;
+        }
+    }
+
+    FluxionGameObjectHandle spotObject = Fluxion_Scene_CreateGameObject(scene, "UnderLight");
+    {
+        FluxionSpotLight spot{};
+        spot.color = FluxionVec3{ 10.0f, 40.0f, 90.0f };
+        spot.range = 8.0f;
+
+        // A tight cone with a soft edge: the gap between the two angles
+        // IS the softness, and equal angles would give a hard rim.
+        spot.innerConeAngle = 0.25f;
+        spot.outerConeAngle = 0.45f;
+        if (Fluxion_GameObject_AddComponent(scene, spotObject, Fluxion_SpotLight_TypeId(), &spot) == nullptr)
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a spot light on the under-light object.");
+            return 1;
+        }
+
+        Fluxion_GameObject_SetLocalPosition(scene, spotObject, FluxionVec3{ 0.0f, -2.2f, -3.0f });
+        Fluxion_GameObject_SetLocalRotation(scene, spotObject, AimedAlong(FluxionVec3{ 0.0f, 1.0f, 0.0f }));
+    }
+
     FluxionGameObjectHandle cubeObject = Fluxion_Scene_CreateGameObject(scene, "Cube");
     Fluxion_GameObject_SetLocalPosition(scene, cubeObject, FluxionVec3{ 0.0f, 0.0f, -3.0f });
 
@@ -848,12 +960,29 @@ int main(int argc, char** argv)
         }
     }
 
+    // The script that moves the light knows nothing about lights: it
+    // moves the object it is on, and that object happens to carry one.
+    // The same script on a camera would orbit a camera.
+    {
+        const u32 orbitClass = Fluxion::Scene::FindComponentClass(scene, "LightOrbit");
+        if (orbitClass == Fluxion::Script::kNoClass ||
+            Fluxion::Scene::AddComponent(scene, orbitObject, orbitClass).IsNull())
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a LightOrbit on the orbiting light: %s",
+                Fluxion_Scene_GetLastError(scene));
+            return 1;
+        }
+    }
+
     FLUXION_LOG_INFO("ForwardRendererDemo",
-        "Window created. Space stops and starts the spin, the arrow keys and the wheel change how fast, Tab shows and hides the axes, "
+        "Window created. Space stops and starts the spin, L stops and starts the orbiting light, the arrow keys and the wheel change how fast, Tab shows and hides the axes, "
         "R puts whatever is in Scripts/ now under the running cube, Escape closes.");
 
     bool running = true;
     u32 frameIndex = 0;
+
+    // Said once, not once a frame.
+    bool reportedTooManyLights = false;
 
     // The reload being compiled right now, if any. One at a time: a
     // second F while the first is still going would leave the first with
@@ -1111,21 +1240,6 @@ int main(int argc, char** argv)
         viewDesc.renderTarget = frameTarget;
         viewDesc.layerMask = 0xFFFFFFFFu;
 
-        // The light, in the units the whole engine works in: a colour IS
-        // an intensity here, and there is no separate brightness anywhere
-        // to undo it. Coming from over the camera's left shoulder, so the
-        // cube's faces catch it at different angles as it turns -- which
-        // is the entire visible difference between a lit surface and a
-        // flat one.
-        viewDesc.sunDirection = FluxionVec3{ -0.4f, 0.7f, 0.6f };
-
-        // Large numbers on purpose. Sunlight IS enormous next to a
-        // screen, and the whole reason the camera below exists is to
-        // bring it back down -- a light picked to look right without one
-        // would have to be repicked the moment the exposure changed.
-        // Slightly warm, as daylight is.
-        viewDesc.sunColor = FluxionVec3{ 230.0f, 220.0f, 200.0f };
-
         // A few percent of the sun, arriving from everywhere, so the
         // faces turned away are dim rather than black. It stands in for a
         // sky until there is one.
@@ -1142,10 +1256,36 @@ int main(int argc, char** argv)
         // Written down beside the format that made it true.
         viewDesc.encodeOutputToSRGB = true;
         FluxionRenderViewHandle frameView = Fluxion_RenderView_Create(device, &viewDesc);
+
+        // The lights, read out of the scene rather than written here.
+        //
+        // Every frame, and after the scene has been ticked, because a
+        // light is on an object now: something can move it, turn it off,
+        // or add another, and none of that reaches the picture unless
+        // this is asked again.
+        FluxionRenderLight sceneLights[FLUXION_DEMO_MAX_LIGHTS];
+        const u32 lightsInScene = Fluxion_Scene_GatherLights(scene, sceneLights, FLUXION_DEMO_MAX_LIGHTS);
+        const u32 lightsUsed = lightsInScene < FLUXION_DEMO_MAX_LIGHTS ? lightsInScene : FLUXION_DEMO_MAX_LIGHTS;
+        if (lightsInScene > FLUXION_DEMO_MAX_LIGHTS && !reportedTooManyLights)
+        {
+            // Said once rather than every frame, and said at all: a light
+            // silently left out is a scene that is darker than it was
+            // built to be, with nothing to point at.
+            FLUXION_LOG_WARN("ForwardRendererDemo", "The scene has %u lights and this sample makes room for %u -- the rest are not lit.",
+                lightsInScene, (u32)FLUXION_DEMO_MAX_LIGHTS);
+            reportedTooManyLights = true;
+        }
+        Fluxion_RenderView_SetLights(frameView, sceneLights, lightsUsed);
+
         Fluxion_RenderView_UpdateFrameConstants(frameView);
 
         FluxionRHICommandListHandle cmd = commandLists[frameIndex];
         Fluxion_RHI_CommandList_Begin(cmd);
+
+        // Inside the recording, before anything draws with this view: the
+        // buffer a shader reads is GPU-only, so the list reaches it as a
+        // recorded copy rather than as a write.
+        Fluxion_RenderView_UploadLights(frameView, cmd);
 
         // The backbuffer is always imported as UNDEFINED, not "UNDEFINED
         // on frame 0, PRESENT afterward": a single demo-wide "first frame"

@@ -49,6 +49,86 @@ Vector3 EvaluateDirectionalLight(SurfaceData surface, Vector3 N, Vector3 V, Vect
 // the point is. A specular ambient needs to know what the surroundings
 // look like from this point in each direction, which is what an
 // environment probe is for and what this deliberately is not.
+// How much of a light reaches something this far away.
+//
+// Inverse square, because that is what light does -- and then multiplied
+// by a window that arrives at exactly zero at the light's range.
+//
+// The window is not tidiness. A light has to be ignorable past some
+// distance or every light must be considered for every pixel, which is
+// what makes many lights unaffordable. But a light dropped while it was
+// still contributing leaves a visible edge exactly where it was dropped,
+// and that edge moves with the camera. So the falloff is shaped to reach
+// zero on its own, and dropping it there costs nothing.
+//
+// The square-of-a-square shape is the one from the published treatments:
+// it is smooth at the far end, it is cheap, and it barely disturbs the
+// inverse square anywhere but near the boundary.
+float DistanceAttenuation(float distanceSquared, float range)
+{
+    float attenuation = 1.0 / max(distanceSquared, FLUXION_EPSILON);
+
+    if (range <= 0.0)
+    {
+        return attenuation;
+    }
+
+    float ratio = distanceSquared / max(Square(range), FLUXION_EPSILON);
+    float window = Saturate(1.0 - Square(ratio));
+    return attenuation * Square(window);
+}
+
+// How much of a spot light reaches something this far off its axis.
+//
+// One inside the inner cone, zero outside the outer, and smooth between.
+// Smoothed rather than linear because a straight ramp leaves a visible
+// crease where it meets full brightness -- the eye finds the break in the
+// slope, not the break in the value.
+float SpotAttenuation(Vector3 lightDirection, Vector3 toSurface, float innerCos, float outerCos)
+{
+    float cosAngle = dot(lightDirection, toSurface);
+    float span = max(innerCos - outerCos, FLUXION_EPSILON);
+    float t = Saturate((cosAngle - outerCos) / span);
+    return Square(t) * (3.0 - 2.0 * t);
+}
+
+// What one light of any kind sends towards the eye from this point.
+Vector3 EvaluateOneLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 P, FluxionLight light)
+{
+    // The way the light travels, and the way back towards it. The
+    // reflectance model wants the second; the cone below wants the first.
+    Vector3 travel = light.direction.xyz;
+    Vector3 L = -travel;
+
+    float attenuation = 1.0;
+
+    // 0.5 rather than 0: the kind is carried as a float in a vector, and
+    // comparing floats for equality is how a value that survived a
+    // round trip through a buffer stops matching itself.
+    if (light.direction.w > 0.5)
+    {
+        Vector3 offset = light.positionRange.xyz - P;
+        float distanceSquared = dot(offset, offset);
+
+        L = offset / max(sqrt(distanceSquared), FLUXION_EPSILON);
+        attenuation = DistanceAttenuation(distanceSquared, light.positionRange.w);
+
+        // A spot is a point light with a cone over it, so this is the
+        // point light's work plus one more term.
+        if (light.direction.w > 1.5)
+        {
+            attenuation = attenuation * SpotAttenuation(travel, -L, light.color.w, light.cone.x);
+        }
+    }
+
+    if (attenuation <= 0.0)
+    {
+        return Vector3(0.0, 0.0, 0.0);
+    }
+
+    return EvaluateDirectionalLight(surface, N, V, L, light.color.xyz * attenuation);
+}
+
 Vector3 EvaluateAmbient(SurfaceData surface, Vector3 ambient)
 {
     return ComputeDiffuseColor(surface) * ambient * surface.ambientOcclusion;
@@ -62,9 +142,18 @@ Vector3 EvaluateAmbient(SurfaceData surface, Vector3 ambient)
 Vector3 EvaluateLighting(SurfaceData surface, Vector3 N, Vector3 P)
 {
     Vector3 V = normalize(cameraPosition.xyz - P);
-    Vector3 L = normalize(sunDirection.xyz);
 
-    Vector3 color = EvaluateDirectionalLight(surface, N, V, L, sunColor.xyz);
+    Vector3 color = Vector3(0.0, 0.0, 0.0);
+
+    // Every light in the frame's list. No cap here and none in the
+    // buffer: what makes many lights affordable is the falloff reaching
+    // zero, not a number written into a shader.
+    int lightCount = int(lightParams.x);
+    for (int i = 0; i < lightCount; i = i + 1)
+    {
+        color = color + EvaluateOneLight(surface, N, V, P, lights[i]);
+    }
+
     color = color + EvaluateAmbient(surface, ambientColor.xyz);
 
     // Light the surface gives off, which no amount of shadow or occlusion

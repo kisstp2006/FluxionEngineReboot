@@ -62,7 +62,22 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeFrameLay
     desc.entries[0].binding = 0;
     desc.entries[0].type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
     desc.entries[0].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_VERTEX | FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
-    desc.entryCount = 1;
+
+    // Binding 1 is the light list. The number is not free to choose: the
+    // shader compiler gives a group's uniform buffer binding 0 and hands
+    // out the rest in declaration order, so this has to match what
+    // Fluxion/Frame.jsl declares.
+    //
+    // A storage buffer rather than an array in the uniform block above.
+    // An array would need a maximum written into the shader, and that
+    // maximum would be a number somebody has to raise -- and raising it
+    // costs every frame that does not use it, because a uniform block is
+    // paid for whether it is full or not.
+    desc.entries[1].binding = 1;
+    desc.entries[1].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[1].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entryCount = 2;
     desc.debugName = "Fluxion.Renderer.FrameBindGroupLayout";
     return desc;
 }

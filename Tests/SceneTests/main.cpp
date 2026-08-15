@@ -20,6 +20,7 @@ void Test_EntityUUID_Run(TestContext& ctx);
 void Test_CommandBuffer_Run(TestContext& ctx);
 void Test_World_Run(TestContext& ctx);
 void Test_SceneAssetReferences_Run(TestContext& ctx);
+void Test_SceneLights_Run(TestContext& ctx);
 
 int main()
 {
@@ -49,6 +50,7 @@ int main()
     Test_CommandBuffer_Run(ctx);
     Test_World_Run(ctx);
     Test_SceneAssetReferences_Run(ctx);
+    Test_SceneLights_Run(ctx);
 
     Fluxion_Reflection_Shutdown();
 

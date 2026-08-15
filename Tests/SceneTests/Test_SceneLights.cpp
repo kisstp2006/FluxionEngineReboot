@@ -1,0 +1,226 @@
+#include "TestFramework.h"
+
+#include <Fluxion/Core/Reflection/Registry.h>
+#include <Fluxion/RenderCore/Renderer/RenderView.h>
+#include <Fluxion/Scene/Light.h>
+#include <Fluxion/Scene/Scene.h>
+
+#include <cmath>
+#include <cstring>
+
+// Turning a scene's lights into the flat list a renderer takes.
+//
+// The interesting part is not the copying. It is that where a light is
+// and which way it faces are NOT on the light -- they come from the
+// object's transform -- so this is really a check that the two halves are
+// read together and that neither is invented.
+
+namespace
+{
+
+bool Near(f32 value, f32 expected, f32 tolerance)
+{
+    const f32 difference = value - expected;
+    return (difference < 0.0f ? -difference : difference) <= tolerance;
+}
+
+void ALightTakesItsPlaceFromTheObject(TestContext& ctx)
+{
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+    TEST_CHECK(ctx, Fluxion_Scene_IsValid(scene));
+
+    FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(scene, "Lamp");
+    Fluxion_GameObject_SetLocalPosition(scene, object, FluxionVec3{ 3.0f, 4.0f, 5.0f });
+
+    FluxionPointLight lamp{};
+    lamp.color = FluxionVec3{ 1.0f, 2.0f, 3.0f };
+    lamp.range = 12.0f;
+    TEST_CHECK(ctx, Fluxion_GameObject_AddComponent(scene, object, Fluxion_PointLight_TypeId(), &lamp) != nullptr);
+
+    // The world matrices have to have been worked out, or the light is at
+    // wherever the matrix was left.
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    FluxionRenderLight lights[4];
+    const u32 count = Fluxion_Scene_GatherLights(scene, lights, 4);
+    TEST_CHECK(ctx, count == 1);
+
+    if (count == 1)
+    {
+        TEST_CHECK(ctx, lights[0].type == FLUXION_RENDER_LIGHT_POINT);
+        TEST_CHECK(ctx, Near(lights[0].position.x, 3.0f, 0.001f));
+        TEST_CHECK(ctx, Near(lights[0].position.y, 4.0f, 0.001f));
+        TEST_CHECK(ctx, Near(lights[0].position.z, 5.0f, 0.001f));
+        TEST_CHECK(ctx, Near(lights[0].range, 12.0f, 0.001f));
+        TEST_CHECK(ctx, Near(lights[0].color.y, 2.0f, 0.001f));
+
+        // Unrotated, an object faces its negative Z -- the same way a
+        // camera looks.
+        TEST_CHECK(ctx, Near(lights[0].direction.z, -1.0f, 0.001f));
+    }
+
+    // Moving the object moves the light, which is the whole reason the
+    // position is not stored on the component.
+    Fluxion_GameObject_SetLocalPosition(scene, object, FluxionVec3{ -1.0f, 0.0f, 0.0f });
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    TEST_CHECK(ctx, Fluxion_Scene_GatherLights(scene, lights, 4) == 1);
+    TEST_CHECK(ctx, Near(lights[0].position.x, -1.0f, 0.001f));
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+void AChildLightInheritsWhereItsParentIs(TestContext& ctx)
+{
+    // The reason the world matrix is read rather than the local position:
+    // a lamp bolted to a moving thing moves with it, and nothing on the
+    // lamp says so.
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+
+    FluxionGameObjectHandle parent = Fluxion_Scene_CreateGameObject(scene, "Vehicle");
+    Fluxion_GameObject_SetLocalPosition(scene, parent, FluxionVec3{ 10.0f, 0.0f, 0.0f });
+
+    FluxionGameObjectHandle child = Fluxion_Scene_CreateGameObject(scene, "Headlight");
+    Fluxion_GameObject_SetParent(scene, child, parent);
+    Fluxion_GameObject_SetLocalPosition(scene, child, FluxionVec3{ 0.0f, 1.0f, 0.0f });
+
+    FluxionSpotLight headlight{};
+    headlight.color = FluxionVec3{ 5.0f, 5.0f, 5.0f };
+    headlight.range = 20.0f;
+    headlight.innerConeAngle = 0.2f;
+    headlight.outerConeAngle = 0.4f;
+    TEST_CHECK(ctx, Fluxion_GameObject_AddComponent(scene, child, Fluxion_SpotLight_TypeId(), &headlight) != nullptr);
+
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    FluxionRenderLight lights[4];
+    TEST_CHECK(ctx, Fluxion_Scene_GatherLights(scene, lights, 4) == 1);
+    TEST_CHECK(ctx, Near(lights[0].position.x, 10.0f, 0.001f));
+    TEST_CHECK(ctx, Near(lights[0].position.y, 1.0f, 0.001f));
+
+    // The cosines, taken on this side. Larger angle, smaller cosine --
+    // and the inner one must not be below the outer, or the smooth step
+    // between them comes out inverted.
+    TEST_CHECK(ctx, Near(lights[0].innerConeCos, std::cos(0.2f), 0.001f));
+    TEST_CHECK(ctx, Near(lights[0].outerConeCos, std::cos(0.4f), 0.001f));
+    TEST_CHECK(ctx, lights[0].innerConeCos >= lights[0].outerConeCos);
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+void ConeAnglesTheWrongWayRoundAreMadeHarmless(TestContext& ctx)
+{
+    // An inner cone wider than its outer one gives a negative span, and
+    // the transition across it would come out inverted -- a spot light
+    // dark in the middle and bright at the rim, which reads as a shader
+    // bug rather than as two numbers the wrong way round.
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+    FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(scene, "Backwards");
+
+    FluxionSpotLight backwards{};
+    backwards.color = FluxionVec3{ 1.0f, 1.0f, 1.0f };
+    backwards.range = 5.0f;
+    backwards.innerConeAngle = 0.9f; // wider than the outer, which is wrong
+    backwards.outerConeAngle = 0.3f;
+    Fluxion_GameObject_AddComponent(scene, object, Fluxion_SpotLight_TypeId(), &backwards);
+
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    FluxionRenderLight lights[4];
+    TEST_CHECK(ctx, Fluxion_Scene_GatherLights(scene, lights, 4) == 1);
+    TEST_CHECK(ctx, lights[0].innerConeCos >= lights[0].outerConeCos);
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+void TheCountIsHowManyThereAreNotHowManyFitted(TestContext& ctx)
+{
+    // The same shape as the asset gather, and the same trap: a count that
+    // stopped at the buffer's end would make asking twice give two
+    // different answers, and the whole point of the count is to size the
+    // next call.
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+
+    for (u32 i = 0; i < 5; ++i)
+    {
+        FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(scene, "Lamp");
+        FluxionPointLight lamp{};
+        lamp.color = FluxionVec3{ 1.0f, 1.0f, 1.0f };
+        lamp.range = 1.0f;
+        Fluxion_GameObject_AddComponent(scene, object, Fluxion_PointLight_TypeId(), &lamp);
+    }
+
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    // Asked with no room at all.
+    TEST_CHECK(ctx, Fluxion_Scene_GatherLights(scene, nullptr, 0) == 5);
+
+    // Asked with room for two: still five, and exactly two written.
+    FluxionRenderLight lights[2];
+    std::memset(lights, 0, sizeof(lights));
+    TEST_CHECK(ctx, Fluxion_Scene_GatherLights(scene, lights, 2) == 5);
+    TEST_CHECK(ctx, lights[0].type == FLUXION_RENDER_LIGHT_POINT);
+    TEST_CHECK(ctx, lights[1].type == FLUXION_RENDER_LIGHT_POINT);
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+void AllThreeKindsComeBackTogether(TestContext& ctx)
+{
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+
+    FluxionGameObjectHandle sunObject = Fluxion_Scene_CreateGameObject(scene, "Sun");
+    FluxionDirectionalLight sun{};
+    sun.color = FluxionVec3{ 1.0f, 1.0f, 1.0f };
+    Fluxion_GameObject_AddComponent(scene, sunObject, Fluxion_DirectionalLight_TypeId(), &sun);
+
+    FluxionGameObjectHandle lampObject = Fluxion_Scene_CreateGameObject(scene, "Lamp");
+    FluxionPointLight lamp{};
+    lamp.color = FluxionVec3{ 1.0f, 1.0f, 1.0f };
+    lamp.range = 3.0f;
+    Fluxion_GameObject_AddComponent(scene, lampObject, Fluxion_PointLight_TypeId(), &lamp);
+
+    FluxionGameObjectHandle torchObject = Fluxion_Scene_CreateGameObject(scene, "Torch");
+    FluxionSpotLight torch{};
+    torch.color = FluxionVec3{ 1.0f, 1.0f, 1.0f };
+    torch.range = 4.0f;
+    torch.innerConeAngle = 0.1f;
+    torch.outerConeAngle = 0.2f;
+    Fluxion_GameObject_AddComponent(scene, torchObject, Fluxion_SpotLight_TypeId(), &torch);
+
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    FluxionRenderLight lights[8];
+    const u32 count = Fluxion_Scene_GatherLights(scene, lights, 8);
+    TEST_CHECK(ctx, count == 3);
+
+    bool sawDirectional = false;
+    bool sawPoint = false;
+    bool sawSpot = false;
+    for (u32 i = 0; i < count; ++i)
+    {
+        if (lights[i].type == FLUXION_RENDER_LIGHT_DIRECTIONAL) sawDirectional = true;
+        if (lights[i].type == FLUXION_RENDER_LIGHT_POINT) sawPoint = true;
+        if (lights[i].type == FLUXION_RENDER_LIGHT_SPOT) sawSpot = true;
+    }
+    TEST_CHECK(ctx, sawDirectional && sawPoint && sawSpot);
+
+    // An object with no light on it contributes none, which is what keeps
+    // the count meaningful in a scene that is mostly not lights.
+    Fluxion_Scene_CreateGameObject(scene, "Nothing");
+    Fluxion_Scene_Tick(scene, 0.0f);
+    TEST_CHECK(ctx, Fluxion_Scene_GatherLights(scene, lights, 8) == 3);
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+} // namespace
+
+void Test_SceneLights_Run(TestContext& ctx)
+{
+    ALightTakesItsPlaceFromTheObject(ctx);
+    AChildLightInheritsWhereItsParentIs(ctx);
+    ConeAnglesTheWrongWayRoundAreMadeHarmless(ctx);
+    TheCountIsHowManyThereAreNotHowManyFitted(ctx);
+    AllThreeKindsComeBackTogether(ctx);
+}

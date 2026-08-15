@@ -106,23 +106,32 @@ public:
             // doesn't apply here) in favor of a small [numthreads(...)]
             // wrapper that mirrors the same "wrapper calls shaderMain()"
             // idiom used by the vertex/fragment path below.
+            // Structs first -- see the vertex/fragment path below for
+            // why the order is load-bearing rather than tidy.
+            EmitStructs();
             EmitUniformBuffers();
             EmitTextures();
             EmitStorageBuffers();
             EmitComputeStaticMirrors();
-            EmitStructs();
             EmitGlobalConsts();
             EmitFunctions();
             EmitComputeWrapperMain();
             return m_out.str();
         }
 
+        // Structs first, before anything that could be made OF one.
+        //
+        // A storage buffer of light descriptions, say, is declared as
+        // StructuredBuffer<LightData> -- and a struct used before it is
+        // declared is a compile error in the generated text, reported
+        // against a line the shader's author never wrote. This ordering
+        // is the only thing preventing that.
+        EmitStructs();
         EmitUniformBuffers();
         EmitTextures();
         EmitStorageBuffers();
         EmitStageStructs();
         EmitStaticMirrors();
-        EmitStructs();
         EmitGlobalConsts();
         EmitFunctions();
         EmitWrapperMain();

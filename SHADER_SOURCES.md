@@ -347,6 +347,44 @@ What changed:       nothing
 Licence doubt:      none
 ```
 
+### Punctual lights
+
+```
+Feature:            Distance attenuation with a range window
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    The inverse-square law, plus the windowing function
+                    described in the physically based shading course
+                    notes and in Frostbite's published lighting unit
+                    write-up: a squared (1 - (d/r)^4)-style falloff that
+                    arrives at exactly zero at the range.
+Our implementation: Source/RenderCore/Shaders/Fluxion/Lighting.jsl,
+                    DistanceAttenuation
+What changed:       Written in terms of the SQUARED distance throughout,
+                    so no square root is taken to compute a falloff that
+                    then squares it again. A range of zero or less means
+                    no window at all, which is our own addition.
+Licence doubt:      none
+```
+
+```
+Feature:            Spot cone attenuation
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    The standard inner/outer cone treatment: the cosine
+                    of the angle to the axis, mapped across the two cone
+                    cosines and smoothed.
+Our implementation: Source/RenderCore/Shaders/Fluxion/Lighting.jsl,
+                    SpotAttenuation
+What changed:       The smoothing is written out as t*t*(3-2t) rather
+                    than called through a builtin, so the same shape
+                    reaches both target languages regardless of what each
+                    one calls it. The cosines are taken on the CPU side.
+Licence doubt:      none
+```
+
 Not yet written, and named here so that their absence is a decision
 rather than an oversight: the split-sum environment approximation (Karis
 2013) and multiscatter energy compensation, both of which need the

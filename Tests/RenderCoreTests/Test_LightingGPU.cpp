@@ -18,6 +18,7 @@
 #include <Fluxion/RenderCore/Renderer/TextureDefaults.h>
 #include <Fluxion/ShaderCompiler/Backends/DXC/DXCAdapter.hpp>
 
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -44,6 +45,10 @@ namespace
 {
 
 constexpr u32 kSize = 8;
+
+// Room for the one directional light the base configuration describes
+// plus whatever a check adds beside it.
+#define FLUXION_TEST_MAX_LIGHTS 8
 
 // The material under test: the standard surface and nothing added. Every
 // value it uses comes from a parameter this test sets, so what arrives at
@@ -101,6 +106,12 @@ struct Configuration
     f32 alphaCutoff;
 
     bool encodeOutputToSRGB;
+
+    // Lights beyond the single directional one the fields above describe.
+    // Handed over exactly as given, so a check can say precisely what it
+    // is putting in front of the surface.
+    FluxionRenderLight extraLights[FLUXION_TEST_MAX_LIGHTS];
+    u32 extraLightCount;
 };
 
 struct Rgb
@@ -376,17 +387,45 @@ Rgb RenderOne(TestContext* ctx, LightingRig& rig, const Configuration& configura
     viewDesc.scissor = FluxionScissorRect{ 0, 0, kSize, kSize };
     viewDesc.renderTarget = rig.target;
     viewDesc.layerMask = 0xFFFFFFFFu;
-    viewDesc.sunDirection = FluxionVec3{ configuration.sunDirection[0], configuration.sunDirection[1], configuration.sunDirection[2] };
-    viewDesc.sunColor = FluxionVec3{ configuration.sunColor[0], configuration.sunColor[1], configuration.sunColor[2] };
     viewDesc.ambientColor = FluxionVec3{ configuration.ambient[0], configuration.ambient[1], configuration.ambient[2] };
     viewDesc.exposure = configuration.exposure;
     viewDesc.tonemapWhitePoint = configuration.tonemapWhitePoint;
     viewDesc.encodeOutputToSRGB = configuration.encodeOutputToSRGB;
     FluxionRenderViewHandle view = Fluxion_RenderView_Create(rig.device, &viewDesc);
+
+    // The one light every check above this file's own light checks uses,
+    // built here rather than carried on the view: a light is a thing in
+    // the world now, and the view is only told the list.
+    //
+    // The direction turns round. The configuration says which way it is
+    // TO the light -- which is what a reader can check against a picture
+    // -- and a light carries the way it TRAVELS, which is what a cone is
+    // measured around.
+    FluxionRenderLight lights[FLUXION_TEST_MAX_LIGHTS];
+    u32 lightCount = 0;
+
+    if (configuration.sunColor[0] != 0.0f || configuration.sunColor[1] != 0.0f || configuration.sunColor[2] != 0.0f)
+    {
+        FluxionRenderLight& sun = lights[lightCount++];
+        sun = FluxionRenderLight{};
+        sun.type = FLUXION_RENDER_LIGHT_DIRECTIONAL;
+        sun.direction = FluxionVec3{ -configuration.sunDirection[0], -configuration.sunDirection[1], -configuration.sunDirection[2] };
+        sun.color = FluxionVec3{ configuration.sunColor[0], configuration.sunColor[1], configuration.sunColor[2] };
+    }
+
+    for (u32 i = 0; i < configuration.extraLightCount; ++i)
+    {
+        lights[lightCount++] = configuration.extraLights[i];
+    }
+
+    Fluxion_RenderView_SetLights(view, lights, lightCount);
     Fluxion_RenderView_UpdateFrameConstants(view);
 
     FluxionRHICommandListHandle cmd = Fluxion_RHI_CreateCommandList(rig.device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
     Fluxion_RHI_CommandList_Begin(cmd);
+
+    // Inside the recording, before anything draws with this view.
+    Fluxion_RenderView_UploadLights(view, cmd);
 
     FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(rig.device);
     Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Color0", rig.color, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
@@ -737,13 +776,16 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
 
     // --- The sample's own settings ----------------------------------------
     //
-    // The numbers Samples/ForwardRendererDemo puts in its render view,
-    // run through the real pipeline. A sample that comes out black or
-    // blown out is a broken sample, and nothing else here would say so --
-    // every check above sets its own lighting to isolate one thing, which
-    // is exactly what makes none of them notice an unusable scene.
+    // The scene Samples/ForwardRendererDemo actually builds, run through
+    // the real pipeline: its sun, its orbiting point light, its spot
+    // light from below, its camera and its output curve.
+    //
+    // A sample that comes out black or blown out is a broken sample, and
+    // nothing else here would say so -- every check above sets its own
+    // lighting to isolate one thing, which is exactly what makes none of
+    // them notice an unusable scene.
     Configuration sample = BaseConfiguration();
-    sample.name = "the sample's own light, camera and curve";
+    sample.name = "the sample's own lights, camera and curve";
     sample.roughness = 0.4f;
     sample.sunDirection[0] = -0.4f;
     sample.sunDirection[1] = 0.7f;
@@ -754,6 +796,32 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     sample.ambient[0] = 8.0f;
     sample.ambient[1] = 9.0f;
     sample.ambient[2] = 12.0f;
+
+    // The orbiting point light and the spot from below, with the
+    // sample's own colours, ranges and cone -- but placed where they
+    // stand in relation to THIS surface rather than to the sample's
+    // cube. The rig lights one flat quad facing the camera; the sample
+    // lights a cube in the round, and a light that sits beside a cube
+    // sits behind a quad.
+    //
+    // Copying the sample's coordinates rather than its geometry would
+    // have made this check pass on lights contributing almost nothing,
+    // which is what it did the first time it was written.
+    sample.extraLightCount = 2;
+    sample.extraLights[0] = FluxionRenderLight{};
+    sample.extraLights[0].type = FLUXION_RENDER_LIGHT_POINT;
+    sample.extraLights[0].position = FluxionVec3{ 0.0f, 0.8f, 2.2f }; // the orbit radius, in front
+    sample.extraLights[0].color = FluxionVec3{ 120.0f, 30.0f, 10.0f };
+    sample.extraLights[0].range = 6.0f;
+
+    sample.extraLights[1] = FluxionRenderLight{};
+    sample.extraLights[1].type = FLUXION_RENDER_LIGHT_SPOT;
+    sample.extraLights[1].position = FluxionVec3{ 0.0f, -2.0f, 2.0f };
+    sample.extraLights[1].direction = FluxionVec3{ 0.0f, 1.0f, -1.0f }; // up and towards the surface
+    sample.extraLights[1].color = FluxionVec3{ 10.0f, 40.0f, 90.0f };
+    sample.extraLights[1].range = 8.0f;
+    sample.extraLights[1].innerConeCos = std::cos(0.25f);
+    sample.extraLights[1].outerConeCos = std::cos(0.45f);
     sample.exposure = Fluxion_Exposure_FromCamera(2.0f, 1.0f / 60.0f, 400.0f);
     sample.tonemapWhitePoint = 4.0f;
     sample.encodeOutputToSRGB = true;
@@ -768,9 +836,20 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     TEST_CHECK(ctx, sampleColor.g > 0.25f && sampleColor.g < 0.98f);
     TEST_CHECK(ctx, sampleColor.b > 0.20f && sampleColor.b < 0.98f);
 
-    // Warm, because the light is. If the channels came out equal, the
-    // light's colour would not be reaching the surface at all.
+    // Warm, because the sun and the orbiting light both are, and they
+    // are the two that reach this surface most strongly. If the channels
+    // came out equal, no light's colour would be reaching it at all.
     TEST_CHECK(ctx, sampleColor.r > sampleColor.b);
+
+    // And the coloured lights are actually contributing: the same scene
+    // with only the sun is measurably different. Without this, the check
+    // above would pass on a scene where the two extra lights were dropped
+    // entirely -- which is exactly what a broken light list looks like.
+    Configuration sunOnly = sample;
+    sunOnly.name = "the sample's scene with only its sun";
+    sunOnly.extraLightCount = 0;
+    const Rgb sunOnlyColor = RenderOne(ctx, rig, sunOnly);
+    TEST_CHECK(ctx, sampleColor.r > sunOnlyColor.r + 0.01f);
 
     // And the same scene with the sun switched off is still visible,
     // because the ambient is not nothing -- a scene whose unlit faces are
@@ -781,6 +860,169 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     const Rgb shadowedColor = RenderOne(ctx, rig, sampleShadowed);
     TEST_CHECK(ctx, shadowedColor.r > 0.02f);
     TEST_CHECK(ctx, shadowedColor.r < sampleColor.r);
+
+
+    // --- Many lights --------------------------------------------------------
+    //
+    // The surface faces the camera, at the origin, with the camera five
+    // units in front of it along positive Z. Every light below is placed
+    // in those terms.
+
+    // A configuration lit by nothing at all, so that what a light adds is
+    // exactly what comes back.
+    Configuration dark = BaseConfiguration();
+    dark.sunColor[0] = 0.0f;
+    dark.sunColor[1] = 0.0f;
+    dark.sunColor[2] = 0.0f;
+    dark.ambient[0] = 0.0f;
+    dark.ambient[1] = 0.0f;
+    dark.ambient[2] = 0.0f;
+    dark.roughness = 1.0f;
+
+    // One directional light, straight on.
+    Configuration oneLight = dark;
+    oneLight.name = "one light of the list";
+    oneLight.extraLightCount = 1;
+    oneLight.extraLights[0] = FluxionRenderLight{};
+    oneLight.extraLights[0].type = FLUXION_RENDER_LIGHT_DIRECTIONAL;
+    oneLight.extraLights[0].direction = FluxionVec3{ 0.0f, 0.0f, -1.0f }; // travelling away from the camera, into the surface
+    oneLight.extraLights[0].color = FluxionVec3{ 1.0f, 1.0f, 1.0f };
+    const Rgb oneLightColor = RenderOne(ctx, rig, oneLight);
+    TEST_CHECK(ctx, oneLightColor.r > 0.05f);
+
+    // The same light twice. Light adds, so two of it is twice as much --
+    // this is the check that the loop runs more than once at all, and
+    // that the second entry of the buffer is read rather than the first
+    // one twice.
+    Configuration twoLights = oneLight;
+    twoLights.name = "the same light twice";
+    twoLights.extraLightCount = 2;
+    twoLights.extraLights[1] = twoLights.extraLights[0];
+    const Rgb twoLightColor = RenderOne(ctx, rig, twoLights);
+    TEST_CHECK(ctx, twoLightColor.r > oneLightColor.r * 1.9f && twoLightColor.r < oneLightColor.r * 2.1f);
+
+    // Two DIFFERENT lights, so that a loop reading the same entry twice
+    // could not pass: one red, one blue, and the result carries both.
+    Configuration twoColors = dark;
+    twoColors.name = "a red light and a blue one";
+    twoColors.extraLightCount = 2;
+    twoColors.extraLights[0] = oneLight.extraLights[0];
+    twoColors.extraLights[0].color = FluxionVec3{ 1.0f, 0.0f, 0.0f };
+    twoColors.extraLights[1] = oneLight.extraLights[0];
+    twoColors.extraLights[1].color = FluxionVec3{ 0.0f, 0.0f, 1.0f };
+    const Rgb twoColorsColor = RenderOne(ctx, rig, twoColors);
+    TEST_CHECK(ctx, twoColorsColor.r > 0.05f);
+    TEST_CHECK(ctx, twoColorsColor.b > 0.05f);
+    TEST_CHECK(ctx, twoColorsColor.g < 0.01f);
+
+    // --- A point light falls off --------------------------------------------
+    Configuration near = dark;
+    near.name = "a point light two units away";
+    near.extraLightCount = 1;
+    near.extraLights[0] = FluxionRenderLight{};
+    near.extraLights[0].type = FLUXION_RENDER_LIGHT_POINT;
+    near.extraLights[0].position = FluxionVec3{ 0.0f, 0.0f, 2.0f };
+    near.extraLights[0].color = FluxionVec3{ 4.0f, 4.0f, 4.0f };
+    near.extraLights[0].range = 100.0f; // far enough away that the window is not what is being measured
+    const Rgb nearColor = RenderOne(ctx, rig, near);
+    TEST_CHECK(ctx, nearColor.r > 0.02f);
+
+    Configuration far = near;
+    far.name = "the same point light four units away";
+    far.extraLights[0].position = FluxionVec3{ 0.0f, 0.0f, 4.0f };
+    const Rgb farColor = RenderOne(ctx, rig, far);
+
+    // Twice as far is a quarter as bright. Inverse SQUARE, not inverse --
+    // a falloff that merely divided by distance would give a half here,
+    // and would look almost right in every screenshot.
+    TEST_CHECK(ctx, farColor.r > nearColor.r * 0.20f && farColor.r < nearColor.r * 0.30f);
+
+    // --- And reaches exactly zero at its range ------------------------------
+    //
+    // The sharp one. A falloff that merely got small would leave a light
+    // contributing where it is about to be culled, and culling it there
+    // is what leaves a visible edge.
+    Configuration atRange = near;
+    atRange.name = "a point light whose range ends at the surface";
+    atRange.extraLights[0].position = FluxionVec3{ 0.0f, 0.0f, 3.0f };
+    atRange.extraLights[0].range = 3.0f;
+    const Rgb atRangeColor = RenderOne(ctx, rig, atRange);
+    TEST_CHECK(ctx, atRangeColor.r < 0.001f);
+
+    // Just inside it, there is still something -- otherwise the check
+    // above would pass for a light that was simply switched off.
+    Configuration insideRange = atRange;
+    insideRange.name = "the same light with the surface just inside its range";
+    insideRange.extraLights[0].range = 6.0f;
+    const Rgb insideRangeColor = RenderOne(ctx, rig, insideRange);
+    TEST_CHECK(ctx, insideRangeColor.r > 0.02f);
+
+    // --- A spot light has a cone --------------------------------------------
+    Configuration spotCentre = dark;
+    spotCentre.name = "a spot light aimed straight at the surface";
+    spotCentre.extraLightCount = 1;
+    spotCentre.extraLights[0] = FluxionRenderLight{};
+    spotCentre.extraLights[0].type = FLUXION_RENDER_LIGHT_SPOT;
+    spotCentre.extraLights[0].position = FluxionVec3{ 0.0f, 0.0f, 2.0f };
+    spotCentre.extraLights[0].direction = FluxionVec3{ 0.0f, 0.0f, -1.0f };
+    spotCentre.extraLights[0].color = FluxionVec3{ 4.0f, 4.0f, 4.0f };
+    spotCentre.extraLights[0].range = 100.0f;
+    spotCentre.extraLights[0].innerConeCos = 0.95f; // about eighteen degrees
+    spotCentre.extraLights[0].outerConeCos = 0.90f;
+    const Rgb spotCentreColor = RenderOne(ctx, rig, spotCentre);
+    TEST_CHECK(ctx, spotCentreColor.r > 0.02f);
+
+    // The same spot, aimed away. Outside the outer cone is nothing --
+    // not merely dim.
+    Configuration spotAway = spotCentre;
+    spotAway.name = "the same spot light aimed away";
+    spotAway.extraLights[0].direction = FluxionVec3{ 1.0f, 0.0f, 0.0f };
+    const Rgb spotAwayColor = RenderOne(ctx, rig, spotAway);
+    TEST_CHECK(ctx, spotAwayColor.r < 0.001f);
+
+    // And a spot pointed straight on gives what a point light in the same
+    // place would: inside the inner cone the cone costs nothing. If it
+    // did not, every spot light would be dimmer than it should be by
+    // however wrong the transition was.
+    Configuration pointSamePlace = near;
+    pointSamePlace.name = "a point light where the spot light was";
+    pointSamePlace.extraLights[0].position = FluxionVec3{ 0.0f, 0.0f, 2.0f };
+    const Rgb pointSamePlaceColor = RenderOne(ctx, rig, pointSamePlace);
+    TEST_CHECK(ctx, spotCentreColor.r > pointSamePlaceColor.r * 0.99f);
+    TEST_CHECK(ctx, spotCentreColor.r < pointSamePlaceColor.r * 1.01f);
+
+    // --- A light of every kind at once --------------------------------------
+    //
+    // Three kinds in one list, so that the branch on the kind is read
+    // from each entry rather than settled once for the whole buffer.
+    Configuration mixed = dark;
+    mixed.name = "one of each kind together";
+    mixed.extraLightCount = 3;
+    mixed.extraLights[0] = oneLight.extraLights[0];
+    mixed.extraLights[0].color = FluxionVec3{ 0.6f, 0.0f, 0.0f };
+    mixed.extraLights[1] = near.extraLights[0];
+    mixed.extraLights[1].color = FluxionVec3{ 0.0f, 4.0f, 0.0f };
+    mixed.extraLights[2] = spotCentre.extraLights[0];
+    mixed.extraLights[2].color = FluxionVec3{ 0.0f, 0.0f, 4.0f };
+    const Rgb mixedColor = RenderOne(ctx, rig, mixed);
+    TEST_CHECK(ctx, mixedColor.r > 0.01f);
+    TEST_CHECK(ctx, mixedColor.g > 0.01f);
+    TEST_CHECK(ctx, mixedColor.b > 0.01f);
+
+    // --- No lights at all ---------------------------------------------------
+    //
+    // Not an error and not a special case: a scene with no lights is lit
+    // by its ambient, which is a picture rather than a fault.
+    Configuration none = BaseConfiguration();
+    none.name = "no lights, only ambient";
+    none.sunColor[0] = 0.0f;
+    none.sunColor[1] = 0.0f;
+    none.sunColor[2] = 0.0f;
+    none.ambient[0] = 0.4f;
+    none.ambient[1] = 0.4f;
+    none.ambient[2] = 0.4f;
+    const Rgb noneColor = RenderOne(ctx, rig, none);
+    TEST_CHECK(ctx, noneColor.r > 0.35f && noneColor.r < 0.45f);
 
     Fluxion_TextureDefaults_Shutdown();
     DestroyRig(rig);

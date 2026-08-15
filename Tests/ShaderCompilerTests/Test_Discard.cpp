@@ -2,6 +2,8 @@
 
 #include <Fluxion/ShaderCompiler/ShaderCompiler.hpp>
 
+#include <cstdio>
+
 using namespace Fluxion::ShaderCompiler;
 
 // Dropping a pixel.
@@ -126,6 +128,59 @@ void AFragmentShaderMayDiscardFromAnywhere(TestContext& ctx)
     TEST_CHECK(ctx, result.IsOk());
 }
 
+
+void AStorageBufferOfStructsDeclaresTheStructFirst(TestContext& ctx)
+{
+    // The shape a light list has: a buffer whose element is a struct the
+    // shader itself declares.
+    //
+    // Both backends used to write the buffer out before the struct, so
+    // the generated text named a type that had not been declared yet.
+    // Nothing noticed, because the only storage buffer anywhere was a
+    // buffer of floats -- and a float needs no declaration. The moment an
+    // element type was a struct, both target languages would have
+    // rejected it, at a line nobody wrote.
+    const char* source =
+        "struct LightData {\n"
+        "  Vector4 positionRange;\n"
+        "  Vector4 color;\n"
+        "};\n"
+        "[Buffer(Frame)] LightData lights;\n"
+        "[Input] Vector2 uv;\n"
+        "[Target(0)] Vector4 outColor;\n"
+        "void main() {\n"
+        "  return lights[0].color;\n"
+        "}\n";
+
+    DiagnosticList diagnostics;
+    auto result = CompileFor(ShaderStage::Fragment, source, diagnostics);
+    if (!result.IsOk())
+    {
+        for (const Diagnostic& entry : diagnostics.entries)
+            std::fprintf(stderr, "    %s:%u: %s\n", entry.location.file.c_str(), entry.location.line, entry.message.c_str());
+    }
+    TEST_CHECK(ctx, result.IsOk());
+    if (!result.IsOk()) return;
+
+    // Declared before it is used, in both languages. Comparing positions
+    // rather than merely looking for the word: the word was always there,
+    // just in the wrong place.
+    const std::string& glsl = result.Value().glslSource;
+    const std::string& hlsl = result.Value().hlslSource;
+
+    TEST_CHECK(ctx, glsl.find("struct LightData") != std::string::npos);
+    TEST_CHECK(ctx, glsl.find("struct LightData") < glsl.find("LightData lights[]"));
+
+    TEST_CHECK(ctx, hlsl.find("struct LightData") != std::string::npos);
+    TEST_CHECK(ctx, hlsl.find("struct LightData") < hlsl.find("StructuredBuffer<LightData>"));
+
+    // And in a fragment shader it is READ-ONLY. A writable one is
+    // rejected by Vulkan unless a device feature nothing here asks for is
+    // switched on, so the backend picks the read-only form -- which is
+    // exactly what a light list wants anyway.
+    TEST_CHECK(ctx, hlsl.find("RWStructuredBuffer") == std::string::npos);
+}
+
 } // namespace
 
 void Test_Discard_Run(TestContext& ctx)
@@ -134,4 +189,5 @@ void Test_Discard_Run(TestContext& ctx)
     AVertexShaderIsToldItHasNoPixelsToDrop(ctx);
     ItIsFoundHoweverDeepItIs(ctx);
     AFragmentShaderMayDiscardFromAnywhere(ctx);
+    AStorageBufferOfStructsDeclaresTheStructFirst(ctx);
 }

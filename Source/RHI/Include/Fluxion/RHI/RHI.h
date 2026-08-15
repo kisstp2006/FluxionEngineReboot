@@ -327,6 +327,22 @@ typedef struct FluxionRHIBindGroupEntry
     usize bufferSize;
     FluxionRHITextureViewHandle textureView;
     FluxionRHISamplerHandle sampler;
+
+    // How many bytes one element of a STORAGE_BUFFER is. Ignored by every
+    // other binding type.
+    //
+    // This is not a backend detail leaking into the portable entry, even
+    // though only one backend reads it: the size of an element is part of
+    // what the SHADER says the buffer is, and the caller that filled the
+    // buffer is the one that knows. A backend which describes a buffer
+    // view by element rather than by byte has no other way to find out,
+    // and guessing produces a view that reads the right memory in the
+    // wrong pieces -- which is not an error anywhere, just wrong numbers.
+    //
+    // Zero means four bytes, which is what a buffer of plain floats or
+    // integers wants and what this contract assumed before it could be
+    // said out loud.
+    u32 bufferElementStride;
 } FluxionRHIBindGroupEntry;
 
 typedef struct FluxionRHIBindGroupDesc

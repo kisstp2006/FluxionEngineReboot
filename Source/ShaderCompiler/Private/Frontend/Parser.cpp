@@ -204,8 +204,13 @@ private:
         }
         Expect(TokenKind::RBracket, "']'");
 
-        if (!IsTypeToken(Current().kind)) { Error(Current().location, "expected a type after attribute"); return nullptr; }
-        ShaderType type = TypeFromToken(Advance().kind);
+        // A struct this shader declared is a type here too, not only a
+        // builtin one. A buffer of light descriptions has no other way to
+        // say what it holds -- the alternative is several parallel
+        // buffers of vectors, which is the same data with the grouping
+        // thrown away.
+        if (!IsTypeStart()) { Error(Current().location, "expected a type after attribute"); return nullptr; }
+        ShaderType type = ParseTypeName();
         const Token* nameToken = Expect(TokenKind::Identifier, "a declaration name");
         Expect(TokenKind::Semicolon, "';'");
         if (!nameToken) return nullptr;

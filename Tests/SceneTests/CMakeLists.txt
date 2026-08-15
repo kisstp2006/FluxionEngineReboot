@@ -18,6 +18,7 @@ engine_add_test(
         Test_CommandBuffer.cpp
         Test_World.cpp
         Test_SceneAssetReferences.cpp
+        Test_SceneLights.cpp
     DEPENDENCIES
         Fluxion::Scene
         Fluxion::Script

@@ -181,29 +181,33 @@ FluxionRHIBindGroupHandle Fluxion_RHID3D12_CreateBindGroup(FluxionRHIDeviceHandl
             if (bufferState != nullptr)
             {
                 usize size = entry.bufferSize > 0 ? entry.bufferSize : bufferState->size;
-                // D3D12's structured-buffer views require a
-                // StructureByteStride matching the shader's own struct
-                // size -- a concept the portable FluxionRHIBindGroupEntry
-                // deliberately doesn't carry, since no backend-native
-                // detail may leak into the portable binding entry. This
-                // backend assumes a 4-byte (float/uint)
-                // element, matching every StructuredBuffer<float>/<uint>
-                // this engine's ShaderCompiler currently emits.
+
+                // D3D12's structured-buffer views describe a buffer by
+                // ELEMENT, not by byte, so they need to know how big one
+                // element is. The portable entry now carries that (see
+                // FluxionRHIBindGroupEntry.bufferElementStride) -- it
+                // used to be assumed to be four, which was true only
+                // because a buffer of floats was the only kind anything
+                // had ever bound. A buffer of light descriptions is
+                // sixty-four bytes an element, and viewed four at a time
+                // it reads the right memory in the wrong pieces.
+                const UINT elementStride = entry.bufferElementStride != 0 ? (UINT)entry.bufferElementStride : 4u;
+
                 D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
                 srvDesc.Format = DXGI_FORMAT_UNKNOWN;
                 srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
                 srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-                srvDesc.Buffer.FirstElement = entry.bufferOffset / 4;
-                srvDesc.Buffer.NumElements = (UINT)(size / 4);
-                srvDesc.Buffer.StructureByteStride = 4;
+                srvDesc.Buffer.FirstElement = entry.bufferOffset / elementStride;
+                srvDesc.Buffer.NumElements = (UINT)(size / elementStride);
+                srvDesc.Buffer.StructureByteStride = elementStride;
                 deviceState->device->CreateShaderResourceView(bufferState->resource.Get(), &srvDesc, Fluxion_RHID3D12_HeapCpuHandle(&deviceState->cbvSrvUavAllocator, srvBase + srvCursor));
 
                 D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
                 uavDesc.Format = DXGI_FORMAT_UNKNOWN;
                 uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-                uavDesc.Buffer.FirstElement = entry.bufferOffset / 4;
-                uavDesc.Buffer.NumElements = (UINT)(size / 4);
-                uavDesc.Buffer.StructureByteStride = 4;
+                uavDesc.Buffer.FirstElement = entry.bufferOffset / elementStride;
+                uavDesc.Buffer.NumElements = (UINT)(size / elementStride);
+                uavDesc.Buffer.StructureByteStride = elementStride;
                 deviceState->device->CreateUnorderedAccessView(bufferState->resource.Get(), nullptr, &uavDesc, Fluxion_RHID3D12_HeapCpuHandle(&deviceState->cbvSrvUavAllocator, uavBase + uavCursor));
             }
             ++srvCursor;

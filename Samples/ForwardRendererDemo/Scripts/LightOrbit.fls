@@ -1,0 +1,66 @@
+// A light that goes round whatever it was put near.
+//
+// This is the whole of the demo's lighting animation, and it is here
+// rather than in the program for the same reason the cube's spin is: the
+// program brings a device up and makes the objects, and what those
+// objects then DO is this directory's business.
+//
+// Nothing here knows it is moving a light. It moves the object it is
+// attached to, and the object happens to carry one -- which is the point
+// of a light being a component. The same script on a camera would orbit
+// a camera.
+class LightOrbit : Component
+{
+    [SerializeField]
+    [Range(0.0, 10.0)]
+    [Tooltip("How far from the centre it goes round.")]
+    float radius;
+
+    [SerializeField]
+    [Range(-5.0, 5.0)]
+    [Tooltip("Radians per second.")]
+    float speed;
+
+    [SerializeField]
+    [Tooltip("How high above the centre it sits.")]
+    float height;
+
+    [SerializeField]
+    [Tooltip("Where the centre of the circle is, along the view axis.")]
+    float centreZ;
+
+    // Where round the circle it started, so two of these do not sit on
+    // top of each other.
+    [SerializeField]
+    float phase;
+
+    bool moving;
+
+    void Awake()
+    {
+        this.radius = 2.2f;
+        this.speed = 1.1f;
+        this.height = 0.8f;
+        this.centreZ = -3.0f;
+        this.phase = 0.0f;
+        this.moving = true;
+    }
+
+    void Update(float deltaTime)
+    {
+        // L stops it and starts it again. Asked as a press rather than as
+        // a held key, so one press is one change.
+        if (Input.WasKeyPressed(KeyCode.L)) { this.moving = !this.moving; }
+        if (!this.moving) { return; }
+
+        // Worked out from how long the demo has been running rather than
+        // from a count of frames, so it looks the same however fast the
+        // machine happens to be.
+        float angle = Time.ElapsedTime() * this.speed + this.phase;
+
+        this.transform.SetLocalPosition(
+            Mathf.Cos(angle) * this.radius,
+            this.height,
+            this.centreZ + Mathf.Sin(angle) * this.radius);
+    }
+}

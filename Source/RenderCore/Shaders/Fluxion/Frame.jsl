@@ -25,18 +25,16 @@
 // xyz: where the eye is, in world space.
 [Uniform(Frame)] Vector4 cameraPosition;
 
-// xyz: the direction TO the light, unit length. Not the direction the
-// light travels -- this is the one the lighting maths wants, and the one
-// that can be checked against a picture by pointing at the sun.
-[Uniform(Frame)] Vector4 sunDirection;
-
-// rgb: colour and intensity together. There is no separate intensity: a
-// colour that is twice as bright IS twice the light.
-[Uniform(Frame)] Vector4 sunColor;
-
 // rgb: a flat amount arriving from every direction, standing in for the
 // sky until there is one.
 [Uniform(Frame)] Vector4 ambientColor;
+
+// x: how many lights the list below holds. yzw unused.
+//
+// A count rather than a terminator: a shader cannot ask a buffer how long
+// it is on every backend, and a loop that ran until it found a zeroed
+// light would stop at the first one somebody switched off.
+[Uniform(Frame)] Vector4 lightParams;
 
 // x: the exposure multiplier -- how much light makes a middle grey.
 // y: the tone mapping white point, the value that comes out as exactly
@@ -45,5 +43,42 @@
 //    applied here, zero if it applies its own.
 // w: unused.
 [Uniform(Frame)] Vector4 toneMapping;
+
+// One light, packed.
+//
+// Four vectors of four, with everything folded into their components by
+// hand, because the two languages this compiles to do not lay out a
+// structure the same way when it mixes three-component vectors with
+// single floats. Four-component vectors are the one shape both agree on
+// without a rule anybody has to remember -- and a layout the two ends
+// disagreed about would not fail, it would read the right memory in the
+// wrong pieces.
+struct FluxionLight
+{
+    // xyz: where it is, in world space. w: where its contribution reaches
+    // zero. Neither means anything to a directional light.
+    Vector4 positionRange;
+
+    // xyz: THE WAY THE LIGHT TRAVELS, not the way to the light. One
+    // convention, chosen because it is the one a cone is measured around.
+    // w: which kind it is -- 0 directional, 1 point, 2 spot.
+    Vector4 direction;
+
+    // rgb: colour and intensity together. w: the cosine of the inner cone
+    // angle, already taken on the other side, because a cosine per pixel
+    // per light is not free and the angle is never wanted for anything.
+    Vector4 color;
+
+    // x: the cosine of the outer cone angle. yzw spare.
+    Vector4 cone;
+};
+
+// The lights this frame is lit by.
+//
+// A buffer rather than an array in the block above: an array would need a
+// maximum written into the shader, and a maximum is a number somebody has
+// to raise -- while costing every frame that does not use it, because a
+// uniform block is paid for whether it is full or not.
+[Buffer(Frame)] FluxionLight lights;
 
 #endif

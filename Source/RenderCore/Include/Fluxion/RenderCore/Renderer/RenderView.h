@@ -28,6 +28,50 @@ typedef struct FluxionScissorRect
 
 FLUXION_DEFINE_HANDLE(FluxionRenderViewHandle);
 
+// --- Lights ---------------------------------------------------------------
+//
+// What a renderer needs to know about one light, flattened into world
+// space. Where it came from -- a component on an object, a script, a file
+// -- is not this module's business; Fluxion_Scene_GatherLights produces
+// these from a scene, and RenderCore never learns what a scene is.
+
+typedef enum FluxionRenderLightType
+{
+    // Arrives from one direction, everywhere, with no falloff. `position`
+    // and `range` mean nothing to it.
+    FLUXION_RENDER_LIGHT_DIRECTIONAL = 0,
+
+    FLUXION_RENDER_LIGHT_POINT,
+    FLUXION_RENDER_LIGHT_SPOT,
+} FluxionRenderLightType;
+
+typedef struct FluxionRenderLight
+{
+    FluxionVec3 position; // world space
+
+    // World space, unit length, and THE WAY THE LIGHT TRAVELS -- not the
+    // way to the light. One convention, chosen because it is the one a
+    // spot light's cone is measured around; the shader turns it round
+    // where it needs the other.
+    FluxionVec3 direction;
+
+    // Colour and intensity together. There is no separate brightness
+    // here, exactly as there is none anywhere else in this engine.
+    FluxionVec3 color;
+
+    // Where the contribution reaches zero. Ignored by a directional
+    // light, which has no distance to fall off over.
+    f32 range;
+
+    // The cosines, not the angles. Worked out once on this side rather
+    // than per pixel per light on the other: a cosine is not free, and
+    // the angle is never wanted for anything else.
+    f32 innerConeCos;
+    f32 outerConeCos;
+
+    u32 type; // FluxionRenderLightType
+} FluxionRenderLight;
+
 // What is constant for one frame of one view, exactly as the shaders
 // below see it.
 //
@@ -48,27 +92,32 @@ typedef struct FluxionFrameConstants
     // Where the eye is, in world space. w is unused.
     FluxionVec4 cameraPosition;
 
-    // The direction TO the light, not the direction it travels. Unit
-    // length; w is unused.
-    //
-    // To the light, because that is the direction the lighting maths
-    // wants and the one a reader can check against a picture: pointing at
-    // the sun. Storing the travel direction instead would mean every
-    // shader negating it, and one of them forgetting.
-    FluxionVec4 sunDirection;
-
-    // Colour times intensity, together. rgb; w is unused.
-    FluxionVec4 sunColor;
-
     // A flat amount of light arriving from everywhere, standing in for
     // the sky until there is one. rgb; w is unused.
+    //
+    // The lights themselves are NOT here any more. One light on the frame
+    // was enough while there was one and nobody moved it; they are
+    // components on objects now, and they arrive through
+    // Fluxion_RenderView_SetLights.
     FluxionVec4 ambientColor;
+
+    // x: how many lights the storage buffer holds. yzw unused.
+    //
+    // A count rather than a terminator: a shader cannot ask a buffer how
+    // long it is on every backend, and a loop that ran until it found a
+    // zeroed light would stop at the first switched-off one.
+    FluxionVec4 lightParams;
 
     // x: the exposure multiplier. y: the tone mapping white point, with
     // zero or less meaning no tone mapping. z: one if the pass applies
     // the display's transfer function. w unused.
     FluxionVec4 toneMapping;
 } FluxionFrameConstants;
+
+// THE ORDER OF THE FIELDS ABOVE IS THE LAYOUT. It has to be the order
+// Fluxion/Frame.jsl declares them in, because that is where the offsets
+// come from -- and two orders that disagree do not fail, they read each
+// other's numbers.
 
 // `renderPipeline` from the original sketch is deliberately not here -- a
 // view doesn't own one; pipeline selection happens per-material/per-pass
@@ -91,8 +140,11 @@ typedef struct FluxionRenderViewDesc
     // a real light system arrives it will change how these values GET
     // here and not what a shader reads, because a shader reads
     // Fluxion/Frame.jsl either way.
-    FluxionVec3 sunDirection; // to the light; normalized here if it is not already
-    FluxionVec3 sunColor;     // colour times intensity
+    // A flat amount of light arriving from every direction, standing in
+    // for a sky until there is one. The lights themselves are not here:
+    // they are components on objects, gathered with
+    // Fluxion_Scene_GatherLights and handed over with
+    // Fluxion_RenderView_SetLights.
     FluxionVec3 ambientColor;
 
     // How much light makes a middle grey. One multiplication, applied
@@ -141,6 +193,29 @@ void Fluxion_RenderView_Destroy(FluxionRenderViewHandle view);
 // the RHI for any one of them) -- call at least once before a draw using
 // this view, and again whenever viewMatrix/projectionMatrix change.
 void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view);
+
+// The lights this view is lit by, replacing whatever it had.
+//
+// Copied, so the caller's array need not outlive the call. The storage
+// grows to fit and never shrinks -- a scene whose light count wobbles by
+// one from frame to frame would otherwise rebuild its buffer and its
+// bind group twice a second for no gain.
+//
+// Passing zero lights is not an error and not a special case: a scene
+// with no lights is a scene lit by nothing but its ambient, which is a
+// picture rather than a fault.
+void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRenderLight* lights, u32 count);
+
+// Records the copy that puts those lights where the GPU can read them.
+//
+// Separate from SetLights, and not hidden inside it, because it needs a
+// command list and SetLights does not. The buffer a shader reads lives in
+// memory only the GPU can see -- a buffer the CPU can write cannot also
+// be one this backend's structured views are allowed to describe -- so
+// there is a copy, and a copy is a recorded command.
+//
+// Call it inside a recording, before anything that draws with this view.
+void Fluxion_RenderView_UploadLights(FluxionRenderViewHandle view, FluxionRHICommandListHandle commandList);
 
 #ifdef __cplusplus
 }

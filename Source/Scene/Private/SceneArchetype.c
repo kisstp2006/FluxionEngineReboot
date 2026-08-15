@@ -410,6 +410,7 @@ bool Fluxion_SceneArchetype_PlaceNewObject(FluxionSceneRecord* record, FluxionGa
     {
         const FluxionTypeId intrinsic[2] = { Fluxion_Transform_TypeId(), Fluxion_ScriptComponent_TypeId() };
         if (!Fluxion_SceneTransform_EnsureRegistered()) return false;
+        if (!Fluxion_SceneLight_EnsureRegistered()) return false;
 
         record->baseArchetype = Fluxion_SceneArchetype_FindOrCreate(record, intrinsic, 2);
         if (record->baseArchetype == FLUXION_SCENE_NO_ARCHETYPE) return false;

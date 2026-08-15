@@ -107,13 +107,20 @@ public:
         m_out << "#version " << m_options.versionDirective << "\n\n";
         if (m_module.stage == ShaderStage::Compute)
             m_out << "layout(local_size_x = " << m_module.localSizeX << ", local_size_y = 1, local_size_z = 1) in;\n\n";
+        // Structs first, before anything that could be made OF one.
+        //
+        // A uniform block or a storage buffer may have a user struct as
+        // its element type, and a struct used before it is declared is a
+        // compile error in the generated text -- reported against a line
+        // the shader's author never wrote. This ordering is the only
+        // thing preventing that, so it is not free to rearrange.
         EmitStageIO();
         EmitOutputSlots();
+        EmitStructs();
         EmitTextures();
         EmitUniformBuffers();
         EmitStorageBuffers();
         m_out << "\n";
-        EmitStructs();
         EmitGlobalConsts();
         EmitFunctions();
         return m_out.str();
