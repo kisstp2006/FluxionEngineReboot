@@ -24,6 +24,11 @@ std::string GLSLTypeName(const ShaderType& type)
         case TypeKind::Mat4: return "mat4";
         case TypeKind::Sampler2D: return "sampler2D";
         case TypeKind::SamplerCube: return "samplerCube";
+
+        // Same reasoning as the other backend: a declared struct is
+        // emitted under its own name, because silently becoming a float
+        // compiles and is wrong.
+        case TypeKind::Unresolved: return type.structName;
         default: return "float";
     }
 }
@@ -108,6 +113,7 @@ public:
         EmitUniformBuffers();
         EmitStorageBuffers();
         m_out << "\n";
+        EmitStructs();
         EmitGlobalConsts();
         EmitFunctions();
         return m_out.str();
@@ -173,6 +179,19 @@ private:
             m_out << "layout(std430, binding = " << OpenGLFlatBinding(b.group, b.binding) << ") buffer Group" << GroupName(b.group) << "StorageBlock\n{\n";
             m_out << "    " << GLSLTypeName(b.type) << " " << b.name << "[];\n";
             m_out << "};\n";
+        }
+    }
+
+    void EmitStructs()
+    {
+        for (const DeclPtr& decl : m_program.declarations)
+        {
+            if (decl->kind != DeclKind::Struct) continue;
+            auto* d = static_cast<StructDecl*>(decl.get());
+            m_out << "struct " << d->name << "\n{\n";
+            for (const StructField& field : d->fields)
+                m_out << "    " << GLSLTypeName(field.type) << " " << field.name << ";\n";
+            m_out << "};\n\n";
         }
     }
 

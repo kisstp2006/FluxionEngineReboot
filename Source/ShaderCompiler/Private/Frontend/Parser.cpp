@@ -1,5 +1,7 @@
 #include <Fluxion/ShaderCompiler/Frontend/Parser.hpp>
 
+#include <unordered_set>
+
 namespace Fluxion::ShaderCompiler
 {
 
@@ -73,6 +75,31 @@ private:
     DiagnosticList& m_diagnostics;
     size_t m_pos = 0;
 
+    // Which names are types because a `struct` said so.
+    //
+    // A built-in type is a keyword and the lexer settles it; a declared
+    // one arrives as an ordinary identifier, and only this tells the two
+    // apart. Filled as each struct is parsed, which is what makes a type
+    // usable after its declaration and not before -- read in order, the
+    // same way the file is.
+    std::unordered_set<std::string> m_structNames;
+
+    // Whether what comes next begins a type: a built-in keyword, or the
+    // name of a struct already declared.
+    bool IsTypeStart() const
+    {
+        if (IsTypeToken(Current().kind)) return true;
+        return Check(TokenKind::Identifier) && m_structNames.count(Current().text) != 0;
+    }
+
+    // Consumes one type and returns it. Only call where IsTypeStart() has
+    // already said yes.
+    ShaderType ParseTypeName()
+    {
+        if (Check(TokenKind::Identifier)) return ShaderType{ TypeKind::Unresolved, Advance().text };
+        return TypeFromToken(Advance().kind);
+    }
+
     const Token& Current() const { return m_tokens[m_pos]; }
     const Token& Previous() const { return m_tokens[m_pos - 1]; }
     bool Check(TokenKind kind) const { return Current().kind == kind; }
@@ -107,7 +134,7 @@ private:
     {
         while (!AtEnd())
         {
-            if (IsTypeToken(Current().kind) || Check(TokenKind::KwConst) ||
+            if (IsTypeStart() || Check(TokenKind::KwConst) ||
                 Check(TokenKind::KwStruct) || Check(TokenKind::LBracket))
                 return;
             Advance();
@@ -132,7 +159,7 @@ private:
         {
             return ParseGlobalConstDecl(loc);
         }
-        if (IsTypeToken(Current().kind))
+        if (IsTypeStart())
         {
             return ParseFunctionDecl(loc);
         }
@@ -241,23 +268,41 @@ private:
         Expect(TokenKind::LBrace, "'{'");
         auto decl = std::make_unique<StructDecl>();
         decl->location = loc;
-        if (nameToken) decl->name = nameToken->text;
+        if (nameToken)
+        {
+            decl->name = nameToken->text;
+
+            // Registered before the fields are read, so a struct may name
+            // itself in its own body. Nothing useful can be built that
+            // way yet, but the alternative is an error message about an
+            // unknown type that names the type being declared.
+            m_structNames.insert(decl->name);
+        }
 
         while (!Check(TokenKind::RBrace) && !AtEnd())
         {
-            if (!IsTypeToken(Current().kind)) { Error(Current().location, "expected a field type"); break; }
-            ShaderType fieldType = TypeFromToken(Advance().kind);
+            if (!IsTypeStart()) { Error(Current().location, "expected a field type"); break; }
+            ShaderType fieldType = ParseTypeName();
             const Token* fieldName = Expect(TokenKind::Identifier, "a field name");
             Expect(TokenKind::Semicolon, "';'");
             if (fieldName) decl->fields.push_back(StructField{ fieldType, fieldName->text });
         }
         Expect(TokenKind::RBrace, "'}'");
+
+        // The semicolon after the closing brace is optional, and accepted
+        // either way. Every language this one resembles requires it, so
+        // an author writes it without thinking -- and without this it
+        // would be left over as a stray token, reported as a broken
+        // declaration on the line AFTER the struct, which names the wrong
+        // thing entirely.
+        Match(TokenKind::Semicolon);
+
         return decl;
     }
 
     DeclPtr ParseFunctionDecl(SourceLocation loc)
     {
-        ShaderType returnType = TypeFromToken(Advance().kind);
+        ShaderType returnType = ParseTypeName();
         const Token* nameToken = Expect(TokenKind::Identifier, "a function name");
         Expect(TokenKind::LParen, "'('");
 
@@ -270,8 +315,8 @@ private:
         {
             do
             {
-                if (!IsTypeToken(Current().kind)) { Error(Current().location, "expected a parameter type"); break; }
-                ShaderType paramType = TypeFromToken(Advance().kind);
+                if (!IsTypeStart()) { Error(Current().location, "expected a parameter type"); break; }
+                ShaderType paramType = ParseTypeName();
                 const Token* paramName = Expect(TokenKind::Identifier, "a parameter name");
                 decl->params.push_back(Param{ paramType, paramName ? paramName->text : "" });
             } while (Match(TokenKind::Comma));
@@ -292,7 +337,7 @@ private:
         if (Match(TokenKind::KwFor)) return ParseFor(loc);
         if (Match(TokenKind::KwWhile)) return ParseWhile(loc);
         if (Match(TokenKind::KwReturn)) return ParseReturn(loc);
-        if (IsTypeToken(Current().kind)) return ParseVarDeclStatement(loc);
+        if (IsTypeStart()) return ParseVarDeclStatement(loc);
 
         auto stmt = std::make_unique<ExprStmt>();
         stmt->location = loc;
@@ -315,7 +360,7 @@ private:
 
     StmtPtr ParseVarDeclStatement(SourceLocation loc)
     {
-        ShaderType type = TypeFromToken(Advance().kind);
+        ShaderType type = ParseTypeName();
         const Token* nameToken = Expect(TokenKind::Identifier, "a variable name");
         auto stmt = std::make_unique<VarDeclStmt>();
         stmt->location = loc;
@@ -349,7 +394,7 @@ private:
         if (!Check(TokenKind::Semicolon))
         {
             SourceLocation initLoc = Current().location;
-            if (IsTypeToken(Current().kind))
+            if (IsTypeStart())
             {
                 stmt->init = ParseVarDeclStatement(initLoc);
             }

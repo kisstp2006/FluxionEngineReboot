@@ -1,0 +1,36 @@
+#ifndef FLUXION_PASS_FORWARD_INCLUDED
+#define FLUXION_PASS_FORWARD_INCLUDED
+
+#include "Fluxion/Surface.jsl"
+
+// One of the ends a material can come to: lit here and now, into a single
+// colour.
+//
+// The entry point lives here rather than in the material, which is the
+// whole arrangement: a material declares `EvaluateSurface()` and stops, and the
+// pass decides what becomes of what it returned. That is why the same
+// material text can also be read by the pass next door without changing
+// a character of it.
+//
+// This file is appended to a material's own source, so `EvaluateSurface()` is
+// already declared by the time anything below calls it.
+
+[Target(0)] Vector4 fragColor;
+
+void main() {
+  SurfaceData surface = EvaluateSurface();
+
+  // Not yet lit. The lighting arrives with the reflectance model, and
+  // when it does it replaces the body of this function and nothing else
+  // -- no material changes, because no material says anything about how
+  // it is lit.
+  //
+  // Until then this is the surface's own colour plus whatever it gives
+  // off, which is honest about what it is rather than a stand-in that
+  // looks lit and is not.
+  Vector3 color = surface.baseColor * surface.ambientOcclusion + surface.emissive;
+
+  return Vector4(color, surface.opacity);
+}
+
+#endif

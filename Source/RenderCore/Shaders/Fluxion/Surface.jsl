@@ -1,0 +1,113 @@
+#ifndef FLUXION_SURFACE_INCLUDED
+#define FLUXION_SURFACE_INCLUDED
+
+#include "Fluxion/Math.jsl"
+
+// What a material says about a surface, and nothing about how it is drawn.
+//
+// THIS IS WHY A MATERIAL DOES NOT WRITE PIXELS. A shader that writes a
+// colour is a forward shader; one that writes several targets is a
+// deferred shader. Either way it is welded to one renderer, and the same
+// material cannot then be used under another.
+//
+// So a material fills one of these in and returns it. What happens next
+// belongs to the pass: one lights it now, another will pack it into a
+// buffer, a third reads only enough to know whether the pixel exists at
+// all. The material is not asked and does not know.
+//
+// The fields are the ones that describe a surface physically. They are
+// not a free-for-all: a renderer can only light what it can name, and a
+// field nothing agrees on is a field nothing can use.
+
+// Which model lights this surface.
+//
+// Only one exists today and everything uses it. It is here anyway,
+// because the alternative -- adding it once a second model is needed --
+// means touching every material that was ever written, and the ones
+// written by other people are not ours to touch.
+const uint FLUXION_SHADING_MODEL_LIT = 0;
+
+struct SurfaceData
+{
+    // Linear, not gamma. The diffuse colour of a non-metal, or the
+    // specular colour of a metal -- which of the two is decided by
+    // `metallic`, and that is the whole of the metal/roughness idea.
+    Vector3 baseColor;
+
+    // Effectively 0 or 1; values between are for the pixels where a
+    // texture blends from one to the other, not for a half-metal, which
+    // is not a thing that exists.
+    float metallic;
+
+    // PERCEPTUAL roughness, not the microfacet alpha.
+    //
+    // The maths wants alpha = perceptualRoughness squared. If the value
+    // stored here were the alpha, every shiny metal would live between
+    // 0.0 and 0.05 and the rest of the range would be unusable. The
+    // squaring happens where the lighting is worked out, once, and never
+    // here.
+    float perceptualRoughness;
+
+    // How reflective a non-metal is head-on. 0.5 means the four percent
+    // that nearly every ordinary material has; water sits lower, gemstone
+    // higher. A metal ignores this entirely -- its reflectance is its
+    // base colour.
+    //
+    // Without this field every non-metal would reflect identically, and
+    // water, cloth and glass would be indistinguishable at a glancing
+    // angle.
+    float reflectance;
+
+    // World space, unit length.
+    Vector3 normal;
+
+    // How much of the surrounding light this point does not receive.
+    // Applies to the ambient term; direct light is occluded by shadows,
+    // which know better.
+    float ambientOcclusion;
+
+    // Light this surface gives off. Linear, and in the same units as
+    // every other light in the scene -- a value here is not a brightness
+    // slider, it is an amount of light.
+    Vector3 emissive;
+
+    // Below one only means anything to a pass that does something about
+    // it. An opaque pass does not read this at all.
+    float opacity;
+
+    uint shadingModel;
+};
+
+// What a surface is before a material says anything.
+//
+// A material fills in what it cares about and leaves the rest. The
+// defaults are chosen so that a material which sets nothing at all still
+// draws as something a person would recognise -- a white, rough,
+// non-metallic surface -- rather than as black, which is what zeroed
+// memory would give and which reads as a bug in the renderer rather than
+// an empty material.
+SurfaceData DefaultSurface()
+{
+    SurfaceData surface;
+    surface.baseColor = Vector3(1.0, 1.0, 1.0);
+    surface.metallic = 0.0;
+    surface.perceptualRoughness = 1.0;
+    surface.reflectance = 0.5;
+    surface.normal = Vector3(0.0, 0.0, 1.0);
+    surface.ambientOcclusion = 1.0;
+    surface.emissive = Vector3(0.0, 0.0, 0.0);
+    surface.opacity = 1.0;
+    surface.shadingModel = FLUXION_SHADING_MODEL_LIT;
+    return surface;
+}
+
+// The microfacet alpha the lighting maths actually wants, from the
+// perceptual value a material stores. One place, so the squaring cannot
+// be done twice in one path and not at all in another.
+float SurfaceAlphaRoughness(SurfaceData surface)
+{
+    float clamped = clamp(surface.perceptualRoughness, FLUXION_MIN_PERCEPTUAL_ROUGHNESS, 1.0);
+    return Square(clamped);
+}
+
+#endif

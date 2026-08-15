@@ -1,6 +1,7 @@
 #include "TestFramework.h"
 
 #include <Fluxion/RHI/RHI.h>
+#include <Fluxion/RenderCore/Renderer/MaterialShader.h>
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
 #include <Fluxion/ShaderCompiler/Backends/DXC/DXCAdapter.hpp>
 #include <Fluxion/ShaderCompiler/ShaderCache.hpp>
@@ -58,6 +59,43 @@ const char* kComputeSource =
     "  brightness[ThreadID] = 0.5;\n"
     "}\n";
 
+// Reaches the engine's own shader library. Test_ShaderLibrary.cpp checks
+// the library and its resolver directly; what is checked here is only
+// that THIS path hands the resolver to the compiler. Without it the
+// library could be perfect and no shader created through this interface
+// would be able to include a line of it.
+const char* kFragmentUsingLibrary =
+    "#include \"Fluxion/Math.jsl\"\n"
+    "[Uniform(Material)] Vector3 tint;\n"
+    "[Target(0)] Vector4 fragColor;\n"
+    "void main() {\n"
+    "  return Vector4(tint * Saturate(FLUXION_INV_PI), 1.0);\n"
+    "}\n";
+
+// The same shader with an include nothing provides. It must fail --
+// otherwise the check above would pass on a build where every include
+// silently resolved to nothing.
+const char* kFragmentUsingMissingInclude =
+    "#include \"Fluxion/NotThere.jsl\"\n"
+    "[Target(0)] Vector4 fragColor;\n"
+    "void main() {\n"
+    "  return Vector4(0.0, 0.0, 0.0, 1.0);\n"
+    "}\n";
+
+// A material as one is actually written: it describes the surface and
+// stops. The pass entry point is appended by
+// Fluxion_MaterialShader_BuildFragmentSource.
+const char* kMaterialSource =
+    "#include \"Fluxion/Surface.jsl\"\n"
+    "[Input] Vector2 vUV;\n"
+    "[Uniform(Material)] Vector3 baseColorFactor;\n"
+    "SurfaceData EvaluateSurface() {\n"
+    "  SurfaceData surface = DefaultSurface();\n"
+    "  surface.baseColor = baseColorFactor * vUV.x;\n"
+    "  surface.perceptualRoughness = vUV.y;\n"
+    "  return surface;\n"
+    "}\n";
+
 } // namespace
 
 extern "C" void Test_ShaderProgram_Run(TestContext* ctx)
@@ -92,6 +130,45 @@ extern "C" void Test_ShaderProgram_Run(TestContext* ctx)
 
     Fluxion_ShaderProgram_Destroy(graphicsProgram);
     Fluxion_ShaderProgram_Destroy(computeProgram);
+
+    {
+        FluxionShaderProgramDesc libraryDesc = {};
+        libraryDesc.debugName = "Test_ShaderProgram.Library";
+        libraryDesc.vertexSource = kVertexSource;
+        libraryDesc.fragmentSource = kFragmentUsingLibrary;
+        FluxionShaderProgramHandle libraryProgram = Fluxion_ShaderProgram_Create(fixture.device, &libraryDesc);
+        TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(libraryProgram));
+        if (FLUXION_HANDLE_IS_VALID(libraryProgram)) Fluxion_ShaderProgram_Destroy(libraryProgram);
+
+        // The same material text, made into two different shaders, and
+        // both handed to the real compiler. Checking only that the
+        // emitted text looks right would miss a struct this language
+        // accepts and the target's own compiler does not.
+        for (int pass = 0; pass < FLUXION_MATERIAL_PASS_COUNT; ++pass)
+        {
+            char* fragment = Fluxion_MaterialShader_BuildFragmentSource(kMaterialSource, (FluxionMaterialPass)pass);
+            TEST_CHECK(ctx, fragment != nullptr);
+            if (!fragment) continue;
+
+            FluxionShaderProgramDesc passDesc = {};
+            passDesc.debugName = "Test_ShaderProgram.MaterialPass";
+            passDesc.vertexSource = kVertexSource;
+            passDesc.fragmentSource = fragment;
+
+            FluxionShaderProgramHandle passProgram = Fluxion_ShaderProgram_Create(fixture.device, &passDesc);
+            TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(passProgram));
+            if (FLUXION_HANDLE_IS_VALID(passProgram)) Fluxion_ShaderProgram_Destroy(passProgram);
+
+            Fluxion_MaterialShader_FreeSource(fragment);
+        }
+
+        FluxionShaderProgramDesc missingDesc = {};
+        missingDesc.debugName = "Test_ShaderProgram.MissingInclude";
+        missingDesc.vertexSource = kVertexSource;
+        missingDesc.fragmentSource = kFragmentUsingMissingInclude;
+        FluxionShaderProgramHandle missingProgram = Fluxion_ShaderProgram_Create(fixture.device, &missingDesc);
+        TEST_CHECK(ctx, !FLUXION_HANDLE_IS_VALID(missingProgram));
+    }
 
     {
         // The cache has its own tests; what is checked here is only that

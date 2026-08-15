@@ -1,0 +1,32 @@
+#ifndef FLUXION_PASS_DEPTH_ONLY_INCLUDED
+#define FLUXION_PASS_DEPTH_ONLY_INCLUDED
+
+#include "Fluxion/Surface.jsl"
+
+// The other end, and the reason the first one is not the only one.
+//
+// This pass wants to know whether a pixel is there. It does not want the
+// colour, the roughness, or which way the surface faces -- and asking the
+// material for those would be asking for work whose result is thrown
+// away.
+//
+// So it calls the SAME `EvaluateSurface()` the forward pass calls, and reads one
+// field of what comes back. If a material were welded to how it is drawn,
+// this file could not exist.
+
+[Target(0)] Vector4 fragColor;
+
+void main() {
+  SurfaceData surface = EvaluateSurface();
+
+  // Only the opacity. Everything else the material worked out is
+  // discarded by the compiler, because nothing downstream reads it.
+  //
+  // A pixel being dropped entirely for a low opacity is not done here:
+  // this language has no way to say it yet. Until it does, this pass
+  // records what the opacity was, and the alpha test belongs to whoever
+  // reads it.
+  return Vector4(surface.opacity, surface.opacity, surface.opacity, surface.opacity);
+}
+
+#endif

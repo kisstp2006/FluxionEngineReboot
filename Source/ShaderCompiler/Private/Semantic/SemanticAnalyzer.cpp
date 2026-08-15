@@ -1,6 +1,7 @@
 #include <Fluxion/ShaderCompiler/Semantic/SemanticAnalyzer.hpp>
 
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Fluxion::ShaderCompiler
@@ -92,8 +93,24 @@ public:
                     m_functions[d->name].push_back(d);
                     break;
                 }
+                case DeclKind::Struct: {
+                    auto* d = static_cast<StructDecl*>(decl.get());
+                    m_structs[d->name] = d;
+                    break;
+                }
                 default: break;
             }
+        }
+
+        // A struct's own fields are checked before anything uses them, so
+        // a field of an undeclared type is reported once, here, rather
+        // than at every place that reads it.
+        for (DeclPtr& decl : m_program.declarations)
+        {
+            if (decl->kind != DeclKind::Struct) continue;
+            auto* d = static_cast<StructDecl*>(decl.get());
+            for (const StructField& field : d->fields)
+                ValidateType(field.type, d->location, "a field's type");
         }
 
         for (DeclPtr& decl : m_program.declarations)
@@ -112,9 +129,37 @@ private:
     DiagnosticList& m_diagnostics;
     std::unordered_map<std::string, ShaderType> m_globals;
     std::unordered_map<std::string, std::vector<FunctionDecl*>> m_functions;
+
+    // What each declared struct contains. A field's type is the only way
+    // to know what `s.roughness` is, and without it every such read would
+    // have to be guessed at -- which for a field the struct does not have
+    // means guessing rather than saying so.
+    std::unordered_map<std::string, StructDecl*> m_structs;
     std::vector<std::unordered_map<std::string, ShaderType>> m_scopes;
 
     void Error(const SourceLocation& loc, const std::string& msg) { m_diagnostics.AddError(loc, msg); }
+
+    // The functions a shader may call without declaring them.
+    //
+    // Spelled the way this language spells them; the backends translate
+    // where a target uses a different name. A name only one target knows
+    // is deliberately absent -- writing it would compile on that target
+    // and fail on the other, which is the failure this list exists to
+    // turn into a message.
+    static bool IsBuiltinFunction(const std::string& name)
+    {
+        static const std::unordered_set<std::string> kBuiltins = {
+            "abs", "acos", "all", "any", "asin", "atan", "ceil", "clamp", "cos", "cosh",
+            "cross", "degrees", "determinant", "distance", "dot", "exp", "exp2",
+            "faceforward", "floor", "fract", "fwidth", "inverse", "inversesqrt",
+            "length", "log", "log2", "max", "min", "mix", "mod", "normalize", "pow",
+            "radians", "reflect", "refract", "round", "sign", "sin", "sinh",
+            "smoothstep", "sqrt", "step", "tan", "tanh", "transpose", "trunc",
+            "dFdx", "dFdy",
+            "texture", "texture2D", "textureCube", "textureLod",
+        };
+        return kBuiltins.count(name) != 0;
+    }
 
     void PushScope() { m_scopes.emplace_back(); }
     void PopScope() { m_scopes.pop_back(); }
@@ -132,10 +177,29 @@ private:
         return false;
     }
 
+    // A type that names a struct nobody declared is caught here rather
+    // than passed on. The backends take a type's name from the type
+    // itself, so an unknown one would be emitted verbatim and fail in
+    // whatever tool compiles the result -- with a message about generated
+    // text nobody wrote.
+    void ValidateType(const ShaderType& type, const SourceLocation& location, const char* what)
+    {
+        if (type.kind != TypeKind::Unresolved) return;
+        if (m_structs.count(type.structName) != 0) return;
+
+        Error(location, std::string(what) + " names '" + type.structName + "', which is not a declared struct");
+    }
+
     void AnalyzeFunction(FunctionDecl& fn)
     {
+        ValidateType(fn.returnType, fn.location, "this function's return type");
+
         PushScope();
-        for (Param& p : fn.params) Declare(p.name, p.type);
+        for (Param& p : fn.params)
+        {
+            ValidateType(p.type, fn.location, "a parameter's type");
+            Declare(p.name, p.type);
+        }
         AnalyzeStmt(*fn.body, fn);
         PopScope();
     }
@@ -149,6 +213,7 @@ private:
                 break;
             case StmtKind::VarDecl: {
                 auto& s = static_cast<VarDeclStmt&>(stmt);
+                ValidateType(s.type, s.location, "this variable's type");
                 if (s.initializer) AnalyzeExpr(*s.initializer);
                 Declare(s.name, s.type);
                 break;
@@ -238,6 +303,38 @@ private:
             case ExprKind::Member: {
                 auto& e = static_cast<MemberExpr&>(expr);
                 AnalyzeExpr(*e.base);
+
+                // A struct field, not a swizzle. Checked first because
+                // the swizzle rules below would reject every one of them
+                // as "used on a non-vector type", which is true and
+                // unhelpful.
+                if (e.base->resolvedType.kind == TypeKind::Unresolved)
+                {
+                    auto structIt = m_structs.find(e.base->resolvedType.structName);
+                    if (structIt == m_structs.end())
+                    {
+                        Error(e.location, "'" + e.base->resolvedType.structName + "' is not a declared struct");
+                        expr.resolvedType = { TypeKind::Float };
+                        break;
+                    }
+
+                    bool foundField = false;
+                    for (const StructField& field : structIt->second->fields)
+                    {
+                        if (field.name != e.member) continue;
+                        expr.resolvedType = field.type;
+                        foundField = true;
+                        break;
+                    }
+
+                    if (!foundField)
+                    {
+                        Error(e.location, "'" + e.base->resolvedType.structName + "' has no field named '" + e.member + "'");
+                        expr.resolvedType = { TypeKind::Float };
+                    }
+                    break;
+                }
+
                 int baseComponents = VectorComponentCount(e.base->resolvedType.kind);
                 if (baseComponents == 0)
                 {
@@ -324,8 +421,8 @@ private:
         // Built-in functions get a small structural heuristic (result is
         // a vector if any argument is a vector, otherwise float/bool as
         // appropriate) rather than an exhaustive per-function signature
-        // table -- this covers the common GLSL-style math/sampling
-        // builtins without hand-listing every overload.
+        // table -- this covers the ordinary maths and sampling builtins
+        // without hand-listing every overload.
         static const std::unordered_map<std::string, TypeKind> kFixedResultBuiltins = {
             { "dot", TypeKind::Float }, { "length", TypeKind::Float }, { "distance", TypeKind::Float },
             { "texture2D", TypeKind::Vec4 }, { "texture", TypeKind::Vec4 }, { "textureCube", TypeKind::Vec4 },
@@ -341,7 +438,21 @@ private:
             if (best) return best->returnType;
         }
 
-        // Unknown callee, or a builtin outside the fixed-result table
+        // A name that is neither declared here nor built in.
+        //
+        // Reported rather than passed through. What used to happen was
+        // that any unknown name became a call with a guessed result type,
+        // the text was emitted verbatim, and it failed in whatever tool
+        // compiled the output -- naming generated text nobody wrote. A
+        // mistyped function and a material missing the one function it
+        // has to declare both landed there.
+        if (userFn == m_functions.end() && !IsBuiltinFunction(call.callee))
+        {
+            Error(call.location, "call to '" + call.callee + "', which is neither declared here nor a built-in function");
+            return { TypeKind::Float };
+        }
+
+        // A builtin outside the fixed-result table
         // (normalize/mix/clamp/pow/abs/min/max/sin/cos/...): the result
         // follows the widest argument type.
         ShaderType widest = { TypeKind::Float };

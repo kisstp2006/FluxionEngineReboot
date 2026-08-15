@@ -1,3 +1,18 @@
+include(EngineShaderLibrary)
+
+# The engine's own shader library, carried in the binary rather than
+# looked for at runtime. Order matters here only in that the generated
+# source has to exist before the module claims it.
+engine_embed_shader_library(
+    OUTPUT FLUXION_SHADER_LIBRARY_GENERATED
+    ROOT "${CMAKE_CURRENT_SOURCE_DIR}/Shaders"
+    FILES
+        Fluxion/Math.jsl
+        Fluxion/Surface.jsl
+        Fluxion/Pass/Forward.jsl
+        Fluxion/Pass/DepthOnly.jsl
+)
+
 engine_add_module(
     NAME RenderCore
     TYPE STATIC
@@ -16,3 +31,7 @@ engine_add_module(
         # job, and a caller does not have to know one was used.
         Fluxion::Core
 )
+
+# Added after the module rather than through its SOURCES, so the auto-glob
+# of Private/ keeps working for everything else.
+target_sources(RenderCore PRIVATE "${FLUXION_SHADER_LIBRARY_GENERATED}")

@@ -1,0 +1,65 @@
+#ifndef FLUXION_MATH_INCLUDED
+#define FLUXION_MATH_INCLUDED
+
+// The small pieces every shader below this one needs.
+//
+// Two reasons this file exists rather than each shader saying it again.
+//
+// The first is that some of it is not sayable at the call site at all.
+// `saturate` is spelled one way in one target language and does not exist
+// in the other, so a shader that writes it directly compiles on one
+// backend and fails on the next -- the sort of thing found by shipping.
+// Written once here as a real function, it is the same everywhere.
+//
+// The second is that a constant repeated in ten shaders is ten chances
+// to type it differently, and a wrong digit in pi does not look wrong,
+// it looks slightly dark.
+
+const float FLUXION_PI = 3.14159265359;
+const float FLUXION_INV_PI = 0.31830988618;
+
+// A very small number to divide by rather than risk dividing by zero.
+// Not the smallest representable one: half precision is a real target,
+// and a value that vanishes there would put the guard back where it
+// started.
+const float FLUXION_EPSILON = 0.0001;
+
+// The lowest perceptual roughness anything is allowed to be.
+//
+// Two reasons, and both are real. The lighting maths divides by the
+// fourth power of roughness, which stops being representable in half
+// precision well before zero -- and half precision is a target here, not
+// a hypothetical. And a perfectly smooth surface produces a highlight
+// smaller than a pixel, which is not a highlight, it is a flicker that
+// moves with the camera.
+const float FLUXION_MIN_PERCEPTUAL_ROUGHNESS = 0.089;
+
+float Saturate(float x)
+{
+    return clamp(x, 0.0, 1.0);
+}
+
+Vector3 Saturate3(Vector3 v)
+{
+    return clamp(v, Vector3(0.0, 0.0, 0.0), Vector3(1.0, 1.0, 1.0));
+}
+
+// The fifth power, which the Fresnel term asks for and nothing else does.
+// Written as multiplications rather than pow(x, 5.0): pow is a transcend-
+// ental on most hardware, and this is on the innermost path of every lit
+// pixel.
+float Pow5(float x)
+{
+    float x2 = x * x;
+    return x2 * x2 * x;
+}
+
+// Squaring, named, because `roughness * roughness` appearing in the
+// middle of a longer expression is the one place a reader cannot tell
+// whether the squaring was meant or was a typo.
+float Square(float x)
+{
+    return x * x;
+}
+
+#endif

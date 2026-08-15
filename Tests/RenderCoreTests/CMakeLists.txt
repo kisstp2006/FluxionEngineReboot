@@ -14,6 +14,8 @@ engine_add_test(
         Test_RenderView.c
         Test_RendererFrame.cpp
         Test_MeshAsset.cpp
+        Test_ShaderLibrary.cpp
+        Test_SurfaceData.cpp
     DEPENDENCIES
         Fluxion::RenderCore
         Fluxion::RHI

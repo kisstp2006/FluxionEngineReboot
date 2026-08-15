@@ -16,6 +16,8 @@
 #include <Fluxion/ShaderCompiler/ShaderCache.hpp>
 #include <Fluxion/ShaderCompiler/ShaderCompiler.hpp>
 
+#include "ShaderLibrary.h"
+
 #include <atomic>
 #include <cstring>
 #include <string>
@@ -258,6 +260,17 @@ bool CompileArtifact(FluxionRHIBackendType backend, const char* source, const ch
     request.compile.stage = stage;
     request.compile.entryPoint = (entryPoint != nullptr) ? entryPoint : "main";
     request.compile.fileName = (debugName != nullptr) ? debugName : "<FluxionShaderProgram>";
+
+    // What a shader is allowed to include. Set on every compilation this
+    // module starts, including the ones a worker runs during a reload --
+    // the library is read-only text built into the program, so several
+    // threads reading it at once is not a question.
+    //
+    // The cache needs no telling about this. It runs the front end before
+    // it builds its key, and puts every include's name and content hash
+    // into that key -- so editing a library file changes the key, and a
+    // result compiled against the old text can no longer be found.
+    request.compile.includeResolver = Fluxion::RenderCore::MakeShaderLibraryResolver();
 
     ShaderCacheOptions cache;
     cache.directory = s_cacheDirectory;

@@ -25,6 +25,12 @@ std::string HLSLTypeName(const ShaderType& type)
         case TypeKind::Mat4: return "float4x4";
         case TypeKind::Sampler2D: return "Texture2D";
         case TypeKind::SamplerCube: return "TextureCube";
+
+        // A declared struct carries its own name and that is what is
+        // emitted. Falling through to the default below would turn every
+        // struct-typed thing into a float -- which compiles, and is
+        // wrong, which is the worse of the two.
+        case TypeKind::Unresolved: return type.structName;
         default: return "float";
     }
 }
@@ -104,6 +110,8 @@ public:
             EmitTextures();
             EmitStorageBuffers();
             EmitComputeStaticMirrors();
+            EmitStructs();
+            EmitGlobalConsts();
             EmitFunctions();
             EmitComputeWrapperMain();
             return m_out.str();
@@ -114,6 +122,8 @@ public:
         EmitStorageBuffers();
         EmitStageStructs();
         EmitStaticMirrors();
+        EmitStructs();
+        EmitGlobalConsts();
         EmitFunctions();
         EmitWrapperMain();
         return m_out.str();
@@ -219,6 +229,38 @@ private:
         for (const IROutputSlot& o : m_module.outputSlots)
             m_out << "static " << HLSLTypeName(o.type) << " " << o.name << ";\n";
         m_out << "\n";
+    }
+
+    // `static` on purpose, and not merely `const`.
+    //
+    // A global in HLSL without it is not a constant at all: it becomes a
+    // member of an implicit constant buffer the shader never fills in, so
+    // the value would read as zero at runtime rather than as what the
+    // source said. `static const` is a real compile-time constant.
+    // Before the consts and the functions, because both may name one.
+    void EmitStructs()
+    {
+        for (const DeclPtr& decl : m_program.declarations)
+        {
+            if (decl->kind != DeclKind::Struct) continue;
+            auto* d = static_cast<StructDecl*>(decl.get());
+            m_out << "struct " << d->name << "\n{\n";
+            for (const StructField& field : d->fields)
+                m_out << "    " << HLSLTypeName(field.type) << " " << field.name << ";\n";
+            m_out << "};\n\n";
+        }
+    }
+
+    void EmitGlobalConsts()
+    {
+        for (const DeclPtr& decl : m_program.declarations)
+        {
+            if (decl->kind != DeclKind::GlobalConst) continue;
+            auto* d = static_cast<GlobalConstDecl*>(decl.get());
+            m_out << "static const " << HLSLTypeName(d->type) << " " << d->name << " = ";
+            EmitExpr(*d->initializer);
+            m_out << ";\n";
+        }
     }
 
     void EmitFunctions()
