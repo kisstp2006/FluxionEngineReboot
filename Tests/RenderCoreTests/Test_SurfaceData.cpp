@@ -21,8 +21,8 @@ using namespace Fluxion::ShaderCompiler;
 // pass needed its own copy, the arrangement would not be worth having.
 const char* const kMaterial = R"(
 #include "Fluxion/Surface.jsl"
+#include "Fluxion/Varyings.jsl"
 
-[Input] Vector2 vUV;
 [Uniform(Material)] Vector3 baseColorFactor;
 
 SurfaceData EvaluateSurface() {
@@ -155,14 +155,63 @@ void OneMaterialCompilesUnderBothPasses(TestContext* ctx)
     const std::string forwardBody = forwardGlsl.substr(forwardMain);
     const std::string depthBody = depthGlsl.substr(depthMain);
 
-    // The forward pass reads the surface's colour and its occlusion; the
-    // depth pass reads the opacity and nothing else.
-    TEST_CHECK(ctx, forwardBody.find("baseColor") != std::string::npos);
-    TEST_CHECK(ctx, forwardBody.find("ambientOcclusion") != std::string::npos);
+    // The forward pass hands the surface to the lighting; the depth pass
+    // reads the opacity and nothing else. Checked at the entry point
+    // rather than in the file as a whole -- the library's own functions
+    // appear in both, so searching the text would prove nothing.
+    TEST_CHECK(ctx, forwardBody.find("EvaluateLighting") != std::string::npos);
+    TEST_CHECK(ctx, forwardBody.find("vWorldPosition") != std::string::npos);
 
-    TEST_CHECK(ctx, depthBody.find("baseColor") == std::string::npos);
-    TEST_CHECK(ctx, depthBody.find("ambientOcclusion") == std::string::npos);
+    TEST_CHECK(ctx, depthBody.find("EvaluateLighting") == std::string::npos);
+    TEST_CHECK(ctx, depthBody.find("vWorldPosition") == std::string::npos);
     TEST_CHECK(ctx, depthBody.find("opacity") != std::string::npos);
+}
+
+// The vertex half, which the engine writes and a material does not.
+void TheVertexHalfComesFromTheEngineAndFeedsTheFragmentHalf(TestContext* ctx)
+{
+    char* vertexSource = Fluxion_MaterialShader_BuildVertexSource(FLUXION_MATERIAL_PASS_FORWARD);
+    if (!vertexSource) { TEST_CHECK(ctx, false); return; }
+
+    CompileOptions options = FragmentOptions();
+    options.stage = ShaderStage::Vertex;
+
+    DiagnosticList diagnostics;
+    auto result = Compile(vertexSource, options, diagnostics);
+    TEST_CHECK(ctx, result.IsOk());
+    if (!result.IsOk()) Report(ctx, diagnostics);
+
+    if (result.IsOk())
+    {
+        const std::string glsl = result.Value().glslSource;
+
+        // Every name the fragment side declares as an input has to be
+        // written here, or it arrives holding whatever was in the
+        // register. Nothing reports that -- it looks like a bad model.
+        TEST_CHECK(ctx, glsl.find("vWorldPosition") != std::string::npos);
+        TEST_CHECK(ctx, glsl.find("vWorldNormal") != std::string::npos);
+        TEST_CHECK(ctx, glsl.find("vWorldTangent") != std::string::npos);
+        TEST_CHECK(ctx, glsl.find("vUV") != std::string::npos);
+
+        // And the position, which is the one output that is not a
+        // varying: it is where the vertex ends up.
+        TEST_CHECK(ctx, glsl.find("viewProjection") != std::string::npos);
+    }
+
+    // Both passes get a vertex shader, and today it is the same one --
+    // a depth pass that moved a vertex anywhere else would reject the
+    // wrong pixels in the pass that follows it.
+    char* depthVertex = Fluxion_MaterialShader_BuildVertexSource(FLUXION_MATERIAL_PASS_DEPTH_ONLY);
+    TEST_CHECK(ctx, depthVertex != nullptr);
+    if (depthVertex != nullptr && vertexSource != nullptr)
+    {
+        TEST_CHECK(ctx, std::strcmp(vertexSource, depthVertex) == 0);
+        Fluxion_MaterialShader_FreeSource(depthVertex);
+    }
+
+    TEST_CHECK(ctx, Fluxion_MaterialShader_BuildVertexSource((FluxionMaterialPass)99) == nullptr);
+
+    Fluxion_MaterialShader_FreeSource(vertexSource);
 }
 
 // Structs have to survive all the way to the emitted text, not merely
@@ -258,6 +307,7 @@ extern "C" void Test_SurfaceData_Run(TestContext* ctx)
 
     TheSourceIsAssembledInTheRightOrder(ctx);
     OneMaterialCompilesUnderBothPasses(ctx);
+    TheVertexHalfComesFromTheEngineAndFeedsTheFragmentHalf(ctx);
     TheStructReachesTheOutput(ctx);
     MistakesAreNamed(ctx);
 }

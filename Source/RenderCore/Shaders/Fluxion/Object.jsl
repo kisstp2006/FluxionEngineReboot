@@ -1,0 +1,18 @@
+#ifndef FLUXION_OBJECT_INCLUDED
+#define FLUXION_OBJECT_INCLUDED
+
+// What changes from one object to the next within a frame.
+//
+// One matrix, for now, and declared here for the same reason the frame
+// block is: the engine writes this buffer, so its layout is the engine's
+// and there can be only one statement of it.
+//
+// LIMITATION, said here rather than discovered from a picture: the normal
+// is transformed by the upper-left three by three of this matrix, which
+// is correct for rotation, translation and UNIFORM scale. A non-uniform
+// scale needs the inverse transpose instead, and until that arrives here
+// as its own field, a squashed object's lighting is wrong in proportion
+// to how squashed it is.
+[Uniform(Object)] Matrix4x4 model;
+
+#endif

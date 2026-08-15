@@ -1,0 +1,33 @@
+#ifndef FLUXION_VARYINGS_INCLUDED
+#define FLUXION_VARYINGS_INCLUDED
+
+// What the vertex stage hands to the fragment stage.
+//
+// Declared once, on the fragment side, because BOTH a material and the
+// pass appended after it read these -- a material to place its textures,
+// the pass to light what the material described. Two declarations of the
+// same name is not two views of one thing, it is a compile error, so
+// there is one and everything includes it.
+//
+// The matching outputs are written in Fluxion/Pass/Vertex.jsl, which is
+// the only thing that produces them. They are not repeated here: an
+// output declared where nothing writes it would be a name with nothing
+// behind it.
+
+// World space. What the lighting needs to know where the eye is relative
+// to this point.
+[Input] Vector3 vWorldPosition;
+
+// World space, interpolated and therefore NOT unit length -- the average
+// of two unit vectors is shorter than one. Whatever uses it normalizes it
+// first, and Fluxion/Pass/Forward.jsl does.
+[Input] Vector3 vWorldNormal;
+
+// xyz: the tangent, world space. w: which way the bitangent goes, +1 or
+// -1, which is what a mirrored piece of a model needs in order not to
+// have its normal map come out inside out.
+[Input] Vector4 vWorldTangent;
+
+[Input] Vector2 vUV;
+
+#endif

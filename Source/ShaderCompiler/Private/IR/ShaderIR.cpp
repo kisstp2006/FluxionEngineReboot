@@ -10,11 +10,48 @@ namespace
 
 bool IsOpaqueResource(TypeKind kind) { return kind == TypeKind::Sampler2D || kind == TypeKind::SamplerCube; }
 
-// Every uniform-buffer member is placed on its own 16-byte slot. This
-// wastes space compared to tight std140/HLSL packing rules, but is
-// always correct regardless of member order or type mix, which matters
-// more than density for a handful of small per-group constants.
+// Every uniform-buffer member starts on its own 16-byte boundary and
+// occupies as many of those as it needs. This wastes space compared to
+// tight std140/HLSL packing rules, but is always correct regardless of
+// member order or type mix, which matters more than density for a
+// handful of small per-group constants.
+//
+// AS MANY AS IT NEEDS is the part that is easy to get wrong: a matrix is
+// four of these, not one. A rule that advanced by a fixed sixteen would
+// place the member after a matrix on top of the matrix, and both the
+// engine writing this buffer and the shader reading it would then be
+// looking at the same bytes for two different things.
 constexpr unsigned int kUniformBufferSlotSize = 16;
+
+unsigned int UniformMemberByteSize(const ShaderType& type)
+{
+    switch (type.kind)
+    {
+        case TypeKind::Bool:
+        case TypeKind::Int:
+        case TypeKind::Uint:
+        case TypeKind::Float: return 4;
+        case TypeKind::Vec2: return 8;
+        case TypeKind::Vec3: return 12;
+        case TypeKind::Vec4: return 16;
+
+        // Three and four COLUMNS, each of which is padded to sixteen
+        // bytes in every layout this compiler emits -- so a three by
+        // three matrix costs forty-eight and not thirty-six.
+        case TypeKind::Mat3: return 48;
+        case TypeKind::Mat4: return 64;
+
+        // A type nothing here sizes. One slot, which is what the rule was
+        // before any of this, and is at least never smaller than the
+        // member is.
+        default: return kUniformBufferSlotSize;
+    }
+}
+
+unsigned int RoundUpToUniformSlot(unsigned int bytes)
+{
+    return (bytes + kUniformBufferSlotSize - 1u) / kUniformBufferSlotSize * kUniformBufferSlotSize;
+}
 
 constexpr size_t kBindingGroupCount = 4; // Global, Frame, Material, Object
 
@@ -75,7 +112,7 @@ ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList
                 else
                 {
                     group.members.push_back(IRUniformBufferMember{ d->name, d->type, group.nextMemberOffset });
-                    group.nextMemberOffset += kUniformBufferSlotSize;
+                    group.nextMemberOffset += RoundUpToUniformSlot(UniformMemberByteSize(d->type));
                 }
                 break;
             }

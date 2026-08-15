@@ -1,0 +1,41 @@
+#ifndef FLUXION_FRAME_INCLUDED
+#define FLUXION_FRAME_INCLUDED
+
+// What is the same for every object drawn in one frame of one view.
+//
+// Declared here and nowhere else. These are not a material's parameters,
+// which the engine reads back from whatever a shader happens to declare:
+// the engine WRITES these, into a buffer whose layout it decides, so the
+// declaration and the struct that fills it have to agree exactly. Two
+// copies of that agreement is one too many, and the failure when they
+// drift is a matrix read from the wrong offset -- geometry in the wrong
+// place, or nothing on the screen at all.
+//
+// The order matches FluxionFrameConstants in RenderView.h, field for
+// field. A field is added at the END of both, so that a shader declaring
+// only the first of them still reads the right bytes.
+//
+// Every entry is four components wide even where three would do, because
+// a uniform block rounds a three-component value up to four regardless --
+// writing the padding down means no backend's packing rules get to decide
+// where the next field begins.
+
+[Uniform(Frame)] Matrix4x4 viewProjection;
+
+// xyz: where the eye is, in world space.
+[Uniform(Frame)] Vector4 cameraPosition;
+
+// xyz: the direction TO the light, unit length. Not the direction the
+// light travels -- this is the one the lighting maths wants, and the one
+// that can be checked against a picture by pointing at the sun.
+[Uniform(Frame)] Vector4 sunDirection;
+
+// rgb: colour and intensity together. There is no separate intensity: a
+// colour that is twice as bright IS twice the light.
+[Uniform(Frame)] Vector4 sunColor;
+
+// rgb: a flat amount arriving from every direction, standing in for the
+// sky until there is one.
+[Uniform(Frame)] Vector4 ambientColor;
+
+#endif

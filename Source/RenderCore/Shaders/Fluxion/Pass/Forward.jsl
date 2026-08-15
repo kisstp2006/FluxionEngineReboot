@@ -1,7 +1,9 @@
 #ifndef FLUXION_PASS_FORWARD_INCLUDED
 #define FLUXION_PASS_FORWARD_INCLUDED
 
+#include "Fluxion/Lighting.jsl"
 #include "Fluxion/Surface.jsl"
+#include "Fluxion/Varyings.jsl"
 
 // One of the ends a material can come to: lit here and now, into a single
 // colour.
@@ -20,15 +22,15 @@
 void main() {
   SurfaceData surface = EvaluateSurface();
 
-  // Not yet lit. The lighting arrives with the reflectance model, and
-  // when it does it replaces the body of this function and nothing else
-  // -- no material changes, because no material says anything about how
-  // it is lit.
-  //
-  // Until then this is the surface's own colour plus whatever it gives
-  // off, which is honest about what it is rather than a stand-in that
-  // looks lit and is not.
-  Vector3 color = surface.baseColor * surface.ambientOcclusion + surface.emissive;
+  // Normalized here rather than trusted. What the vertex stage produced
+  // was unit length at each corner, and what arrived is the average of
+  // three of those -- which is shorter, by more the more curved the
+  // surface is. A shorter normal makes every cosine in the lighting too
+  // small, which reads as the object being darker in the middle of its
+  // faces than at their edges.
+  Vector3 N = normalize(surface.normal);
+
+  Vector3 color = EvaluateLighting(surface, N, vWorldPosition);
 
   return Vector4(color, surface.opacity);
 }

@@ -67,8 +67,8 @@ void Test_BindingGroups_Run(TestContext& ctx)
     // (group 2) at binding 32; the Material texture takes local binding 1
     // within its group (0 is the Material uniform buffer), so 32 + 1 = 33.
     const std::string& glsl = result.Value().glslSource;
-    TEST_CHECK(ctx, glsl.find("layout(binding = 16) uniform GroupFrameBlock") != std::string::npos);
-    TEST_CHECK(ctx, glsl.find("layout(binding = 32) uniform GroupMaterialBlock") != std::string::npos);
+    TEST_CHECK(ctx, glsl.find("layout(std140, binding = 16) uniform GroupFrameBlock") != std::string::npos);
+    TEST_CHECK(ctx, glsl.find("layout(std140, binding = 32) uniform GroupMaterialBlock") != std::string::npos);
     TEST_CHECK(ctx, glsl.find("layout(binding = 33) uniform sampler2D albedoMap") != std::string::npos);
 }
 

@@ -1,0 +1,152 @@
+#ifndef FLUXION_BRDF_INCLUDED
+#define FLUXION_BRDF_INCLUDED
+
+#include "Fluxion/Math.jsl"
+#include "Fluxion/Surface.jsl"
+
+// How much of the light arriving from one direction leaves in another.
+//
+// Every function here is written from its published description and from
+// nothing else. The formulae are in SHADER_SOURCES.md with the paper each
+// one comes from, function by function, so that any of them can be read
+// against its source without reading the rest.
+//
+// The shape of the whole is the microfacet model: a surface is a field of
+// tiny mirrors, and three questions decide how bright a reflection is.
+// How many of those mirrors face the halfway direction (D). How many of
+// those are neither hidden behind their neighbours nor in their shadow
+// (V). And how much light a mirror facing that way actually reflects
+// rather than transmits (F). The three are multiplied, and what does not
+// reflect is what the diffuse term gets.
+
+// --- How many microfacets face the halfway direction ---------------------
+//
+// The GGX/Trowbridge-Reitz distribution. Its tail falls off far more
+// slowly than the alternatives, which is why highlights made with it have
+// the wide faint halo real ones do rather than ending abruptly.
+//
+// alphaRoughness is the SQUARE of the perceptual roughness a material
+// stores -- see SurfaceAlphaRoughness. Passing the perceptual value here
+// would make every surface far smoother than it was authored to be.
+float D_GGX(float NoH, float alphaRoughness)
+{
+    float a2 = Square(alphaRoughness);
+
+    // The denominator vanishes as alpha and NoH both approach one, which
+    // is a mirror seen head-on -- a real configuration, not a degenerate
+    // one, so it is guarded rather than assumed away.
+    float denominator = Square(NoH) * (a2 - 1.0) + 1.0;
+    denominator = max(denominator, FLUXION_EPSILON);
+
+    return a2 / (FLUXION_PI * Square(denominator));
+}
+
+// --- How many of those are visible from both directions ------------------
+//
+// The height-correlated Smith masking-shadowing term, divided through by
+// the 4*NoL*NoV that the microfacet model would otherwise put in the
+// denominator -- so this is a VISIBILITY term, not a geometry term, and
+// multiplying it by that factor again would darken everything.
+//
+// Height-correlated rather than separable: whether a microfacet is hidden
+// from the eye and whether it is hidden from the light are not
+// independent, because both depend on how high it sits. Treating them as
+// independent loses energy at grazing angles, where it is most visible.
+float V_SmithGGXCorrelated(float NoV, float NoL, float alphaRoughness)
+{
+    float a2 = Square(alphaRoughness);
+
+    float lambdaV = NoL * sqrt(Square(NoV) * (1.0 - a2) + a2);
+    float lambdaL = NoV * sqrt(Square(NoL) * (1.0 - a2) + a2);
+
+    return 0.5 / max(lambdaV + lambdaL, FLUXION_EPSILON);
+}
+
+// --- How much a facet reflects rather than transmits ---------------------
+//
+// Schlick's approximation to the Fresnel equations: an interpolation
+// between the reflectance head-on and total reflectance at the grazing
+// angle, along the fifth power of the cosine.
+//
+// The fifth power is not arbitrary and not a tuning knob -- it is what
+// makes the curve follow the real one closely enough that the difference
+// is not visible, at a fraction of the cost.
+Vector3 F_Schlick(Vector3 f0, float VoH)
+{
+    float scale = Pow5(1.0 - Saturate(VoH));
+    return f0 + (Vector3(1.0, 1.0, 1.0) - f0) * scale;
+}
+
+// --- Diffuse -------------------------------------------------------------
+//
+// Lambert: light that entered the surface, bounced, and left again in no
+// particular direction. Dividing by pi is what makes it a density rather
+// than a total -- without it a white surface reflects pi times the light
+// that fell on it, which is not a brighter surface, it is a broken one.
+Vector3 Fd_Lambert(Vector3 diffuseColor)
+{
+    return diffuseColor * FLUXION_INV_PI;
+}
+
+// --- What a surface's own values mean in those terms ---------------------
+
+// The reflectance head-on.
+//
+// A metal has no diffuse colour at all: what looks like its colour IS its
+// specular reflectance, which is why the base colour goes here for one
+// and nowhere else. A non-metal reflects a few percent whatever colour it
+// is, and the `reflectance` value says how many -- 0.5 giving the four
+// percent that almost every ordinary material has.
+Vector3 ComputeF0(SurfaceData surface)
+{
+    float dielectric = 0.16 * Square(surface.reflectance);
+    return mix(Vector3(dielectric, dielectric, dielectric), surface.baseColor, surface.metallic);
+}
+
+// And the other half of the same statement: a metal has none of this.
+Vector3 ComputeDiffuseColor(SurfaceData surface)
+{
+    return surface.baseColor * (1.0 - surface.metallic);
+}
+
+// --- The three terms together --------------------------------------------
+//
+// Returns what leaves the surface per unit of light arriving from `L`,
+// WITHOUT the cosine of the incidence angle -- that belongs to how much
+// light arrives, not to how the surface responds, and a caller that has
+// several lights would otherwise apply it in several places.
+//
+// N, V and L are unit vectors in the same space: the normal, the
+// direction to the eye, and the direction to the light.
+Vector3 BRDF_Direct(SurfaceData surface, Vector3 N, Vector3 V, Vector3 L)
+{
+    Vector3 H = normalize(V + L);
+
+    // Clamped rather than saturated. A cosine of exactly zero is a
+    // surface edge-on to the light, and dividing by it produces not a
+    // dark pixel but an infinite one -- which spreads, because the
+    // filtering that follows averages it with its neighbours.
+    float NoV = max(abs(dot(N, V)), FLUXION_EPSILON);
+    float NoL = Saturate(dot(N, L));
+    float NoH = Saturate(dot(N, H));
+    float VoH = Saturate(dot(V, H));
+
+    float alphaRoughness = SurfaceAlphaRoughness(surface);
+
+    float D = D_GGX(NoH, alphaRoughness);
+    float Vis = V_SmithGGXCorrelated(NoV, NoL, alphaRoughness);
+    Vector3 F = F_Schlick(ComputeF0(surface), VoH);
+
+    Vector3 specular = F * (D * Vis);
+
+    // What the specular term did not reflect is what is left for the
+    // diffuse one. Without this a bright metal would be brighter than the
+    // light that lit it, at grazing angles, where the Fresnel term is
+    // near one.
+    Vector3 kD = Vector3(1.0, 1.0, 1.0) - F;
+    Vector3 diffuse = kD * Fd_Lambert(ComputeDiffuseColor(surface));
+
+    return diffuse + specular;
+}
+
+#endif

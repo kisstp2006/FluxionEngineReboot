@@ -1,0 +1,47 @@
+#ifndef FLUXION_PASS_VERTEX_INCLUDED
+#define FLUXION_PASS_VERTEX_INCLUDED
+
+#include "Fluxion/Frame.jsl"
+#include "Fluxion/Object.jsl"
+
+// The vertex half of every pass.
+//
+// One file rather than one per pass, because today they would all be the
+// same: a depth pass moves a vertex to exactly the place the forward pass
+// moves it to, or the two disagree about where the surface is and the
+// depth test rejects the wrong pixels. When a pass eventually needs
+// something the others do not, it gets its own file and this comment is
+// where to look for why it did not have one before.
+//
+// A material does not write this and cannot: moving vertices is a
+// separate ability that does not exist yet, and until it does, every
+// material is transformed the same way.
+
+[Input] Vector3 position;
+[Input] Vector3 normal;
+[Input] Vector4 tangent;
+[Input] Vector2 uv;
+
+[Output] Vector3 vWorldPosition;
+[Output] Vector3 vWorldNormal;
+[Output] Vector4 vWorldTangent;
+[Output] Vector2 vUV;
+[Output] Vector4 Position;
+
+void main() {
+  Vector4 worldPosition = model * Vector4(position, 1.0);
+  vWorldPosition = worldPosition.xyz;
+
+  // Direction, not position: the fourth component is zero so that the
+  // matrix's translation does not move it. A normal that picked up the
+  // translation would point at the world origin from everywhere.
+  vWorldNormal = (model * Vector4(normal, 0.0)).xyz;
+
+  Vector4 worldTangent = model * Vector4(tangent.xyz, 0.0);
+  vWorldTangent = Vector4(worldTangent.xyz, tangent.w);
+
+  vUV = uv;
+  Position = viewProjection * worldPosition;
+}
+
+#endif

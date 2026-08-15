@@ -94,6 +94,35 @@ static inline FluxionMat4 Fluxion_Mat4_Multiply(FluxionMat4 a, FluxionMat4 b)
     return result;
 }
 
+// The inverse of a matrix that only rotates and moves.
+//
+// Restricted on purpose. The general inverse of a four-by-four matrix is
+// a much larger piece of arithmetic, and nothing here needs it: a view
+// matrix is a rotation and a translation, and for those the inverse is
+// the transpose of the rotation and that transpose applied to the
+// negated translation. A matrix with scale, shear or perspective in it is
+// NOT one of these, and this returns nonsense for one -- which is why it
+// says so in its name rather than pretending to be an inverse.
+static inline FluxionMat4 Fluxion_Mat4_RigidInverse(FluxionMat4 m)
+{
+    FluxionMat4 result = Fluxion_Mat4_Identity();
+
+    for (int row = 0; row < 3; ++row)
+    {
+        for (int col = 0; col < 3; ++col)
+        {
+            result.m[row][col] = m.m[col][row];
+        }
+    }
+
+    for (int row = 0; row < 3; ++row)
+    {
+        result.m[row][3] = -(m.m[0][row] * m.m[0][3] + m.m[1][row] * m.m[1][3] + m.m[2][row] * m.m[2][3]);
+    }
+
+    return result;
+}
+
 static inline FluxionMat4 Fluxion_Mat4_Translation(FluxionVec3 t)
 {
     FluxionMat4 result = Fluxion_Mat4_Identity();

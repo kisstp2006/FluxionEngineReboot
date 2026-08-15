@@ -87,7 +87,7 @@ const char* kFragmentUsingMissingInclude =
 // Fluxion_MaterialShader_BuildFragmentSource.
 const char* kMaterialSource =
     "#include \"Fluxion/Surface.jsl\"\n"
-    "[Input] Vector2 vUV;\n"
+    "#include \"Fluxion/Varyings.jsl\"\n"
     "[Uniform(Material)] Vector3 baseColorFactor;\n"
     "SurfaceData EvaluateSurface() {\n"
     "  SurfaceData surface = DefaultSurface();\n"

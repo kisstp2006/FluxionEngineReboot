@@ -2,6 +2,7 @@
 #define FLUXION_MATERIAL_INCLUDED
 
 #include "Fluxion/Surface.jsl"
+#include "Fluxion/Varyings.jsl"
 
 // The parameters a standard surface is described by, declared once.
 //
@@ -30,6 +31,55 @@
 [Uniform(Material)] float occlusionStrength;
 [Uniform(Material)] float alphaCutoff;
 
+// --- The maps, and why every one of them is always read ------------------
+//
+// A shader compiler removes what a shader does not use. A texture
+// declared and never sampled is not in the compiled program, so it is not
+// in the reflected parameters either -- and the bind group built from
+// those parameters then has one fewer entry than the layout the pipeline
+// was made with. The backend refuses that outright, and the message is
+// about a descriptor set rather than about the map somebody left out.
+//
+// So StandardSurface below samples ALL of them, unconditionally. A
+// material with no base colour map is not a material with a missing
+// binding: it is one bound to a single white pixel, which multiplies to
+// no change. That is what Fluxion_TextureDefaults exists to provide, and
+// it is why "no map" costs a sample rather than a branch.
+
+[Texture(Material)] Texture2D baseColorMap;
+[Texture(Material)] Texture2D metallicRoughnessMap;
+[Texture(Material)] Texture2D normalMap;
+[Texture(Material)] Texture2D occlusionMap;
+[Texture(Material)] Texture2D emissiveMap;
+
+// A tangent-space normal placed into world space.
+//
+// The map holds a direction relative to the surface: away from it is
+// (0.5, 0.5, 1) once packed into a texture's unsigned range, which is why
+// a missing map decodes to straight out and changes nothing.
+//
+// The frame it is placed into comes from the vertex stage. The bitangent
+// is not interpolated but rebuilt from the other two and the handedness,
+// because three interpolated vectors do not stay perpendicular to each
+// other and a frame that is not perpendicular skews every normal in it.
+Vector3 ApplyNormalMap(Vector3 worldNormal, Vector4 worldTangent, Vector2 uv, float scale)
+{
+    Vector3 packed = texture(normalMap, uv).xyz;
+    Vector3 tangentSpace = packed * 2.0 - Vector3(1.0, 1.0, 1.0);
+
+    // The strength applies to the sideways part only. Scaling all three
+    // would change the length rather than the tilt, and after
+    // normalization that is no change at all -- a strength slider that
+    // did nothing.
+    tangentSpace = Vector3(tangentSpace.x * scale, tangentSpace.y * scale, tangentSpace.z);
+
+    Vector3 N = normalize(worldNormal);
+    Vector3 T = normalize(worldTangent.xyz - N * dot(N, worldTangent.xyz));
+    Vector3 B = cross(N, T) * worldTangent.w;
+
+    return normalize(T * tangentSpace.x + B * tangentSpace.y + N * tangentSpace.z);
+}
+
 // A surface built from the parameters above and nothing else.
 //
 // A material that has no more to say than "these are my values" writes
@@ -48,15 +98,28 @@ SurfaceData StandardSurface()
 {
     SurfaceData surface = DefaultSurface();
 
-    surface.baseColor = baseColorFactor.xyz;
-    surface.opacity = baseColorFactor.w;
+    Vector4 baseColor = baseColorFactor * texture(baseColorMap, vUV);
+    surface.baseColor = baseColor.xyz;
+    surface.opacity = baseColor.w;
 
-    surface.metallic = Saturate(metallicFactor);
-    surface.perceptualRoughness = clamp(roughnessFactor, FLUXION_MIN_PERCEPTUAL_ROUGHNESS, 1.0);
+    // Green is roughness and blue is metallic, which is the arrangement
+    // the two are authored and stored in: one map, two numbers, and the
+    // red channel left for whatever else a project wants there.
+    Vector4 metallicRoughness = texture(metallicRoughnessMap, vUV);
+    surface.metallic = Saturate(metallicFactor * metallicRoughness.z);
+    surface.perceptualRoughness = clamp(roughnessFactor * metallicRoughness.y, FLUXION_MIN_PERCEPTUAL_ROUGHNESS, 1.0);
+
     surface.reflectance = Saturate(reflectance);
 
-    surface.emissive = emissiveFactor;
-    surface.ambientOcclusion = 1.0;
+    surface.normal = ApplyNormalMap(vWorldNormal, vWorldTangent, vUV, normalScale);
+
+    // Blended towards fully lit by the strength rather than multiplied by
+    // it: a strength of zero has to mean "no occlusion at all", and
+    // multiplying by zero would mean the opposite.
+    float occlusion = texture(occlusionMap, vUV).x;
+    surface.ambientOcclusion = mix(1.0, occlusion, Saturate(occlusionStrength));
+
+    surface.emissive = emissiveFactor * texture(emissiveMap, vUV).xyz;
 
     return surface;
 }

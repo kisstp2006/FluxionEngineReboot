@@ -20,7 +20,11 @@ typedef struct FluxionRenderViewRecord
     FluxionRenderTargetHandle renderTarget;
     u32 layerMask;
 
-    FluxionRHIBufferHandle frameConstantBuffer; // uniform buffer holding the current viewProjection matrix
+    FluxionVec3 sunDirection;
+    FluxionVec3 sunColor;
+    FluxionVec3 ambientColor;
+
+    FluxionRHIBufferHandle frameConstantBuffer; // uniform buffer holding this frame's FluxionFrameConstants
     FluxionRHIBindGroupLayoutHandle frameBindGroupLayout;
     FluxionRHIBindGroupHandle frameBindGroup;
 } FluxionRenderViewRecord;
@@ -49,7 +53,7 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     if (index == FLUXION_RENDERER_MAX_RENDER_VIEWS) return invalid;
 
     FluxionRHIBufferDesc bufferDesc;
-    bufferDesc.size = sizeof(FluxionMat4);
+    bufferDesc.size = sizeof(FluxionFrameConstants);
     bufferDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_CONSTANT_BUFFER;
     bufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
     bufferDesc.debugName = "Fluxion.RenderView.FrameConstantBuffer";
@@ -63,7 +67,7 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     entry.type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
     entry.buffer = frameConstantBuffer;
     entry.bufferOffset = 0;
-    entry.bufferSize = sizeof(FluxionMat4);
+    entry.bufferSize = sizeof(FluxionFrameConstants);
     entry.textureView = (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     entry.sampler = (FluxionRHISamplerHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
 
@@ -85,6 +89,9 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     record->scissor = desc->scissor;
     record->renderTarget = desc->renderTarget;
     record->layerMask = desc->layerMask;
+    record->sunDirection = desc->sunDirection;
+    record->sunColor = desc->sunColor;
+    record->ambientColor = desc->ambientColor;
     record->frameConstantBuffer = frameConstantBuffer;
     record->frameBindGroupLayout = frameBindGroupLayout;
     record->frameBindGroup = frameBindGroup;
@@ -115,12 +122,39 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
     FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
     if (record == NULL) return;
 
-    FluxionMat4 viewProjection = Fluxion_Mat4_Multiply(record->projectionMatrix, record->viewMatrix);
+    FluxionFrameConstants constants;
+    memset(&constants, 0, sizeof(constants));
+
+    constants.viewProjection = Fluxion_Mat4_Multiply(record->projectionMatrix, record->viewMatrix);
+
+    // Worked out from the view matrix rather than asked for separately.
+    // A camera position given alongside a view matrix is a second place
+    // to say where the camera is, and the two disagreeing produces
+    // lighting that is wrong in a way nothing reports -- highlights in
+    // the wrong place, which reads as an artist's mistake.
+    const FluxionMat4 cameraToWorld = Fluxion_Mat4_RigidInverse(record->viewMatrix);
+    constants.cameraPosition.x = cameraToWorld.m[0][3];
+    constants.cameraPosition.y = cameraToWorld.m[1][3];
+    constants.cameraPosition.z = cameraToWorld.m[2][3];
+    constants.cameraPosition.w = 1.0f;
+
+    const FluxionVec3 sun = Fluxion_Vec3_Normalize(record->sunDirection);
+    constants.sunDirection.x = sun.x;
+    constants.sunDirection.y = sun.y;
+    constants.sunDirection.z = sun.z;
+
+    constants.sunColor.x = record->sunColor.x;
+    constants.sunColor.y = record->sunColor.y;
+    constants.sunColor.z = record->sunColor.z;
+
+    constants.ambientColor.x = record->ambientColor.x;
+    constants.ambientColor.y = record->ambientColor.y;
+    constants.ambientColor.z = record->ambientColor.z;
 
     void* mapped = Fluxion_RHI_MapBuffer(record->frameConstantBuffer);
     if (mapped != NULL)
     {
-        memcpy(mapped, &viewProjection, sizeof(viewProjection));
+        memcpy(mapped, &constants, sizeof(constants));
         Fluxion_RHI_UnmapBuffer(record->frameConstantBuffer);
     }
 }

@@ -28,6 +28,43 @@ typedef struct FluxionScissorRect
 
 FLUXION_DEFINE_HANDLE(FluxionRenderViewHandle);
 
+// What is constant for one frame of one view, exactly as the shaders
+// below see it.
+//
+// The layout is public because it is a contract: Fluxion/Frame.jsl
+// declares the same fields in the same order, and the two have to agree
+// byte for byte. A field is added at the END and never in the middle --
+// a shader that declares only the first of them still reads the right
+// bytes, which is what lets an older material go on working.
+//
+// Every entry is four floats wide even where three would do. Uniform
+// blocks round a three-component value up to four anyway, and writing the
+// padding down is better than leaving each backend's packing rules to
+// decide where the next field starts.
+typedef struct FluxionFrameConstants
+{
+    FluxionMat4 viewProjection;
+
+    // Where the eye is, in world space. w is unused.
+    FluxionVec4 cameraPosition;
+
+    // The direction TO the light, not the direction it travels. Unit
+    // length; w is unused.
+    //
+    // To the light, because that is the direction the lighting maths
+    // wants and the one a reader can check against a picture: pointing at
+    // the sun. Storing the travel direction instead would mean every
+    // shader negating it, and one of them forgetting.
+    FluxionVec4 sunDirection;
+
+    // Colour times intensity, together. rgb; w is unused.
+    FluxionVec4 sunColor;
+
+    // A flat amount of light arriving from everywhere, standing in for
+    // the sky until there is one. rgb; w is unused.
+    FluxionVec4 ambientColor;
+} FluxionFrameConstants;
+
 // `renderPipeline` from the original sketch is deliberately not here -- a
 // view doesn't own one; pipeline selection happens per-material/per-pass
 // (see FluxionDrawPacket), so an unused field would just sit here idle.
@@ -39,6 +76,19 @@ typedef struct FluxionRenderViewDesc
     FluxionScissorRect scissor;
     FluxionRenderTargetHandle renderTarget;
     u32 layerMask;
+
+    // One directional light and one flat ambient, which is what a frame
+    // can be lit by until there is a light system to hold more.
+    //
+    // Here rather than somewhere of their own because they are frame
+    // frequency: they are the same for every object drawn through this
+    // view, which is the definition of what belongs in this buffer. When
+    // a real light system arrives it will change how these values GET
+    // here and not what a shader reads, because a shader reads
+    // Fluxion/Frame.jsl either way.
+    FluxionVec3 sunDirection; // to the light; normalized here if it is not already
+    FluxionVec3 sunColor;     // colour times intensity
+    FluxionVec3 ambientColor;
 } FluxionRenderViewDesc;
 
 FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device, const FluxionRenderViewDesc* desc);

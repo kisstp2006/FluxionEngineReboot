@@ -247,11 +247,13 @@ void TheEngineKnowsWhatAMaterialHas(TestContext* ctx)
                 Fluxion_Material_SetAlphaMode(material, FLUXION_MATERIAL_ALPHA_MASK);
                 TEST_CHECK(ctx, Fluxion_Material_GetAlphaMode(material) == FLUXION_MATERIAL_ALPHA_MASK);
 
-                // No texture slot is declared yet, and saying so is the
-                // right answer rather than binding into a slot that is
-                // not there.
+                // Every one of the engine's texture slots is there,
+                // because the standard surface samples every one of them
+                // unconditionally -- a map it did not sample would be
+                // removed by the compiler and then missing from the bind
+                // group the pipeline was built to expect.
                 for (int i = 0; i < FLUXION_MATERIAL_TEXTURE_COUNT; ++i)
-                    TEST_CHECK(ctx, !Fluxion_Material_HasTextureSlot(material, (FluxionMaterialTextureSlot)i));
+                    TEST_CHECK(ctx, Fluxion_Material_HasTextureSlot(material, (FluxionMaterialTextureSlot)i));
 
                 Fluxion_Material_Destroy(material);
             }

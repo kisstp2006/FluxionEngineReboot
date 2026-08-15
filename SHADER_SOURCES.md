@@ -210,8 +210,7 @@ code):
 
 ## 3. Per-feature record
 
-One entry per shader we write, added as it is written. Nothing here yet —
-no rendering feature has been implemented against these references.
+One entry per shader we write, added as it is written.
 
 The shape of an entry:
 
@@ -227,3 +226,96 @@ Licence doubt:      <none, or exactly what is uncertain>
 ```
 
 <!-- entries go below this line -->
+
+### Reflectance model — the microfacet BRDF
+
+Every function below is in `Source/RenderCore/Shaders/Fluxion/BRDF.jsl`.
+They are recorded one at a time rather than as a single "PBR" entry,
+because each comes from a different paper and each can be read against
+its own source without reading the rest.
+
+```
+Feature:            Microfacet distribution (GGX / Trowbridge-Reitz)
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Walter, Marschner, Li, Torrance, "Microfacet Models
+                    for Refraction through Rough Surfaces" (EGSR 2007),
+                    equation 33
+Our implementation: Source/RenderCore/Shaders/Fluxion/BRDF.jsl, D_GGX
+What changed:       Written from the equation as printed. The guard on
+                    the denominator is ours: the published form divides
+                    by a quantity that reaches zero for a mirror seen
+                    head-on, which is a real configuration rather than a
+                    degenerate one.
+Licence doubt:      none
+```
+
+```
+Feature:            Masking-shadowing, height-correlated Smith
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Heitz, "Understanding the Masking-Shadowing Function
+                    in Microfacet-Based BRDFs" (JCGT 3(2), 2014),
+                    section 6 (the height-correlated form)
+Our implementation: Source/RenderCore/Shaders/Fluxion/BRDF.jsl,
+                    V_SmithGGXCorrelated
+What changed:       Written as a VISIBILITY term -- the paper's G divided
+                    through by the 4*NoL*NoV that the microfacet model
+                    would otherwise carry in its denominator. That is an
+                    algebraic rearrangement of the published function, not
+                    a different one.
+Licence doubt:      none
+```
+
+```
+Feature:            Fresnel
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Schlick, "An Inexpensive BRDF Model for Physically-
+                    based Rendering" (Computer Graphics Forum 13(3),
+                    1994), section 3
+Our implementation: Source/RenderCore/Shaders/Fluxion/BRDF.jsl, F_Schlick
+What changed:       Nothing but the spelling. The fifth power is written
+                    as multiplications rather than a pow call, which is
+                    the same number.
+Licence doubt:      none
+```
+
+```
+Feature:            Diffuse
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Lambert's cosine law; the 1/pi normalisation is the
+                    standard consequence of integrating it over the
+                    hemisphere.
+Our implementation: Source/RenderCore/Shaders/Fluxion/BRDF.jsl, Fd_Lambert
+What changed:       nothing
+Licence doubt:      none
+```
+
+```
+Feature:            Reflectance at normal incidence, from a material's
+                    own values
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Karis, "Real Shading in Unreal Engine 4" (SIGGRAPH
+                    2013 course notes) for the metallic parameterisation;
+                    the 0.16 * reflectance^2 mapping is the standard
+                    remapping that puts the four percent of ordinary
+                    dielectrics at a reflectance of one half.
+Our implementation: Source/RenderCore/Shaders/Fluxion/BRDF.jsl,
+                    ComputeF0 and ComputeDiffuseColor
+What changed:       Written from the description. No code was read.
+Licence doubt:      none
+```
+
+Not yet written, and named here so that their absence is a decision
+rather than an oversight: the split-sum environment approximation (Karis
+2013) and multiscatter energy compensation, both of which need the
+precomputed table that arrives with image-based lighting.
+

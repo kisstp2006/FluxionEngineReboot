@@ -43,15 +43,36 @@ typedef enum FluxionMaterialPass
     FLUXION_MATERIAL_PASS_COUNT,
 } FluxionMaterialPass;
 
-// The library file that supplies a pass's entry point. NULL for a pass
-// outside the range above.
+// The library file that supplies a pass's fragment entry point. NULL for
+// a pass outside the range above.
 const char* Fluxion_MaterialShader_GetPassInclude(FluxionMaterialPass pass);
+
+// And its vertex entry point.
+//
+// Today every pass answers with the same file, because a depth pass has
+// to put a vertex exactly where the forward pass puts it -- if the two
+// disagreed about where the surface is, the depth test would reject the
+// wrong pixels and the picture would be wrong in a way that looks like a
+// sorting bug. It is a separate question from the fragment one anyway, so
+// that the day a pass needs different vertex work it can have it without
+// every caller changing.
+const char* Fluxion_MaterialShader_GetVertexPassInclude(FluxionMaterialPass pass);
 
 // Builds the fragment source for `pass` from `materialSource`.
 //
 // NULL on a pass out of range or a null source. What comes back is owned
 // by the caller and freed with Fluxion_MaterialShader_FreeSource.
 char* Fluxion_MaterialShader_BuildFragmentSource(const char* materialSource, FluxionMaterialPass pass);
+
+// Builds the vertex source for `pass`.
+//
+// There is no material source in this one, and that is the point: a
+// material describes a surface, not where its vertices go. Until moving
+// vertices is an ability a material has, this is the engine's shader
+// entirely -- and a caller asks for it rather than writing one, so that
+// what it produces stays in step with what the fragment side expects to
+// receive.
+char* Fluxion_MaterialShader_BuildVertexSource(FluxionMaterialPass pass);
 
 void Fluxion_MaterialShader_FreeSource(char* source);
 

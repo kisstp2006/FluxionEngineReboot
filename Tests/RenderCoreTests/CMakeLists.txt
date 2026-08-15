@@ -19,6 +19,7 @@ engine_add_test(
         Test_MaterialParameters.cpp
         Test_TextureAsset.cpp
         Test_BlockCompressGPU.cpp
+        Test_LightingGPU.cpp
     DEPENDENCIES
         Fluxion::RenderCore
         Fluxion::RHI

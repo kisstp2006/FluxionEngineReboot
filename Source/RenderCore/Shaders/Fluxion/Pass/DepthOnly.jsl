@@ -2,6 +2,7 @@
 #define FLUXION_PASS_DEPTH_ONLY_INCLUDED
 
 #include "Fluxion/Surface.jsl"
+#include "Fluxion/Varyings.jsl"
 
 // The other end, and the reason the first one is not the only one.
 //

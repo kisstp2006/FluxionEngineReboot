@@ -7,6 +7,7 @@ engine_add_test(
         Test_Parser.cpp
         Test_Semantic.cpp
         Test_HLSLBackend.cpp
+        Test_UniformLayout.cpp
         Test_GLSLBackend.cpp
         Test_DXCAdapter.cpp
         Test_Compatibility.cpp

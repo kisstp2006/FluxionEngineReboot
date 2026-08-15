@@ -141,8 +141,19 @@ private:
         {
             int set = GroupSetIndex(ub.group);
             m_out << "[[vk::binding(0, " << set << ")]] cbuffer Group" << GroupName(ub.group) << "Constants : register(b0, space" << set << ")\n{\n";
+            // Every member placed where the IR says it is, rather than
+            // wherever this language would have put it.
+            //
+            // Not a formality. The engine writes this buffer from the
+            // reflected offsets, which give each parameter its own
+            // sixteen-byte slot; left to itself, HLSL packs several
+            // scalars into one such slot instead. The two layouts then
+            // disagree, and what a shader reads as its roughness is
+            // whatever the engine wrote three parameters later -- a
+            // picture that is wrong in a way nothing reports, because
+            // every value involved is a perfectly ordinary number.
             for (const IRUniformBufferMember& m : ub.members)
-                m_out << "    " << HLSLTypeName(m.type) << " " << m.name << ";\n";
+                m_out << "    " << HLSLTypeName(m.type) << " " << m.name << " : packoffset(c" << (m.offset / 16u) << ");\n";
             m_out << "};\n\n";
         }
     }

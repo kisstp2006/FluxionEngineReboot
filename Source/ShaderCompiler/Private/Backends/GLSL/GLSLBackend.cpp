@@ -162,9 +162,13 @@ private:
     {
         for (const IRUniformBufferBinding& ub : m_module.uniformBuffers)
         {
-            m_out << "layout(binding = " << OpenGLFlatBinding(ub.group, 0) << ") uniform Group" << GroupName(ub.group) << "Block\n{\n";
+            m_out << "layout(std140, binding = " << OpenGLFlatBinding(ub.group, 0) << ") uniform Group" << GroupName(ub.group) << "Block\n{\n";
+            // Placed explicitly, for the reason set out in the HLSL
+            // backend's own version of this loop: the engine writes this
+            // buffer from the reflected offsets, and a language left to
+            // pack it its own way arrives at a different arrangement.
             for (const IRUniformBufferMember& m : ub.members)
-                m_out << "    " << GLSLTypeName(m.type) << " " << m.name << ";\n";
+                m_out << "    layout(offset = " << m.offset << ") " << GLSLTypeName(m.type) << " " << m.name << ";\n";
             m_out << "};\n";
         }
     }

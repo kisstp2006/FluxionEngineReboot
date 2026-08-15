@@ -1,0 +1,77 @@
+#ifndef FLUXION_LIGHTING_INCLUDED
+#define FLUXION_LIGHTING_INCLUDED
+
+#include "Fluxion/BRDF.jsl"
+#include "Fluxion/Frame.jsl"
+
+// What actually reaches the eye from a surface.
+//
+// The reflectance model in BRDF.jsl answers "of the light arriving from
+// there, how much leaves towards here". This file answers the rest of the
+// question: how much light arrives, and from where.
+//
+// The two are separate because they change for different reasons. A new
+// kind of light -- a point, a spot, an area -- changes this file and not
+// that one. A better reflectance model changes that one and not this.
+
+// One directional light.
+//
+// Directional because it is the sun: far enough away that its direction
+// is the same everywhere in the scene, which is what makes it a single
+// vector rather than something computed per pixel.
+//
+// The cosine of the incidence angle is applied HERE and not inside the
+// reflectance model. It says how much light falls on the surface, which
+// is a property of the geometry rather than of the material -- and a
+// second light would otherwise apply it a second time.
+Vector3 EvaluateDirectionalLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 L, Vector3 lightColor)
+{
+    float NoL = Saturate(dot(N, L));
+
+    // Nothing at all rather than nearly nothing. A surface turned away
+    // from the light receives none of it, and the reflectance model
+    // divides by quantities that go to zero along with this one.
+    if (NoL <= 0.0)
+    {
+        return Vector3(0.0, 0.0, 0.0);
+    }
+
+    return BRDF_Direct(surface, N, V, L) * lightColor * NoL;
+}
+
+// Everything that is not one of the lights above.
+//
+// A flat amount from every direction, which is the crudest thing that is
+// still better than nothing: without it, whatever the sun does not reach
+// is pure black, and a scene lit by one sun looks like a scene in space.
+//
+// It is applied to the diffuse colour alone and scaled by how enclosed
+// the point is. A specular ambient needs to know what the surroundings
+// look like from this point in each direction, which is what an
+// environment probe is for and what this deliberately is not.
+Vector3 EvaluateAmbient(SurfaceData surface, Vector3 ambient)
+{
+    return ComputeDiffuseColor(surface) * ambient * surface.ambientOcclusion;
+}
+
+// The whole of what a surface sends towards the eye, with the frame's own
+// light.
+//
+// N is the surface normal and P its world position; both are what the
+// vertex stage interpolated and the material may have changed.
+Vector3 EvaluateLighting(SurfaceData surface, Vector3 N, Vector3 P)
+{
+    Vector3 V = normalize(cameraPosition.xyz - P);
+    Vector3 L = normalize(sunDirection.xyz);
+
+    Vector3 color = EvaluateDirectionalLight(surface, N, V, L, sunColor.xyz);
+    color = color + EvaluateAmbient(surface, ambientColor.xyz);
+
+    // Light the surface gives off, which no amount of shadow or occlusion
+    // takes away -- that is what emitting means.
+    color = color + surface.emissive;
+
+    return color;
+}
+
+#endif

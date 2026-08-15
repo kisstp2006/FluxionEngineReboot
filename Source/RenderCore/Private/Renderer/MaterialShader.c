@@ -12,10 +12,37 @@ static const char* const s_passIncludes[FLUXION_MATERIAL_PASS_COUNT] = {
     "#include \"Fluxion/Pass/DepthOnly.jsl\"\n",
 };
 
+// The same file for every pass today -- see the header for why that is a
+// statement rather than an oversight.
+static const char* const s_vertexPassIncludes[FLUXION_MATERIAL_PASS_COUNT] = {
+    "#include \"Fluxion/Pass/Vertex.jsl\"\n",
+    "#include \"Fluxion/Pass/Vertex.jsl\"\n",
+};
+
 const char* Fluxion_MaterialShader_GetPassInclude(FluxionMaterialPass pass)
 {
     if ((u32)pass >= (u32)FLUXION_MATERIAL_PASS_COUNT) return NULL;
     return s_passIncludes[pass];
+}
+
+const char* Fluxion_MaterialShader_GetVertexPassInclude(FluxionMaterialPass pass)
+{
+    if ((u32)pass >= (u32)FLUXION_MATERIAL_PASS_COUNT) return NULL;
+    return s_vertexPassIncludes[pass];
+}
+
+char* Fluxion_MaterialShader_BuildVertexSource(FluxionMaterialPass pass)
+{
+    const char* include = Fluxion_MaterialShader_GetVertexPassInclude(pass);
+    if (include == NULL) return NULL;
+
+    const usize length = strlen(include);
+    char* source = (char*)Fluxion_Allocator_Alloc(Fluxion_DefaultAllocator(), length + 1, FLUXION_DEFAULT_ALIGNMENT);
+    if (source == NULL) return NULL;
+
+    memcpy(source, include, length);
+    source[length] = '\0';
+    return source;
 }
 
 char* Fluxion_MaterialShader_BuildFragmentSource(const char* materialSource, FluxionMaterialPass pass)
