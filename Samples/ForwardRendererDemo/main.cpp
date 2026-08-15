@@ -15,10 +15,22 @@
 // Map/Unmap + CommandList Copy + a Barrier by hand (MeshBuffer only owns
 // vertex/index buffers, not arbitrary textures, and RenderTarget/RenderView
 // only wrap already-created views, they don't create textures) -- the same
-// staging pattern real game code would use. Shader source is written in
-// the engine's own shading language (Shaders/cube.vert.jsl,
-// Shaders/cube.frag.jsl) and compiled by Fluxion_ShaderProgram_Create
-// itself; this file never touches backend-specific bytecode directly.
+// staging pattern real game code would use.
+//
+// The cube is SHADED BY THE ENGINE, not by this sample. Shaders/
+// cube.material.jsl says what the surface is -- one function returning a
+// SurfaceData -- and has no entry point, no render target and nothing
+// about lighting in it. The vertex stage and the lit fragment stage are
+// both put together by Fluxion_MaterialShader_Build*Source out of the
+// engine's own shader library, which is also where the reflectance model,
+// the exposure and the tone mapping live. The same material file,
+// appended with the depth pass instead, would be the depth shader.
+//
+// Everything the material is made of goes through the canonical parameter
+// names the engine understands, which is what lets a script set them by
+// name; and the five texture slots a standard surface samples are filled
+// from the engine's one-texel stand-ins where this sample has no map of
+// its own.
 #include <Fluxion/Application/Events/EventQueue.h>
 #include <Fluxion/Application/Input/Input.h>
 #include <Fluxion/Application/Time/Time.h>
@@ -33,13 +45,17 @@
 #include <Fluxion/RHI/RHI.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraph.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraphPassRegistry.h>
+#include <Fluxion/RenderCore/Renderer/Exposure.h>
 #include <Fluxion/RenderCore/Renderer/Material.h>
+#include <Fluxion/RenderCore/Renderer/MaterialParameters.h>
+#include <Fluxion/RenderCore/Renderer/MaterialShader.h>
 #include <Fluxion/RenderCore/Renderer/MeshBuffer.h>
 #include <Fluxion/RenderCore/Renderer/RenderPipeline.h>
 #include <Fluxion/RenderCore/Renderer/RenderTarget.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
 #include <Fluxion/RenderCore/Renderer/Renderer.h>
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
+#include <Fluxion/RenderCore/Renderer/TextureDefaults.h>
 #include <Fluxion/Scene/EngineScript.hpp>
 #include <Fluxion/Scene/Scene.h>
 #include <Fluxion/Scene/SceneScript.hpp>
@@ -55,9 +71,17 @@
 #include <sstream>
 #include <vector>
 
+// What Fluxion/Pass/Vertex.jsl declares, in the order it declares it.
+//
+// The normal and the tangent are not decoration: lighting needs to know
+// which way the surface faces, and a normal map needs to know which way
+// is sideways on it. A mesh without them can be drawn but cannot be lit,
+// which is why the engine's vertex stage asks for all four.
 typedef struct FluxionDemoVertex
 {
     f32 position[3];
+    f32 normal[3];
+    f32 tangent[4]; // xyz along the surface, w the handedness of the bitangent
     f32 uv[2];
 } FluxionDemoVertex;
 
@@ -305,38 +329,43 @@ int main(int argc, char** argv)
     // face x 6 faces) rather than a shared 8-vertex cube, so each face
     // gets its own correct UVs. -------------------------------------------
 
+    // Each face's own normal and tangent, given outright rather than
+    // worked out from the triangles. A cube has no smooth normals to
+    // average -- its corners really are corners -- and a tangent chosen to
+    // follow the u direction of each face is what makes a normal map on
+    // one face mean the same thing as on the next.
     static const FluxionDemoVertex vertices[24] =
     {
         // +Z (front)
-        { { -0.5f, -0.5f,  0.5f }, { 0.0f, 1.0f } },
-        { {  0.5f, -0.5f,  0.5f }, { 1.0f, 1.0f } },
-        { {  0.5f,  0.5f,  0.5f }, { 1.0f, 0.0f } },
-        { { -0.5f,  0.5f,  0.5f }, { 0.0f, 0.0f } },
+        { { -0.5f, -0.5f,  0.5f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+        { {  0.5f, -0.5f,  0.5f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+        { {  0.5f,  0.5f,  0.5f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
+        { { -0.5f,  0.5f,  0.5f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } },
         // -Z (back)
-        { {  0.5f, -0.5f, -0.5f }, { 0.0f, 1.0f } },
-        { { -0.5f, -0.5f, -0.5f }, { 1.0f, 1.0f } },
-        { { -0.5f,  0.5f, -0.5f }, { 1.0f, 0.0f } },
-        { {  0.5f,  0.5f, -0.5f }, { 0.0f, 0.0f } },
+        { {  0.5f, -0.5f, -0.5f }, { 0.0f, 0.0f, -1.0f }, { -1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+        { { -0.5f, -0.5f, -0.5f }, { 0.0f, 0.0f, -1.0f }, { -1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+        { { -0.5f,  0.5f, -0.5f }, { 0.0f, 0.0f, -1.0f }, { -1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
+        { {  0.5f,  0.5f, -0.5f }, { 0.0f, 0.0f, -1.0f }, { -1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } },
         // -X (left)
-        { { -0.5f, -0.5f, -0.5f }, { 0.0f, 1.0f } },
-        { { -0.5f, -0.5f,  0.5f }, { 1.0f, 1.0f } },
-        { { -0.5f,  0.5f,  0.5f }, { 1.0f, 0.0f } },
-        { { -0.5f,  0.5f, -0.5f }, { 0.0f, 0.0f } },
+        { { -0.5f, -0.5f, -0.5f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f }, { 0.0f, 1.0f } },
+        { { -0.5f, -0.5f,  0.5f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f }, { 1.0f, 1.0f } },
+        { { -0.5f,  0.5f,  0.5f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f }, { 1.0f, 0.0f } },
+        { { -0.5f,  0.5f, -0.5f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f }, { 0.0f, 0.0f } },
         // +X (right)
-        { {  0.5f, -0.5f,  0.5f }, { 0.0f, 1.0f } },
-        { {  0.5f, -0.5f, -0.5f }, { 1.0f, 1.0f } },
-        { {  0.5f,  0.5f, -0.5f }, { 1.0f, 0.0f } },
-        { {  0.5f,  0.5f,  0.5f }, { 0.0f, 0.0f } },
+        { {  0.5f, -0.5f,  0.5f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f, 1.0f }, { 0.0f, 1.0f } },
+        { {  0.5f, -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f, 1.0f }, { 1.0f, 1.0f } },
+        { {  0.5f,  0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f, 1.0f }, { 1.0f, 0.0f } },
+        { {  0.5f,  0.5f,  0.5f }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f, 1.0f }, { 0.0f, 0.0f } },
         // +Y (top)
-        { { -0.5f,  0.5f,  0.5f }, { 0.0f, 1.0f } },
-        { {  0.5f,  0.5f,  0.5f }, { 1.0f, 1.0f } },
-        { {  0.5f,  0.5f, -0.5f }, { 1.0f, 0.0f } },
-        { { -0.5f,  0.5f, -0.5f }, { 0.0f, 0.0f } },
+        { { -0.5f,  0.5f,  0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+        { {  0.5f,  0.5f,  0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+        { {  0.5f,  0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
+        { { -0.5f,  0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } },
         // -Y (bottom)
-        { { -0.5f, -0.5f, -0.5f }, { 0.0f, 1.0f } },
-        { {  0.5f, -0.5f, -0.5f }, { 1.0f, 1.0f } },
-        { {  0.5f, -0.5f,  0.5f }, { 1.0f, 0.0f } },
-        { { -0.5f, -0.5f,  0.5f }, { 0.0f, 0.0f } },
+        { { -0.5f, -0.5f, -0.5f }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+        { {  0.5f, -0.5f, -0.5f }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+        { {  0.5f, -0.5f,  0.5f }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
+        { { -0.5f, -0.5f,  0.5f }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } },
     };
     static const u16 indices[36] =
     {
@@ -500,9 +529,19 @@ int main(int argc, char** argv)
     cubeMeshDesc.vertexLayout.attributes[0].format = FLUXION_RHI_FORMAT_R32G32B32_FLOAT;
     cubeMeshDesc.vertexLayout.attributes[0].offset = offsetof(FluxionDemoVertex, position);
     cubeMeshDesc.vertexLayout.attributes[1].location = 1;
-    cubeMeshDesc.vertexLayout.attributes[1].format = FLUXION_RHI_FORMAT_R32G32_FLOAT;
-    cubeMeshDesc.vertexLayout.attributes[1].offset = offsetof(FluxionDemoVertex, uv);
-    cubeMeshDesc.vertexLayout.attributeCount = 2;
+    cubeMeshDesc.vertexLayout.attributes[1].format = FLUXION_RHI_FORMAT_R32G32B32_FLOAT;
+    cubeMeshDesc.vertexLayout.attributes[1].offset = offsetof(FluxionDemoVertex, normal);
+    cubeMeshDesc.vertexLayout.attributes[2].location = 2;
+    cubeMeshDesc.vertexLayout.attributes[2].format = FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT;
+    cubeMeshDesc.vertexLayout.attributes[2].offset = offsetof(FluxionDemoVertex, tangent);
+    cubeMeshDesc.vertexLayout.attributes[3].location = 3;
+    cubeMeshDesc.vertexLayout.attributes[3].format = FLUXION_RHI_FORMAT_R32G32_FLOAT;
+    cubeMeshDesc.vertexLayout.attributes[3].offset = offsetof(FluxionDemoVertex, uv);
+    // The locations are not free to choose: they are the order
+    // Fluxion/Pass/Vertex.jsl declares its inputs in, and a mesh that
+    // numbered them differently would hand the normal to whatever asked
+    // for the tangent.
+    cubeMeshDesc.vertexLayout.attributeCount = 4;
     cubeMeshDesc.vertexLayout.stride = sizeof(FluxionDemoVertex);
     cubeMeshDesc.bounds = FluxionAABB{ FluxionVec3{ -0.5f, -0.5f, -0.5f }, FluxionVec3{ 0.5f, 0.5f, 0.5f } };
     cubeMeshDesc.debugName = "ForwardRendererDemo.Cube";
@@ -548,11 +587,24 @@ int main(int argc, char** argv)
     Fluxion_RenderGraphPassRegistry_Init(); // must run before Fluxion_Renderer_Create, which registers "ForwardOpaquePass" into it
     FLUXION_SCOPE_EXIT(Fluxion_RenderGraphPassRegistry_Shutdown());
 
-    std::string cubeVertexSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.vert.jsl");
-    std::string cubeFragmentSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.frag.jsl");
-    if (cubeVertexSource.empty() || cubeFragmentSource.empty())
+    // The material says what the surface is; the engine says what becomes
+    // of it. Neither stage below is written here -- the vertex half is the
+    // engine's for every pass, and the fragment half is the material's
+    // source with one pass appended to it. The same file, appended with
+    // the depth pass instead, is the depth shader.
+    std::string cubeMaterialSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.material.jsl");
+    if (cubeMaterialSource.empty())
     {
-        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to read cube.vert.jsl/cube.frag.jsl from %s", FLUXION_DEMO_SHADER_DIR);
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to read cube.material.jsl from %s", FLUXION_DEMO_SHADER_DIR);
+        return 1;
+    }
+
+    char* builtVertexSource = Fluxion_MaterialShader_BuildVertexSource(FLUXION_MATERIAL_PASS_FORWARD);
+    char* builtFragmentSource = Fluxion_MaterialShader_BuildFragmentSource(cubeMaterialSource.c_str(), FLUXION_MATERIAL_PASS_FORWARD);
+    FLUXION_SCOPE_EXIT(Fluxion_MaterialShader_FreeSource(builtVertexSource); Fluxion_MaterialShader_FreeSource(builtFragmentSource));
+    if (builtVertexSource == nullptr || builtFragmentSource == nullptr)
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to compose the cube's shader stages from its material source.");
         return 1;
     }
 
@@ -563,8 +615,8 @@ int main(int argc, char** argv)
 
     FluxionShaderProgramDesc cubeProgramDesc{};
     cubeProgramDesc.debugName = "ForwardRendererDemo.CubeProgram";
-    cubeProgramDesc.vertexSource = cubeVertexSource.c_str();
-    cubeProgramDesc.fragmentSource = cubeFragmentSource.c_str();
+    cubeProgramDesc.vertexSource = builtVertexSource;
+    cubeProgramDesc.fragmentSource = builtFragmentSource;
     FluxionShaderProgramHandle cubeProgram = Fluxion_ShaderProgram_Create(device, &cubeProgramDesc);
     FLUXION_SCOPE_EXIT(if (FLUXION_HANDLE_IS_VALID(cubeProgram)) Fluxion_ShaderProgram_Destroy(cubeProgram));
     if (!FLUXION_HANDLE_IS_VALID(cubeProgram))
@@ -593,8 +645,45 @@ int main(int argc, char** argv)
         return 1;
     }
     FLUXION_SCOPE_EXIT(Fluxion_Material_Destroy(cubeMaterial));
-    Fluxion_Material_SetTexture(cubeMaterial, "albedoMap", albedoView, albedoSampler);
-    Fluxion_Material_SetVec3(cubeMaterial, "tint", FluxionVec3{ 1.0f, 1.0f, 1.0f });
+    // What the surface is made of, said in the terms the engine
+    // understands. These are not names this sample invented: they are the
+    // parameters Fluxion/Material.jsl declares, which is why the engine
+    // can offer a setter for each one and refuse a material that declares
+    // one of them as something else.
+    Fluxion_Material_SetBaseColor(cubeMaterial, FluxionVec4{ 1.0f, 1.0f, 1.0f, 1.0f });
+    Fluxion_Material_SetMetallic(cubeMaterial, 0.0f);
+    Fluxion_Material_SetRoughness(cubeMaterial, 0.4f);
+
+    // The four percent nearly every ordinary material reflects head-on.
+    // Without it every non-metal would reflect identically and water,
+    // cloth and glass would be the same thing at a glancing angle.
+    Fluxion_Material_SetReflectance(cubeMaterial, 0.5f);
+    Fluxion_Material_SetEmissive(cubeMaterial, FluxionVec3{ 0.0f, 0.0f, 0.0f });
+    Fluxion_Material_SetNormalScale(cubeMaterial, 1.0f);
+    Fluxion_Material_SetOcclusionStrength(cubeMaterial, 1.0f);
+    Fluxion_Material_SetAlphaMode(cubeMaterial, FLUXION_MATERIAL_ALPHA_OPAQUE);
+
+    // The standard material samples five maps, and a slot left empty is
+    // not an empty slot -- it is an unbound texture, which is a broken
+    // draw on some backends and black on others. The engine keeps a
+    // one-texel stand-in for each kind so that a material need only
+    // provide the maps it actually has.
+    if (!Fluxion_TextureDefaults_Init(device, graphicsQueue))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the engine's stand-in textures.");
+        return 1;
+    }
+    FLUXION_SCOPE_EXIT(Fluxion_TextureDefaults_Shutdown());
+
+    Fluxion_Material_SetTextureSlot(cubeMaterial, FLUXION_MATERIAL_TEXTURE_BASE_COLOR, albedoView, albedoSampler);
+    Fluxion_Material_SetTextureSlot(cubeMaterial, FLUXION_MATERIAL_TEXTURE_METALLIC_ROUGHNESS,
+        Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_WHITE), albedoSampler);
+    Fluxion_Material_SetTextureSlot(cubeMaterial, FLUXION_MATERIAL_TEXTURE_NORMAL,
+        Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_FLAT_NORMAL), albedoSampler);
+    Fluxion_Material_SetTextureSlot(cubeMaterial, FLUXION_MATERIAL_TEXTURE_OCCLUSION,
+        Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_WHITE), albedoSampler);
+    Fluxion_Material_SetTextureSlot(cubeMaterial, FLUXION_MATERIAL_TEXTURE_EMISSIVE,
+        Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_WHITE), albedoSampler);
     Fluxion_Material_FlushDirty(cubeMaterial);
 
     FluxionRenderPipelineHandle cubePipeline = Fluxion_RenderPipeline_Create(device, cubeProgram, FLUXION_RENDER_PIPELINE_CATEGORY_OPAQUE, swapchainDesc.format, depthTextureDesc.format);
@@ -871,9 +960,17 @@ int main(int argc, char** argv)
         // contents against a different set.
         if (shaderReload == nullptr && Fluxion_Input_WasKeyPressed(FLUXION_KEY_F))
         {
-            const std::string vertexSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.vert.jsl");
-            const std::string fragmentSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.frag.jsl");
-            if (vertexSource.empty() || fragmentSource.empty())
+            // Only the material file is read. The two stages are put
+            // together again the same way they were at startup, so a
+            // reload picks up a change to the engine's own passes as
+            // readily as a change to this material -- and neither of
+            // them is written out twice for the reloading to fall out of
+            // step with.
+            const std::string materialSource = ReadFile(FLUXION_DEMO_SHADER_DIR "/cube.material.jsl");
+            char* reloadVertex = materialSource.empty() ? nullptr : Fluxion_MaterialShader_BuildVertexSource(FLUXION_MATERIAL_PASS_FORWARD);
+            char* reloadFragment = materialSource.empty() ? nullptr : Fluxion_MaterialShader_BuildFragmentSource(materialSource.c_str(), FLUXION_MATERIAL_PASS_FORWARD);
+
+            if (reloadVertex == nullptr || reloadFragment == nullptr)
             {
                 FLUXION_LOG_ERROR("ForwardRendererDemo", "Nothing was read from %s, so the shaders were left as they are.",
                     FLUXION_DEMO_SHADER_DIR);
@@ -882,15 +979,18 @@ int main(int argc, char** argv)
             {
                 FluxionShaderProgramDesc reloadDesc{};
                 reloadDesc.debugName = "ForwardRendererDemo.CubeProgram";
-                reloadDesc.vertexSource = vertexSource.c_str();
-                reloadDesc.fragmentSource = fragmentSource.c_str();
+                reloadDesc.vertexSource = reloadVertex;
+                reloadDesc.fragmentSource = reloadFragment;
 
-                // The sources are copied by this call, so letting the two
-                // strings above go out of scope here is fine.
+                // The sources are copied by this call, so releasing the
+                // two below is fine.
                 shaderReload = Fluxion_ShaderProgram_BeginReload(device, cubeProgram, &reloadDesc);
                 if (shaderReload == nullptr)
                     FLUXION_LOG_ERROR("ForwardRendererDemo", "The shader reload could not be started; the cube is still running the old shaders.");
             }
+
+            Fluxion_MaterialShader_FreeSource(reloadVertex);
+            Fluxion_MaterialShader_FreeSource(reloadFragment);
         }
 
         // Asked every frame and answered without waiting, so a compile
@@ -1010,6 +1110,37 @@ int main(int argc, char** argv)
         viewDesc.scissor = FluxionScissorRect{ 0, 0, surfaceWidth, surfaceHeight };
         viewDesc.renderTarget = frameTarget;
         viewDesc.layerMask = 0xFFFFFFFFu;
+
+        // The light, in the units the whole engine works in: a colour IS
+        // an intensity here, and there is no separate brightness anywhere
+        // to undo it. Coming from over the camera's left shoulder, so the
+        // cube's faces catch it at different angles as it turns -- which
+        // is the entire visible difference between a lit surface and a
+        // flat one.
+        viewDesc.sunDirection = FluxionVec3{ -0.4f, 0.7f, 0.6f };
+
+        // Large numbers on purpose. Sunlight IS enormous next to a
+        // screen, and the whole reason the camera below exists is to
+        // bring it back down -- a light picked to look right without one
+        // would have to be repicked the moment the exposure changed.
+        // Slightly warm, as daylight is.
+        viewDesc.sunColor = FluxionVec3{ 230.0f, 220.0f, 200.0f };
+
+        // A few percent of the sun, arriving from everywhere, so the
+        // faces turned away are dim rather than black. It stands in for a
+        // sky until there is one.
+        viewDesc.ambientColor = FluxionVec3{ 8.0f, 9.0f, 12.0f };
+
+        // The camera. An exposure of one would be a guess; these are the
+        // settings a photographer would dial for a scene lit this
+        // brightly, and the engine works the multiplier out from them.
+        viewDesc.exposure = Fluxion_Exposure_FromCamera(2.0f, 1.0f / 60.0f, 400.0f);
+        viewDesc.tonemapWhitePoint = 4.0f;
+
+        // The swapchain here is an ordinary eight-bit format with no
+        // curve of its own, so the pass has to encode for the display.
+        // Written down beside the format that made it true.
+        viewDesc.encodeOutputToSRGB = true;
         FluxionRenderViewHandle frameView = Fluxion_RenderView_Create(device, &viewDesc);
         Fluxion_RenderView_UpdateFrameConstants(frameView);
 

@@ -21,6 +21,7 @@ void Test_TextureAsset_Run(TestContext* ctx);
 void Test_BlockCompressGPU_Run(TestContext* ctx);
 void Test_LightingGPU_Run(TestContext* ctx);
 void Test_Exposure_Run(TestContext* ctx);
+void Test_StandardMaterialCompiles_Run(TestContext* ctx);
 
 int main(void)
 {
@@ -47,6 +48,7 @@ int main(void)
     Test_BlockCompressGPU_Run(&ctx);
     Test_LightingGPU_Run(&ctx);
     Test_Exposure_Run(&ctx);
+    Test_StandardMaterialCompiles_Run(&ctx);
 
     if (ctx.failures == 0)
     {

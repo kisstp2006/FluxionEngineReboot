@@ -47,10 +47,20 @@ void main() {
   color = ApplyExposure(color, toneMapping.x);
   color = TonemapReinhard(color, toneMapping.y);
 
-  // The display's transfer function is deliberately NOT applied here --
-  // a colour target declared in an sRGB format has the hardware do it,
-  // which is free and blends correctly. Fluxion/Tonemap.jsl has
-  // LinearToSRGB for a pass that writes somewhere with no such format.
+  // And the display's transfer function, if this target has none of its
+  // own. A target whose format carries the sRGB curve has the hardware do
+  // this, which is free and blends correctly; an ordinary eight-bit one
+  // stores whatever bits it is given, and linear light written straight
+  // into it comes out far too dark.
+  //
+  // Asked of the frame rather than assumed either way. Assuming it is
+  // needed washes out every target that already does it; assuming it is
+  // not leaves every target that does not.
+  if (toneMapping.z > 0.5)
+  {
+    color = LinearToSRGB(color);
+  }
+
   return Vector4(color, surface.opacity);
 }
 

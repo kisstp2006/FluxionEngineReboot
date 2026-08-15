@@ -1,0 +1,16 @@
+#include "Fluxion/Material.jsl"
+
+// What this surface IS. Not how it is drawn.
+//
+// There is no entry point here, no render target, and nothing about
+// lighting -- and that is the whole point of the arrangement. The engine
+// appends the vertex stage and, separately, whichever pass is being built:
+// the forward pass lights what this returns, the depth pass reads one
+// field of it, and neither needs a second copy of this file.
+//
+// Everything below comes from Fluxion/Material.jsl: the standard
+// parameters, the standard texture slots, and a surface already filled in
+// from both. A material with nothing to add says exactly this much.
+SurfaceData EvaluateSurface() {
+  return StandardSurface();
+}

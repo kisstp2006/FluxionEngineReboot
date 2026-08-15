@@ -47,12 +47,27 @@ class CubeRenderer : Component
         // it looks the same however fast the machine it is on happens to
         // be.
         float pulse = 0.5f + 0.5f * Mathf.Sin(Time.ElapsedTime());
-        Color tint = new Color(1.0f, 0.5f + 0.5f * pulse, 1.0f - 0.5f * pulse, 1.0f);
+        Color baseColor = new Color(1.0f, 0.5f + 0.5f * pulse, 1.0f - 0.5f * pulse, 1.0f);
+
+        // These are the engine's own names for what a surface is made
+        // of, not names this demo invented -- which is why a script can
+        // set them at all. Nothing here says anything about lighting: the
+        // material describes the surface and the pass decides what
+        // becomes of it.
+        MaterialValues.SetColor(this.material, "baseColorFactor", baseColor);
+
+        // The roughness swept across its whole range, out of step with
+        // the colour so the two are visibly separate things. This is the
+        // one parameter whose effect is unmistakable in motion: the
+        // highlight tightens into a hard point and spreads back out into
+        // a broad sheen, which is what a reflectance model buys over a
+        // texture multiplied by a light.
+        float gloss = 0.5f + 0.5f * Mathf.Sin(Time.ElapsedTime() * 0.37f);
+        this.material.SetFloat("roughnessFactor", 0.08f + 0.8f * gloss);
 
         // A parameter set on a material reaches nothing until the
         // material is told to send what has changed, and a draw only
         // picks up what was sent before it.
-        MaterialValues.SetVector3(this.material, "tint", new Vector3(tint.r, tint.g, tint.b));
         this.material.FlushDirty();
 
         // Where it goes is the object's business: the mesh is drawn at

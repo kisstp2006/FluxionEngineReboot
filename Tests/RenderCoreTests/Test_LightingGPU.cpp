@@ -5,6 +5,7 @@
 #include <Fluxion/RHI/RHI.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraph.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraphPassRegistry.h>
+#include <Fluxion/RenderCore/Renderer/Exposure.h>
 #include <Fluxion/RenderCore/Renderer/Material.h>
 #include <Fluxion/RenderCore/Renderer/MaterialParameters.h>
 #include <Fluxion/RenderCore/Renderer/MaterialShader.h>
@@ -98,6 +99,8 @@ struct Configuration
 
     f32 opacity;
     f32 alphaCutoff;
+
+    bool encodeOutputToSRGB;
 };
 
 struct Rgb
@@ -378,6 +381,7 @@ Rgb RenderOne(TestContext* ctx, LightingRig& rig, const Configuration& configura
     viewDesc.ambientColor = FluxionVec3{ configuration.ambient[0], configuration.ambient[1], configuration.ambient[2] };
     viewDesc.exposure = configuration.exposure;
     viewDesc.tonemapWhitePoint = configuration.tonemapWhitePoint;
+    viewDesc.encodeOutputToSRGB = configuration.encodeOutputToSRGB;
     FluxionRenderViewHandle view = Fluxion_RenderView_Create(rig.device, &viewDesc);
     Fluxion_RenderView_UpdateFrameConstants(view);
 
@@ -456,6 +460,10 @@ Configuration BaseConfiguration()
     // certainly there.
     configuration.opacity = 1.0f;
     configuration.alphaCutoff = 0.0f;
+
+    // Off, so every check above reads the light itself rather than a
+    // curve applied to it.
+    configuration.encodeOutputToSRGB = false;
 
     // Straight at the surface, which faces the camera.
     configuration.sunDirection[2] = 1.0f;
@@ -701,6 +709,78 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     noTest.alphaCutoff = 0.0f;
     const Rgb noTestColor = RenderOne(ctx, rig, noTest);
     TEST_CHECK(ctx, noTestColor.r > 0.9f);
+
+    // --- The display curve ------------------------------------------------
+    Configuration encoded = BaseConfiguration();
+    encoded.name = "encoded for an eight-bit target";
+    encoded.sunColor[0] = 0.0f;
+    encoded.sunColor[1] = 0.0f;
+    encoded.sunColor[2] = 0.0f;
+    encoded.emissive[0] = 0.5f;
+    encoded.emissive[1] = 0.5f;
+    encoded.emissive[2] = 0.5f;
+    encoded.encodeOutputToSRGB = true;
+    const Rgb encodedColor = RenderOne(ctx, rig, encoded);
+
+    // Half the light is not half the number: the curve exists precisely
+    // because a display is not linear, and 0.5 encodes to about 0.735.
+    TEST_CHECK(ctx, encodedColor.r > 0.72f && encodedColor.r < 0.75f);
+
+    // And with it off, the same half stays a half. Both directions,
+    // because a curve applied unconditionally would pass the check above
+    // while ruining every floating-point target.
+    Configuration linear = encoded;
+    linear.name = "left linear for a floating-point target";
+    linear.encodeOutputToSRGB = false;
+    const Rgb linearColor = RenderOne(ctx, rig, linear);
+    TEST_CHECK(ctx, linearColor.r > 0.49f && linearColor.r < 0.51f);
+
+    // --- The sample's own settings ----------------------------------------
+    //
+    // The numbers Samples/ForwardRendererDemo puts in its render view,
+    // run through the real pipeline. A sample that comes out black or
+    // blown out is a broken sample, and nothing else here would say so --
+    // every check above sets its own lighting to isolate one thing, which
+    // is exactly what makes none of them notice an unusable scene.
+    Configuration sample = BaseConfiguration();
+    sample.name = "the sample's own light, camera and curve";
+    sample.roughness = 0.4f;
+    sample.sunDirection[0] = -0.4f;
+    sample.sunDirection[1] = 0.7f;
+    sample.sunDirection[2] = 0.6f;
+    sample.sunColor[0] = 230.0f;
+    sample.sunColor[1] = 220.0f;
+    sample.sunColor[2] = 200.0f;
+    sample.ambient[0] = 8.0f;
+    sample.ambient[1] = 9.0f;
+    sample.ambient[2] = 12.0f;
+    sample.exposure = Fluxion_Exposure_FromCamera(2.0f, 1.0f / 60.0f, 400.0f);
+    sample.tonemapWhitePoint = 4.0f;
+    sample.encodeOutputToSRGB = true;
+    const Rgb sampleColor = RenderOne(ctx, rig, sample);
+
+    // A face turned towards the light, on a screen: bright enough to see
+    // and short of clipping. The bounds are wide because this is a check
+    // that the scene is USABLE, not that it is any particular colour --
+    // a narrow range here would break every time somebody tuned the
+    // sample, which is not a failure.
+    TEST_CHECK(ctx, sampleColor.r > 0.25f && sampleColor.r < 0.98f);
+    TEST_CHECK(ctx, sampleColor.g > 0.25f && sampleColor.g < 0.98f);
+    TEST_CHECK(ctx, sampleColor.b > 0.20f && sampleColor.b < 0.98f);
+
+    // Warm, because the light is. If the channels came out equal, the
+    // light's colour would not be reaching the surface at all.
+    TEST_CHECK(ctx, sampleColor.r > sampleColor.b);
+
+    // And the same scene with the sun switched off is still visible,
+    // because the ambient is not nothing -- a scene whose unlit faces are
+    // pure black reads as a bug in the shading.
+    Configuration sampleShadowed = sample;
+    sampleShadowed.name = "the sample's own settings, facing away";
+    sampleShadowed.sunDirection[2] = -1.0f;
+    const Rgb shadowedColor = RenderOne(ctx, rig, sampleShadowed);
+    TEST_CHECK(ctx, shadowedColor.r > 0.02f);
+    TEST_CHECK(ctx, shadowedColor.r < sampleColor.r);
 
     Fluxion_TextureDefaults_Shutdown();
     DestroyRig(rig);

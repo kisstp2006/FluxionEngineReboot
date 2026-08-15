@@ -65,7 +65,8 @@ typedef struct FluxionFrameConstants
     FluxionVec4 ambientColor;
 
     // x: the exposure multiplier. y: the tone mapping white point, with
-    // zero or less meaning no tone mapping. zw unused.
+    // zero or less meaning no tone mapping. z: one if the pass applies
+    // the display's transfer function. w unused.
     FluxionVec4 toneMapping;
 } FluxionFrameConstants;
 
@@ -113,6 +114,22 @@ typedef struct FluxionRenderViewDesc
     // it is how a caller says it will do this itself later, and a curve
     // applied twice is far worse than one applied not at all.
     f32 tonemapWhitePoint;
+
+    // Whether the pass encodes its result for the display before writing
+    // it.
+    //
+    // Set this when the colour target is an ordinary eight-bit format,
+    // which stores whatever bits it is given. Leave it off when the
+    // target is a floating-point one -- which holds light and wants none
+    // of this -- or when the target's own format carries the sRGB curve,
+    // because then the hardware does it and doing it here as well encodes
+    // twice and washes the picture out.
+    //
+    // A flag rather than a question asked of the target, and that is a
+    // compromise worth naming: the format IS the answer, and the RHI has
+    // no way today to ask a texture view what its format is. Until it
+    // does, the caller that chose the format says what it chose.
+    bool encodeOutputToSRGB;
 } FluxionRenderViewDesc;
 
 FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device, const FluxionRenderViewDesc* desc);

@@ -64,8 +64,13 @@
 // other and a frame that is not perpendicular skews every normal in it.
 Vector3 ApplyNormalMap(Vector3 worldNormal, Vector4 worldTangent, Vector2 uv, float scale)
 {
-    Vector3 packed = texture(normalMap, uv).xyz;
-    Vector3 tangentSpace = packed * 2.0 - Vector3(1.0, 1.0, 1.0);
+    // Not called `packed`, however well that would describe it: that word
+    // is reserved in one of the two languages this compiles to, and a
+    // variable named after it produces a syntax error in generated text
+    // nobody wrote. The other language accepts it, which is what makes
+    // the mistake survive right up until somebody runs the other backend.
+    Vector3 storedNormal = texture(normalMap, uv).xyz;
+    Vector3 tangentSpace = storedNormal * 2.0 - Vector3(1.0, 1.0, 1.0);
 
     // The strength applies to the sideways part only. Scaling all three
     // would change the length rather than the tilt, and after

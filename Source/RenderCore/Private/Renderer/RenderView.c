@@ -25,6 +25,7 @@ typedef struct FluxionRenderViewRecord
     FluxionVec3 ambientColor;
     f32 exposure;
     f32 tonemapWhitePoint;
+    bool encodeOutputToSRGB;
 
     FluxionRHIBufferHandle frameConstantBuffer; // uniform buffer holding this frame's FluxionFrameConstants
     FluxionRHIBindGroupLayoutHandle frameBindGroupLayout;
@@ -100,6 +101,7 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     // renderer rather than as a description with a hole in it.
     record->exposure = desc->exposure > 0.0f ? desc->exposure : 1.0f;
     record->tonemapWhitePoint = desc->tonemapWhitePoint;
+    record->encodeOutputToSRGB = desc->encodeOutputToSRGB;
 
     record->frameConstantBuffer = frameConstantBuffer;
     record->frameBindGroupLayout = frameBindGroupLayout;
@@ -162,6 +164,7 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
 
     constants.toneMapping.x = record->exposure;
     constants.toneMapping.y = record->tonemapWhitePoint;
+    constants.toneMapping.z = record->encodeOutputToSRGB ? 1.0f : 0.0f;
 
     void* mapped = Fluxion_RHI_MapBuffer(record->frameConstantBuffer);
     if (mapped != NULL)

@@ -21,6 +21,7 @@ engine_add_test(
         Test_BlockCompressGPU.cpp
         Test_LightingGPU.cpp
         Test_Exposure.c
+        Test_StandardMaterialCompiles.cpp
     DEPENDENCIES
         Fluxion::RenderCore
         Fluxion::RHI

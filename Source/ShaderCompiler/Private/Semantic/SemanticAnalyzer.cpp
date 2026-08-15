@@ -70,31 +70,39 @@ public:
             {
                 case DeclKind::Uniform: {
                     auto* d = static_cast<UniformDecl*>(decl.get());
+                    CheckName(d->name, d->location);
                     m_globals[d->name] = d->type;
                     break;
                 }
                 case DeclKind::StageIO: {
                     auto* d = static_cast<StageIODecl*>(decl.get());
+                    CheckName(d->name, d->location);
                     m_globals[d->name] = d->type;
                     break;
                 }
                 case DeclKind::GlobalConst: {
                     auto* d = static_cast<GlobalConstDecl*>(decl.get());
+                    CheckName(d->name, d->location);
                     m_globals[d->name] = d->type;
                     break;
                 }
                 case DeclKind::OutputSlot: {
                     auto* d = static_cast<OutputSlotDecl*>(decl.get());
+                    CheckName(d->name, d->location);
                     m_globals[d->name] = d->type;
                     break;
                 }
                 case DeclKind::Function: {
                     auto* d = static_cast<FunctionDecl*>(decl.get());
+                    CheckName(d->name, d->location);
+                    for (const Param& parameter : d->params) CheckName(parameter.name, d->location);
                     m_functions[d->name].push_back(d);
                     break;
                 }
                 case DeclKind::Struct: {
                     auto* d = static_cast<StructDecl*>(decl.get());
+                    CheckName(d->name, d->location);
+                    for (const StructField& field : d->fields) CheckName(field.name, d->location);
                     m_structs[d->name] = d;
                     break;
                 }
@@ -146,6 +154,57 @@ private:
     // is deliberately absent -- writing it would compile on that target
     // and fail on the other, which is the failure this list exists to
     // turn into a message.
+    // Names this language accepts and one of its target languages does
+    // not.
+    //
+    // A shader here is written once and compiled to two other languages,
+    // and those two do not agree about which words are taken. A variable
+    // called `packed` is perfectly good in this language and in HLSL, and
+    // is a reserved word in GLSL -- so a shader using it works on the
+    // backends that go through HLSL and fails on the one that does not,
+    // as a syntax error in generated text nobody wrote, at a line number
+    // that refers to nothing the author can see.
+    //
+    // That is worth refusing outright. The alternative is either a rule
+    // the author is expected to know about a language they are not
+    // writing in, or a renaming done quietly behind their back -- which
+    // then makes the generated text stop matching what they wrote, which
+    // is the one property that makes generated text debuggable at all.
+    //
+    // The list is the union of the two, and only of the words that are
+    // reserved WITHOUT being keywords here: a word this language already
+    // uses for something cannot reach this check, because it never parses
+    // as a name.
+    static bool IsReservedByATargetLanguage(const std::string& name)
+    {
+        static const std::unordered_set<std::string> kReserved = {
+            // Reserved by GLSL.
+            "active", "asm", "attribute", "buffer", "cast", "class", "coherent",
+            "common", "enum", "extern", "external", "filter", "fixed", "flat",
+            "fvec2", "fvec3", "fvec4", "goto", "half", "highp", "hvec2", "hvec3",
+            "hvec4", "inline", "input", "interface", "layout", "long", "lowp",
+            "mediump", "namespace", "noinline", "noperspective", "output",
+            "packed", "partition", "patch", "precision", "public", "readonly",
+            "resource", "restrict", "sample", "shared", "short", "sizeof",
+            "smooth", "subroutine", "superp", "template", "this", "typedef",
+            "union", "unsigned", "using", "varying", "volatile", "writeonly",
+            // Reserved by HLSL.
+            "cbuffer", "centroid", "column_major", "compile", "groupshared",
+            "linear", "matrix", "nointerpolation", "packoffset", "pass",
+            "precise", "register", "row_major", "snorm", "static", "technique",
+            "tbuffer", "unorm", "vector",
+        };
+        return kReserved.count(name) != 0;
+    }
+
+    void CheckName(const std::string& name, const SourceLocation& location)
+    {
+        if (!IsReservedByATargetLanguage(name)) return;
+
+        Error(location, "'" + name + "' cannot be used as a name here -- it is a reserved word in one of the "
+                        "languages this compiles to, and a shader using it would fail on some backends and not others");
+    }
+
     static bool IsBuiltinFunction(const std::string& name)
     {
         static const std::unordered_set<std::string> kBuiltins = {
@@ -213,6 +272,7 @@ private:
                 break;
             case StmtKind::VarDecl: {
                 auto& s = static_cast<VarDeclStmt&>(stmt);
+                CheckName(s.name, s.location);
                 ValidateType(s.type, s.location, "this variable's type");
                 if (s.initializer) AnalyzeExpr(*s.initializer);
                 Declare(s.name, s.type);
