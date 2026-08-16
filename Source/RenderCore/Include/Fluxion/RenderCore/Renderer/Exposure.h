@@ -47,22 +47,12 @@
 extern "C" {
 #endif
 
-// Working out an exposure the way a camera does.
-//
-// The renderer wants one number: what to multiply the light by so that
-// the scene lands in the range a screen can show. A person setting that
-// number by hand is guessing, and the guess has to change every time the
-// lighting does.
-//
-// A camera has three settings that decide it between them -- how wide the
-// aperture is open, how long the shutter is open, and how sensitive the
-// film is -- and those are settings people already understand and already
-// have intuitions about. So the renderer takes the one number, and this
-// is where the three become it.
-//
-// The lighting has to be in real units for any of this to mean anything.
-// It is: a light's colour IS its intensity in this engine, and there is
-// no separate brightness slider anywhere to undo that.
+// Working out an exposure the way a camera does. The renderer wants one
+// multiplier; a person setting it by hand guesses again every time the
+// lighting changes. A camera's three settings -- aperture, shutter,
+// sensitivity -- are ones people already have intuitions about, and this
+// is where they become the one number. Meaningful only because the
+// lighting is in real units: a light's colour IS its intensity here.
 
 // The exposure value for these camera settings, at a sensitivity of one
 // hundred.

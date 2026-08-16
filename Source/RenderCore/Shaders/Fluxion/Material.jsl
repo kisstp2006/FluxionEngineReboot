@@ -45,23 +45,12 @@
 #include "Fluxion/Surface.jsl"
 #include "Fluxion/Varyings.jsl"
 
-// The parameters a standard surface is described by, declared once.
-//
-// A material may declare whatever it likes -- the engine reads a shader's
-// own reflected parameters and always has. What this file adds is a set
-// of names that MEAN something to the engine: it can offer a base colour
-// setter only because it knows which parameter the base colour is, and it
-// can sort a draw by how it blends only because it knows where to look.
-//
-// So these names are not a convention to follow loosely. A material that
-// declares `metallicFactor` as something other than a single number is
-// not a material with an unusual parameter; it is a material whose
-// metallic value the engine will refuse to set, and it is told so when it
-// is created rather than left to wonder why nothing moves.
-//
-// A material need not declare all of them. One that has no emissive
-// simply does not include that parameter, and the engine reports it as
-// absent rather than writing into a slot that is not there.
+// The parameters a standard surface is described by, declared once --
+// names that MEAN something to the engine: a base-colour setter exists
+// only because the engine knows which parameter that is. Declaring
+// `metallicFactor` as anything but a single number is refused at
+// creation, not left to wonder why nothing moves. A material need not
+// declare all of them; a missing one is reported as absent.
 
 [Uniform(Material)] Vector4 baseColorFactor;
 [Uniform(Material)] float metallicFactor;

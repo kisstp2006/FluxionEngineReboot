@@ -49,24 +49,13 @@
 extern "C" {
 #endif
 
-// Turning sources into cooked bytes, for any number of assets at once,
-// without the calling thread waiting for any of it.
-//
-// THE SPLIT IS THE SAME AS THE LOADER'S, AND FOR THE SAME REASON:
-//
-//   worker thread   read the source, cook it, write the cooked bytes
-//   owning thread   put the results into the database
-//
-// The second half is not fussiness. The asset database is not safe to
-// use from several threads and does not need to be: it is one table that
-// one thread owns. An importer that wrote into it from a worker would
-// force locks onto a structure nothing else contends for. So a worker
-// produces a result and stops, and the owning thread takes it on a pump.
-//
-// Nothing here blocks the caller. Begin returns as soon as the work is
-// handed over; Update applies whatever has finished and returns; only End
-// waits, and only because it is the point at which the caller has said it
-// wants the answer.
+// Turning sources into cooked bytes, many at once, without the caller
+// waiting. The split is the loader's: workers read and cook, the owning
+// thread puts results into the database -- which is one table one thread
+// owns, and locking it for workers would burden a structure nothing else
+// contends for. Begin hands work over and returns; Update applies what
+// finished; only End waits, because End is the caller asking for the
+// answer.
 
 typedef enum FluxionAssetImportOutcome
 {

@@ -108,24 +108,13 @@ typedef struct FluxionTransform
 // transform are one thing rather than two that happen to agree.
 FluxionTypeId Fluxion_Transform_TypeId(void);
 
-// What ties an object to the scripts attached to it.
-//
-// The scripts themselves are not stored here. A script is an object in
-// another runtime, with a lifetime and a class and pinned references, and
-// none of that is bytes an entity can own; what an entity owns is the
-// link. So this holds the head of the object's list of them, and the
-// records those number into live in the scripting half of this module.
-//
-// It is a component rather than a field on the object because that gives
-// it one home rather than two, and because it makes "which objects have
-// scripts" a question the storage can answer directly instead of a walk
-// over every object.
-//
-// Like the transform, every object has one and it cannot be taken away.
-// That costs a word per object whether or not it carries scripts, and
-// buys the absence of a case where attaching the first script to an
-// object would move that object's storage -- which would happen exactly
-// while the scripts of the step are running over it.
+// What ties an object to its scripts. The scripts live in another
+// runtime; the entity owns only the link -- the head of its list, whose
+// records live in the scripting half of this module. A component so that
+// "which objects have scripts" is a storage query, not a walk. Every
+// object has one and it cannot be removed: a word per object, buying the
+// absence of the case where attaching the FIRST script moves the
+// object's storage -- exactly while scripts are running over it.
 typedef struct FluxionScriptComponent
 {
     // FLUXION_SCENE_NO_COMPONENT when this object carries no scripts.

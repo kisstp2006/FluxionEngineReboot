@@ -47,24 +47,16 @@
 extern "C" {
 #endif
 
-// Turning one material's source into the shader for one pass.
-//
-// A material's own source declares what the surface is and stops:
+// Turning one material's source into the shader for one pass. A material
+// declares what the surface is and stops:
 //
 //     #include "Fluxion/Surface.jsl"
 //     SurfaceData EvaluateSurface() { ... }
 //
-// It has no entry point, no render target, and no opinion about lighting.
-// This adds the part that does, chosen by pass -- so ONE material source
-// becomes a forward shader, a depth shader, and later whatever else,
-// without a line of it changing.
-//
-// What gets appended is a single include. Everything real lives in the
-// engine's shader library, where the compiler reports it as an include
-// and the shader cache therefore knows the result depends on it. Pasting
-// the pass code in directly would work and would cost exactly that: the
-// cache would not know, and a changed pass would go on serving the shader
-// built from the old one.
+// This appends the pass -- so ONE source becomes a forward shader, a
+// depth shader, and whatever comes later, without a line of it changing.
+// What is appended is a single include: the shader cache then knows the
+// result depends on the pass, which pasting the code in would hide.
 
 // The name a material's source must declare, so a caller can say so in an
 // error message rather than leaving the author to find out from the

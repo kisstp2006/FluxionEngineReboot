@@ -44,21 +44,12 @@
 
 #include "Fluxion/Math.jsl"
 
-// What a material says about a surface, and nothing about how it is drawn.
-//
-// THIS IS WHY A MATERIAL DOES NOT WRITE PIXELS. A shader that writes a
-// colour is a forward shader; one that writes several targets is a
-// deferred shader. Either way it is welded to one renderer, and the same
-// material cannot then be used under another.
-//
-// So a material fills one of these in and returns it. What happens next
-// belongs to the pass: one lights it now, another will pack it into a
-// buffer, a third reads only enough to know whether the pixel exists at
-// all. The material is not asked and does not know.
-//
-// The fields are the ones that describe a surface physically. They are
-// not a free-for-all: a renderer can only light what it can name, and a
-// field nothing agrees on is a field nothing can use.
+// What a material says about a surface, and nothing about how it is
+// drawn. A shader that writes pixels is welded to one renderer; a
+// material instead fills this in and returns it, and what happens next
+// belongs to the pass -- lit now, packed into a buffer, or read only for
+// the alpha test. The fields describe a surface physically, and only
+// named fields exist: a renderer can only light what it can name.
 
 // Which model lights this surface.
 //

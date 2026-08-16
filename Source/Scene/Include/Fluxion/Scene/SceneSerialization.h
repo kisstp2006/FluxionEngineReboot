@@ -48,25 +48,15 @@
 extern "C" {
 #endif
 
-// Writing a scene down and reading it back.
+// Writing a scene down and reading it back. Written: what cannot be
+// worked out again (objects, names, hierarchy, component values).
+// Left out: everything derived, which arises again from the same rules.
 //
-// What is written is what cannot be worked out again: which objects there
-// are, what each is called, what is under what, and what each object's
-// components hold. What is left out is everything derived -- world
-// matrices, which block an object sits in, which composition it belongs
-// to. All of that arises again from the same rules that produced it the
-// first time.
-//
-// AN OBJECT IS NAMED BY ITS ID, NEVER BY ITS HANDLE. A handle is where an
-// object sits in a table right now; it means nothing once the program
-// that wrote it has ended. So every reference in a file -- a parent, a
-// component field pointing at another object -- is written as the id, and
-// resolved on the way back in.
-//
-// That resolution is why reading happens in two passes. A reference may
-// point at an object written later in the file, and there is no order
-// that avoids it: two objects can point at each other. So every object is
-// made first, and only then is anything pointed anywhere.
+// AN OBJECT IS NAMED BY ITS ID, NEVER BY ITS HANDLE -- a handle means
+// nothing once the program that wrote it has ended. References resolve
+// on the way back in, in two passes, because two objects can point at
+// each other: every object is made first, then anything is pointed
+// anywhere.
 
 // What this build writes and the oldest it can read.
 //

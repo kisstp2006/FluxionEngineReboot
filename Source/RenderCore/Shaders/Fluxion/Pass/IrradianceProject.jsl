@@ -97,23 +97,13 @@ Vector3 Fluxion_Irradiance_FaceDirection(int face, float u, float v)
     return Vector3(-u, -v, -1.0);
 }
 
-// The corner term of the solid angle a cube-map cell covers.
-//
-// A cell near the middle of a face covers more of the sphere than one out
-// at a corner, because the corner one is further away and more steeply
-// tilted. Weighting every cell equally instead would make the corners of
-// every face count for more than they should, and the error does not
-// average out -- it is the same in every face, so it biases the whole
-// fit.
-//
-// The closed form comes from integrating the differential solid angle
-// over the cell, and the four corners are combined below the way any
-// double integral is evaluated at its bounds.
-//
-// The one-argument arctangent is exact here, not an approximation of the
-// two-argument one: the denominator is a square root of something that is
-// at least one, so it is always positive, and that is the whole of what
-// the two-argument form exists to resolve.
+// The corner term of the solid angle a cube-map cell covers -- a middle
+// cell covers more of the sphere than a corner one, and weighting them
+// equally biases the whole fit the same way on every face. Closed form
+// from integrating the differential solid angle; the four corners
+// combine below as any double integral does at its bounds. The
+// one-argument arctangent is exact here: the denominator is always
+// positive, which is all the two-argument form exists to resolve.
 float Fluxion_Irradiance_AreaElement(float x, float y)
 {
     return atan(x * y / sqrt(x * x + y * y + 1.0));
@@ -136,22 +126,12 @@ float Fluxion_Irradiance_BasisAt(int index, Vector3 d)
     return 0.546274 * (d.x * d.x - d.y * d.y);
 }
 
-// How much of each band survives being convolved with the cosine lobe.
-//
-// A diffuse surface does not see the sky directly. It sees the sky
-// weighted by the cosine of the angle from its normal, and nothing at all
-// from below its horizon. Convolving with that lobe is what turns light
-// ARRIVING FROM every direction into light FALLING ON the surface, and in
-// this basis the whole convolution is one number per band rather than an
-// integral -- which is the reason the representation is worth having at
-// all.
-//
-// Folded in here, once, rather than in the shader that reads the result:
-// the surfaces reading it are many and this runs once.
-//
-// Past the third band the numbers are small enough that the bands are
-// dropped entirely, which is also why nine is the count and not some
-// other number.
+// How much of each band survives the cosine lobe -- what turns light
+// ARRIVING from every direction into light FALLING ON a surface. In this
+// basis the whole convolution is one number per band, which is the
+// reason the representation is worth having. Folded in here, once,
+// because the surfaces reading it are many; past the third band the
+// numbers are small enough to drop the bands, which is why nine.
 float Fluxion_Irradiance_CosineConvolution(int index)
 {
     if (index < 1) { return FLUXION_PI; }

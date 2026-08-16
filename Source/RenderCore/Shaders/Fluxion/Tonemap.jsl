@@ -44,25 +44,14 @@
 
 #include "Fluxion/Math.jsl"
 
-// Getting from an amount of light to a number a screen can show.
-//
-// The lighting produces radiance, which has no upper bound: a sunlit
-// white wall and the sun itself differ by a factor of thousands, and both
-// are correct. A display accepts values between zero and one. Two
-// separate things bridge that gap, and confusing them is the usual reason
-// a picture is unfixably dark or unfixably washed out.
-//
-// EXPOSURE is a camera setting. It says how much light makes a middle
-// grey, and it is one multiplication. Changing it is what a photographer
-// does when a room is dim.
-//
-// TONE MAPPING is what happens to whatever is still above one afterwards.
-// It is a curve, and its job is to keep a highlight recognisable as a
-// bright thing rather than a flat white shape.
-//
-// Neither is a colour correction and neither is the display's transfer
-// function -- see LinearToSRGB at the end of this file for that third
-// thing, which is not applied here.
+// Getting from an unbounded amount of light to a number a screen can
+// show. Two separate things bridge the gap, and confusing them is the
+// usual reason a picture is unfixably dark or washed out: EXPOSURE is a
+// camera setting, one multiplication, how much light makes middle grey;
+// TONE MAPPING is the curve applied to what is still above one, keeping
+// a highlight a bright thing rather than a flat white shape. Neither is
+// the display's transfer function -- that third thing is LinearToSRGB at
+// the end of this file.
 
 // The multiplier for a photographic exposure value.
 //
@@ -80,24 +69,13 @@ Vector3 ApplyExposure(Vector3 color, float exposure)
     return color * exposure;
 }
 
-// The extended Reinhard operator.
-//
-// The plain form, c / (1 + c), never reaches one: the brightest thing in
-// a scene is always a little grey. The extended form takes a white point
-// -- the value that should come out as exactly one -- and everything
-// brighter than it is clipped rather than compressed, which is what
-// makes a highlight look like a highlight.
-//
-// Applied per channel rather than to the luminance. A luminance-only
-// version keeps a bright red fully red however intense it gets, which
-// reads as clipping; per channel, the strongest channel saturates first
-// and a very bright colour drifts towards white, which is what film and
-// eyes both do.
-//
-// A white point of zero or less means DO NOT TONE MAP: the colour is
-// returned untouched. That is not a degenerate case to be guarded
-// against, it is how a caller says it will do this itself somewhere else
-// -- and applying a curve twice is far worse than applying none.
+// The extended Reinhard operator: the plain c / (1 + c) never reaches
+// one, so the white point names the value that comes out as exactly one.
+// Applied per channel, not to luminance -- the strongest channel
+// saturates first and bright colours drift towards white, as film and
+// eyes do. A white point of zero or less means DO NOT TONE MAP: it is
+// how a caller says it does this itself, and a curve applied twice is
+// far worse than none.
 Vector3 TonemapReinhard(Vector3 color, float whitePoint)
 {
     if (whitePoint <= 0.0)

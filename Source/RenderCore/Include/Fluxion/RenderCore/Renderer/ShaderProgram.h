@@ -71,21 +71,12 @@ typedef struct FluxionShaderProgramDesc
     const char* computeEntryPoint;
 } FluxionShaderProgramDesc;
 
-// Where finished shaders are kept so they need not be built again, for
-// every program created from here on. NULL or empty turns it off, which
-// is the state a program starts in: a host that says nothing gets the
-// behaviour it always had.
-//
-// One directory for the whole process rather than one per program,
-// because it is one answer -- every program in a run wants the same
-// place, and a per-program field would only be the same string written
-// out at every call site. Said once, at startup, by the host that knows
-// where its files belong.
-//
-// The directory itself is created when first written to. Nothing here
-// fails because of it: a path that cannot be written to means every
-// program is built the long way, and nothing is reported, because from
-// the caller's point of view nothing went wrong.
+// Where finished shaders are kept so they need not be built again. NULL
+// or empty turns it off, the starting state. One directory per process,
+// said once at startup -- every program wants the same place. Created on
+// first write; a path that cannot be written just means everything is
+// built the long way, and nothing is reported, because nothing went
+// wrong.
 void Fluxion_ShaderProgram_SetCacheDirectory(const char* directory);
 
 // Returns an invalid handle on a source compile error or a shader-stage
@@ -116,22 +107,13 @@ typedef enum FluxionShaderProgramReloadOutcome
     FLUXION_SHADER_PROGRAM_RELOAD_INVALID_REQUEST,
 } FluxionShaderProgramReloadOutcome;
 
-// Replaces a live program's shaders with freshly compiled ones, keeping
-// the handle valid.
-//
-// Keeping the handle is the whole point: a RenderPipeline and a Material
-// each hold this handle, so a destroy-and-recreate would leave both
-// pointing at nothing. What changes is what the handle refers to.
-//
-// Everything derived from the old shaders is rebuilt as part of this --
-// every pipeline built from this program is dropped and will be rebuilt
-// on next use. Materials are deliberately left alone, which is only safe
-// because a reload that would have invalidated them is refused instead
-// (see FLUXION_SHADER_PROGRAM_RELOAD_LAYOUT_CHANGED).
-//
-// Must not be called while a frame is being recorded: it destroys RHI
-// objects that the frame in progress may still be about to reference.
-// Call it between frames, where the GPU is known to be done.
+// Replaces a live program's shaders, keeping the handle valid -- which
+// is the whole point: pipelines and materials hold this handle.
+// Pipelines built from it are dropped and rebuilt on next use; materials
+// are left alone, safe only because a reload that would invalidate them
+// is refused (FLUXION_SHADER_PROGRAM_RELOAD_LAYOUT_CHANGED). Call it
+// between frames: it destroys RHI objects a recording frame may still
+// reference.
 FluxionShaderProgramReloadOutcome Fluxion_ShaderProgram_Reload(FluxionRHIDeviceHandle device, FluxionShaderProgramHandle program,
     const FluxionShaderProgramDesc* desc);
 

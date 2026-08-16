@@ -47,25 +47,13 @@
 extern "C" {
 #endif
 
-// Reading every entity that carries a particular set of components.
-//
-// Entities are stored grouped by which components they carry, in blocks.
-// A query walks the blocks whose grouping matches, and hands each one
-// over whole: the entities in it, and for each named type a pointer to
-// that type's values for exactly those entities, laid out one after
-// another with nothing in between.
-//
-// That is why this is block-shaped rather than entity-shaped. Asking for
-// one entity at a time would give the same answers and throw away the
-// only thing this storage is for -- that the values a pass reads are
-// already next to each other. Code that would rather see one entity at a
-// time can walk a block's rows itself; code that wants speed reads the
-// columns.
-//
-// A query holds no storage and takes nothing: it is a position in the
-// scene, made where it is used and abandoned when the walk ends. What it
-// does hold is the assumption that nothing structural happens while it
-// runs -- see below.
+// Reading every entity that carries a particular set of components, a
+// block at a time: the entities, and for each named type a contiguous
+// pointer to its values. Block-shaped rather than entity-shaped on
+// purpose -- one entity at a time would throw away the only thing this
+// storage is for. A query holds no storage: it is a position in the
+// scene, and it assumes nothing structural happens while it runs (see
+// below).
 
 // One block: the entities in it, and where its columns are.
 //

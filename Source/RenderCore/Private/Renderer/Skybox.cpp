@@ -137,22 +137,12 @@ extern "C" void FluxionRendererInternal_Skybox_Draw(FluxionRenderer* renderer, F
                                          FluxionRHIBindGroupHandle frameBindGroup,
                                          FluxionRHIFormat colorFormat, FluxionRHIFormat depthFormat, bool hasDepthAttachment)
 {
-    // The formats have to be known, and nothing here can find them out:
-    // a texture view carries no queryable format any more than it carries
-    // an extent, so the only source is what the caller said. A pipeline
-    // built against a format the attachment does not have is refused by
-    // the backend at the draw, with a message about two formats and no
-    // hint that one of them was never set.
-    //
-    // Refused here instead, once, by name. A caller that never says what
-    // it draws into gets no sky and is told why -- which is a better
-    // answer than a sky that is sometimes there.
-    // Whether there IS a depth attachment is something only the pass
-    // knows, so it says; whether its FORMAT is known is something only
-    // the caller can have said. Both have to line up, because a pipeline
-    // built against one shape and used with another is refused at the
-    // draw -- with a message naming two formats and no hint that one of
-    // them was never set.
+    // The formats must be known and nothing here can find them out -- a
+    // texture view carries no queryable format, so the only source is
+    // what the caller said. A mismatch surfaces at the draw as two
+    // formats with no hint that one was never set; refusing here, once,
+    // by name, is the better answer. The pass says whether there IS a
+    // depth attachment; only the caller can have said its format.
     const bool colorUnknown = colorFormat == FLUXION_RHI_FORMAT_UNKNOWN;
     const bool depthUnknown = hasDepthAttachment && depthFormat == FLUXION_RHI_FORMAT_UNKNOWN;
     if (colorUnknown || depthUnknown)
