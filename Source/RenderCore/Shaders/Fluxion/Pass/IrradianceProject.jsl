@@ -1,0 +1,212 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_PASS_IRRADIANCE_PROJECT_INCLUDED
+#define FLUXION_PASS_IRRADIANCE_PROJECT_INCLUDED
+
+#include "Fluxion/Math.jsl"
+
+// Turning a sky into nine numbers per channel, once.
+//
+// Runs when an environment is loaded and never again while it is
+// unchanged, which is what lets it be this direct: every thread walks the
+// whole sky, and there is no reduction between threads, no shared memory
+// and no atomics. Nine threads, one per coefficient. Everything a thread
+// needs is its own.
+//
+// The alternative -- splitting the sky between threads and combining
+// afterwards -- is faster and is a different program, with a second pass
+// and a barrier in it. It is worth writing when this shows up in a
+// measurement, and not before.
+//
+// The maths is from the published description of the method; see
+// SHADER_SOURCES.md.
+
+[Texture(Object)] TextureCube environmentSource;
+[Buffer(Object)] Vector4 irradianceOut;
+
+// How finely the sky is walked, per face, regardless of how large it
+// actually is.
+//
+// A fixed grid rather than one texel per step, and that is deliberate:
+// what is being fitted has three bands in it, so nothing beyond a coarse
+// sampling of the sky can survive into the result. Tying the work to the
+// texture's size instead would make a large environment cost hundreds of
+// times more for an answer that is the same to several decimals.
+//
+// Sampled with filtering, so a grid finer than the texture costs nothing
+// wrong -- it reads the same texels more than once -- and a grid coarser
+// than the texture still sees an average rather than a scattering of
+// single texels.
+#define FLUXION_IRRADIANCE_GRID 64
+
+// Which way the middle of a cell on this face looks.
+//
+// The same six-face convention as everything else that builds or reads a
+// cube map here: +X, -X, +Y, -Y, +Z, -Z, with +Y straight up.
+Vector3 Fluxion_Irradiance_FaceDirection(int face, float u, float v)
+{
+    if (face < 1) { return Vector3(1.0, -v, -u); }
+    if (face < 2) { return Vector3(-1.0, -v, u); }
+    if (face < 3) { return Vector3(u, 1.0, v); }
+    if (face < 4) { return Vector3(u, -1.0, -v); }
+    if (face < 5) { return Vector3(u, -v, 1.0); }
+    return Vector3(-u, -v, -1.0);
+}
+
+// The corner term of the solid angle a cube-map cell covers.
+//
+// A cell near the middle of a face covers more of the sphere than one out
+// at a corner, because the corner one is further away and more steeply
+// tilted. Weighting every cell equally instead would make the corners of
+// every face count for more than they should, and the error does not
+// average out -- it is the same in every face, so it biases the whole
+// fit.
+//
+// The closed form comes from integrating the differential solid angle
+// over the cell, and the four corners are combined below the way any
+// double integral is evaluated at its bounds.
+//
+// The one-argument arctangent is exact here, not an approximation of the
+// two-argument one: the denominator is a square root of something that is
+// at least one, so it is always positive, and that is the whole of what
+// the two-argument form exists to resolve.
+float Fluxion_Irradiance_AreaElement(float x, float y)
+{
+    return atan(x * y / sqrt(x * x + y * y + 1.0));
+}
+
+// One of the nine basis functions, chosen by index.
+//
+// Each thread evaluates only its own, so this is a choice made once per
+// sample rather than nine values computed and eight thrown away.
+float Fluxion_Irradiance_BasisAt(int index, Vector3 d)
+{
+    if (index < 1) { return 0.282095; }
+    if (index < 2) { return 0.488603 * d.y; }
+    if (index < 3) { return 0.488603 * d.z; }
+    if (index < 4) { return 0.488603 * d.x; }
+    if (index < 5) { return 1.092548 * d.x * d.y; }
+    if (index < 6) { return 1.092548 * d.y * d.z; }
+    if (index < 7) { return 0.315392 * (3.0 * d.z * d.z - 1.0); }
+    if (index < 8) { return 1.092548 * d.x * d.z; }
+    return 0.546274 * (d.x * d.x - d.y * d.y);
+}
+
+// How much of each band survives being convolved with the cosine lobe.
+//
+// A diffuse surface does not see the sky directly. It sees the sky
+// weighted by the cosine of the angle from its normal, and nothing at all
+// from below its horizon. Convolving with that lobe is what turns light
+// ARRIVING FROM every direction into light FALLING ON the surface, and in
+// this basis the whole convolution is one number per band rather than an
+// integral -- which is the reason the representation is worth having at
+// all.
+//
+// Folded in here, once, rather than in the shader that reads the result:
+// the surfaces reading it are many and this runs once.
+//
+// Past the third band the numbers are small enough that the bands are
+// dropped entirely, which is also why nine is the count and not some
+// other number.
+float Fluxion_Irradiance_CosineConvolution(int index)
+{
+    if (index < 1) { return FLUXION_PI; }
+    if (index < 4) { return 2.0 * FLUXION_PI / 3.0; }
+    return FLUXION_PI / 4.0;
+}
+
+void main()
+{
+    int index = int(ThreadID);
+
+    // The dispatch is one group and a group is wider than nine. The
+    // threads past the end have no coefficient to write and must not
+    // write one: the buffer is exactly nine long, and past it is whatever
+    // the allocator handed out next.
+    if (index < 9)
+    {
+        float convolution = Fluxion_Irradiance_CosineConvolution(index);
+        float cell = 1.0 / float(FLUXION_IRRADIANCE_GRID);
+
+        Vector3 total = Vector3(0.0, 0.0, 0.0);
+
+        for (int face = 0; face < 6; face = face + 1)
+        {
+            for (int j = 0; j < FLUXION_IRRADIANCE_GRID; j = j + 1)
+            {
+                float v = (float(j) + 0.5) * 2.0 * cell - 1.0;
+
+                for (int i = 0; i < FLUXION_IRRADIANCE_GRID; i = i + 1)
+                {
+                    float u = (float(i) + 0.5) * 2.0 * cell - 1.0;
+
+                    // The four corners of this cell, in the flat
+                    // coordinates of the face it sits on.
+                    float x0 = u - cell;
+                    float x1 = u + cell;
+                    float y0 = v - cell;
+                    float y1 = v + cell;
+
+                    float solidAngle = Fluxion_Irradiance_AreaElement(x1, y1)
+                                     - Fluxion_Irradiance_AreaElement(x0, y1)
+                                     - Fluxion_Irradiance_AreaElement(x1, y0)
+                                     + Fluxion_Irradiance_AreaElement(x0, y0);
+
+                    Vector3 direction = normalize(Fluxion_Irradiance_FaceDirection(face, u, v));
+
+                    // An explicit level, because there is no other kind
+                    // available here. A dispatch has no neighbouring
+                    // pixels to compare a coordinate against, so there is
+                    // nothing for an ordinary sample to work a level out
+                    // from.
+                    Vector3 radiance = textureLod(environmentSource, direction, 0.0).xyz;
+
+                    total = total + radiance * (Fluxion_Irradiance_BasisAt(index, direction) * solidAngle);
+                }
+            }
+        }
+
+        irradianceOut[index] = Vector4(total * convolution, 0.0);
+    }
+}
+
+#endif

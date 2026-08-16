@@ -330,6 +330,46 @@ void main() { return Vector4(LibraryValue(), 0.0, 0.0, 1.0); }
 
 } // namespace
 
+// The irradiance projection, compiled.
+//
+// It is a compute shader, and compute is the one stage nothing in this
+// engine had ever actually emitted: the language knew the word and the
+// RHI could build the pipeline, but no shader in the tree was one. So this
+// checks the whole path at once -- the library resolves, the pass parses,
+// and both backends produce something.
+void TheIrradianceProjectionCompiles(TestContext* ctx)
+{
+    const char* source = "#include \"Fluxion/Pass/IrradianceProject.jsl\"\n";
+
+    CompileOptions options;
+    options.stage = ShaderStage::Compute;
+    options.fileName = "<irradiance>";
+    options.includeResolver = MakeShaderLibraryResolver();
+
+    DiagnosticList diagnostics;
+    auto result = Compile(source, options, diagnostics);
+
+    if (!result.IsOk())
+    {
+        for (const Diagnostic& d : diagnostics.entries)
+        {
+            std::fprintf(stderr, "    %s:%u: %s\n", d.location.file.c_str(), d.location.line, d.message.c_str());
+        }
+    }
+
+    TEST_CHECK(ctx, result.IsOk());
+    if (!result.IsOk()) return;
+
+    // The sky is read at a level the shader names, which is the only kind
+    // of sampling a dispatch can do -- and the two backends spell that
+    // differently enough that checking one proves nothing about the other.
+    TEST_CHECK(ctx, result.Value().glslSource.find("textureLod(environmentSource") != std::string::npos);
+    TEST_CHECK(ctx, result.Value().hlslSource.find("environmentSource.SampleLevel(") != std::string::npos);
+
+    // Nine coefficients out, into a buffer a compute pass can write.
+    TEST_CHECK(ctx, result.Value().reflection.storageBuffers.size() == 1);
+}
+
 extern "C" void Test_ShaderLibrary_Run(TestContext* ctx)
 {
     std::fprintf(stderr, "  Test_ShaderLibrary\n");
@@ -339,4 +379,5 @@ extern "C" void Test_ShaderLibrary_Run(TestContext* ctx)
     WithoutTheResolverTheSameSourceFails(ctx);
     AnUnknownIncludeIsRefusedAndNamed(ctx);
     TheCacheKeyFollowsTheLibraryText(ctx);
+    TheIrradianceProjectionCompiles(ctx);
 }

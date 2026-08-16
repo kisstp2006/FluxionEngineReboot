@@ -532,6 +532,7 @@ private:
         static const std::unordered_map<std::string, TypeKind> kFixedResultBuiltins = {
             { "dot", TypeKind::Float }, { "length", TypeKind::Float }, { "distance", TypeKind::Float },
             { "texture2D", TypeKind::Vec4 }, { "texture", TypeKind::Vec4 }, { "textureCube", TypeKind::Vec4 },
+            { "textureLod", TypeKind::Vec4 },
         };
         auto fixedIt = kFixedResultBuiltins.find(call.callee);
         if (fixedIt != kFixedResultBuiltins.end())

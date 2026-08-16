@@ -51,6 +51,7 @@ engine_embed_shader_library(
         Fluxion/Math.jsl
         Fluxion/Surface.jsl
         Fluxion/Frame.jsl
+        Fluxion/SphericalHarmonics.jsl
         Fluxion/Object.jsl
         Fluxion/Varyings.jsl
         Fluxion/BRDF.jsl
@@ -58,6 +59,7 @@ engine_embed_shader_library(
         Fluxion/Tonemap.jsl
         Fluxion/Material.jsl
         Fluxion/Pass/Vertex.jsl
+        Fluxion/Pass/IrradianceProject.jsl
         Fluxion/Pass/Forward.jsl
         Fluxion/Pass/DepthOnly.jsl
         Fluxion/Pass/SkyboxVertex.jsl

@@ -145,4 +145,19 @@ struct FluxionLight
 // uniform block is paid for whether it is full or not.
 [Buffer(Frame)] FluxionLight lights;
 
+// The sky, as nine numbers per colour channel.
+//
+// A buffer rather than more fields in the block above, and for a reason
+// that is about where they come from rather than how many there are: they
+// are worked out ON THE GPU when an environment is loaded, and a buffer is
+// something a compute pass can write into directly. Putting them in the
+// uniform block would mean reading them back to the processor and sending
+// them out again every frame, to arrive at the numbers that were already
+// there.
+//
+// Already convolved with the cosine lobe -- see SphericalHarmonics.jsl --
+// so what a surface reads out of these is irradiance, in the same units as
+// every light in the scene.
+[Buffer(Frame)] Vector4 irradianceSH;
+
 #endif

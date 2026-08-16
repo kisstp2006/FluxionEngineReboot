@@ -1,0 +1,119 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_SPHERICAL_HARMONICS_INCLUDED
+#define FLUXION_SPHERICAL_HARMONICS_INCLUDED
+
+#include "Fluxion/Frame.jsl"
+#include "Fluxion/Math.jsl"
+
+// Describing a whole sky with nine numbers per colour channel.
+//
+// The light arriving at a diffuse surface from every direction at once is
+// a function over the sphere, and keeping that function as a picture means
+// reading a picture for every pixel. But a DIFFUSE surface cannot see any
+// of the detail in it: what it responds to is the arriving light weighted
+// by the cosine of the angle from its normal, and that weighting is so
+// broad that everything sharp in the sky is smoothed away before it has
+// any effect at all.
+//
+// So the sky is kept as a sum of nine smooth functions over the sphere --
+// the first three bands of the spherical harmonics -- and evaluating it
+// costs nine multiply-adds instead of a texture read. What is lost is
+// detail the surface was never going to show.
+//
+// Written from the published description of the method rather than from
+// anyone's code; see SHADER_SOURCES.md.
+//
+// The nine terms are written out one after another rather than looped
+// over. This language has no arrays, and the loop would have to be
+// unrolled by the compiler anyway -- so what is written is what runs, and
+// each line can be read against the basis function it stands for.
+
+#define FLUXION_SH_COEFFICIENT_COUNT 9
+
+// The irradiance arriving on a surface facing this way.
+//
+// The coefficients come from the frame's own buffer, worked out once when
+// the environment was loaded. They are ALREADY CONVOLVED with the cosine
+// lobe -- what turns light arriving from every direction into light
+// falling on a surface -- so this is a plain weighted sum rather than an
+// integral, and what comes out is irradiance in the same units as every
+// light in the scene.
+//
+// `normal` must be a unit vector: every basis function below is a
+// polynomial in its components that is only correct on the unit sphere.
+Vector3 Fluxion_SH_Irradiance(Vector3 normal)
+{
+    float x = normal.x;
+    float y = normal.y;
+    float z = normal.z;
+
+    // Band 0: constant, the average of the sky. On its own this is the
+    // flat ambient that used to stand in for all of it.
+    Vector3 irradiance = irradianceSH[0].xyz * 0.282095;
+
+    // Band 1: linear, which side the light comes from. This is the band
+    // that makes an upward-facing surface brighter than a downward-facing
+    // one under a sky, and it is the one a flat ambient cannot express at
+    // all.
+    irradiance = irradiance + irradianceSH[1].xyz * (0.488603 * y);
+    irradiance = irradiance + irradianceSH[2].xyz * (0.488603 * z);
+    irradiance = irradiance + irradianceSH[3].xyz * (0.488603 * x);
+
+    // Band 2: quadratic. Enough to tell a bright band around the horizon
+    // from a bright patch overhead, which is the difference between an
+    // outdoor sky and a room with a skylight.
+    irradiance = irradiance + irradianceSH[4].xyz * (1.092548 * x * y);
+    irradiance = irradiance + irradianceSH[5].xyz * (1.092548 * y * z);
+    irradiance = irradiance + irradianceSH[6].xyz * (0.315392 * (3.0 * z * z - 1.0));
+    irradiance = irradiance + irradianceSH[7].xyz * (1.092548 * x * z);
+    irradiance = irradiance + irradianceSH[8].xyz * (0.546274 * (x * x - y * y));
+
+    // A sum of signed functions can land below zero in directions the sky
+    // it was fitted to never was. Light arriving in a negative amount is
+    // not a thing, and left alone it shows as black rims on the surfaces
+    // facing away from the bright part of the sky -- which reads as a
+    // shading bug rather than as the fit running out of bands.
+    return max(irradiance, Vector3(0.0, 0.0, 0.0));
+}
+
+#endif

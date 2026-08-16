@@ -111,6 +111,20 @@ std::string RemapCallName(const std::string& name)
 
 bool IsTextureSampleCall(const std::string& name) { return name == "texture2D" || name == "texture" || name == "tex2D" || name == "textureCube"; }
 
+// Sampling at a level the shader names, rather than at one worked out from
+// how fast the coordinate changes between neighbouring pixels.
+//
+// It has to be a separate case from the one above because it takes three
+// arguments rather than two, and because the two languages disagree about
+// it more than usual: `textureLod` IS the name in GLSL, so that backend
+// passes it straight through, while here it is a different method on the
+// texture object altogether.
+//
+// A compute shader has no choice but this one. There are no neighbouring
+// pixels to compare against in a dispatch, so the ordinary sample has
+// nothing to work a level out from.
+bool IsTextureSampleLevelCall(const std::string& name) { return name == "textureLod"; }
+
 // The set index a BindingGroup maps to always equals the enum's integer
 // value -- this matches FLUXION_RHI_BIND_GROUP_GLOBAL/FRAME/MATERIAL/
 // OBJECT in RHI.h exactly, so a shader compiled with a given group and an
@@ -512,6 +526,16 @@ private:
                 {
                     const std::string& texName = static_cast<const VarRefExpr&>(*e.args[0]).name;
                     m_out << texName << ".Sample(" << texName << "_sampler, "; EmitExpr(*e.args[1]); m_out << ")";
+                    break;
+                }
+                if (IsTextureSampleLevelCall(e.callee) && e.args.size() == 3 && e.args[0]->kind == ExprKind::VarRef)
+                {
+                    const std::string& texName = static_cast<const VarRefExpr&>(*e.args[0]).name;
+                    m_out << texName << ".SampleLevel(" << texName << "_sampler, ";
+                    EmitExpr(*e.args[1]);
+                    m_out << ", ";
+                    EmitExpr(*e.args[2]);
+                    m_out << ")";
                     break;
                 }
                 m_out << RemapCallName(e.callee) << "(";
