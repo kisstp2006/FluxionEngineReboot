@@ -32,6 +32,7 @@ typedef struct FluxionRenderViewRecord
     // view starts with the small black cube the engine keeps.
     FluxionRHITextureViewHandle environmentView;
     FluxionRHISamplerHandle environmentSampler;
+    f32 environmentIntensity;
 
     // The one this view made for itself, kept apart from the one it is
     // currently using: a caller may set an environment with its own
@@ -261,6 +262,11 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     record->frameBindGroupLayout = frameBindGroupLayout;
     record->frameBindGroup = frameBindGroup;
     record->environmentView = defaultEnvironment;
+
+    // One until something says otherwise. The default environment is a
+    // black cube, so this multiplies nothing -- but a view that was given
+    // a real one and no intensity would otherwise start out invisible.
+    record->environmentIntensity = 1.0f;
     record->environmentSampler = defaultSampler;
     record->ownedEnvironmentSampler = defaultSampler;
     record->lightStaging = lightStaging;
@@ -316,6 +322,13 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
     constants.ambientColor.x = record->ambientColor.x;
     constants.ambientColor.y = record->ambientColor.y;
     constants.ambientColor.z = record->ambientColor.z;
+
+    // In the spare component of the ambient rather than in one of its
+    // own. The two stand for the same thing at different stages -- a flat
+    // amount arriving from everywhere, and the real thing that replaces
+    // it -- so keeping them together is what will make the changeover one
+    // edit rather than a hunt.
+    constants.ambientColor.w = record->environmentIntensity;
 
     constants.toneMapping.x = record->exposure;
     constants.toneMapping.y = record->tonemapWhitePoint;
@@ -419,10 +432,21 @@ void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRen
 }
 
 void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHITextureViewHandle cubeView,
-                                      FluxionRHISamplerHandle sampler)
+                                      FluxionRHISamplerHandle sampler, f32 intensity)
 {
     FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
     if (record == NULL) return;
+
+    // Stored BEFORE the check below, which returns early when the texture
+    // has not changed. The intensity travels in the frame constants and
+    // not in the bind group, so it can change while the group stays the
+    // same -- and setting it after that return is how a sky that was
+    // asked to dim would go on burning.
+    //
+    // Negative is refused rather than passed on: it would come out as a
+    // sky darker than black, which a float will happily hold and no
+    // hardware will do anything sensible with.
+    record->environmentIntensity = intensity > 0.0f ? intensity : 0.0f;
 
     // An invalid one puts the black cube back rather than leaving the
     // binding empty. There is no state in which this view has no

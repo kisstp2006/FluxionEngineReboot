@@ -32,16 +32,24 @@
 // from the engine's one-texel stand-ins where this sample has no map of
 // its own.
 #include <Fluxion/Application/Events/EventQueue.h>
+#include <Fluxion/Assets/AssetDatabase.h>
+#include <Fluxion/Assets/AssetSystem.h>
+#include <Fluxion/Assets/Assets.h>
+#include <Fluxion/Assets/VirtualFileSystem.h>
 #include <Fluxion/Application/Input/Input.h>
 #include <Fluxion/Application/Time/Time.h>
 #include <Fluxion/Application/Window/Window.h>
 #include <Fluxion/Core/Jobs/JobSystem.h>
 #include <Fluxion/Core/Reflection/Registry.h>
+#include <Fluxion/Core/Service/ServiceRegistry.h>
 #include <Fluxion/Foundation/Defines.h>
+#include <Fluxion/Foundation/Half.h>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/Foundation/ScopeExit.hpp>
 #include <Fluxion/Foundation/Memory/MemoryTracker.h>
 #include <Fluxion/Foundation/Math.h>
+#include <Fluxion/Foundation/Serialization/Stream.h>
+#include <Fluxion/Platform/File.h>
 #include <Fluxion/RHI/RHI.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraph.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraphPassRegistry.h>
@@ -330,6 +338,14 @@ int main(int argc, char** argv)
     Fluxion_Reflection_Init();
     FLUXION_SCOPE_EXIT(Fluxion_Reflection_Shutdown());
 
+    // The asset system publishes itself here, which is how a plugin gets
+    // at it without linking against it. Nothing in this sample is a
+    // plugin, and it is started anyway: the asset system refuses to come
+    // up without it rather than quietly leaving a build where plugins
+    // simply cannot add asset types.
+    Fluxion_ServiceRegistry_Init();
+    FLUXION_SCOPE_EXIT(Fluxion_ServiceRegistry_Shutdown());
+
     FluxionEventQueue queue;
     Fluxion_EventQueue_Init(&queue, NULL, 256);
     FLUXION_SCOPE_EXIT(Fluxion_EventQueue_Destroy(&queue));
@@ -593,67 +609,88 @@ int main(int argc, char** argv)
     FluxionRHISamplerHandle albedoSampler = Fluxion_RHI_CreateSampler(device, &albedoSamplerDesc);
     FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroySampler(albedoSampler));
 
-    // --- The sky ---------------------------------------------------------
+    // --- The sky, the long way round -------------------------------------
     //
-    // Six faces, filled in by direction. The same vector that aims the
-    // sun aims the bright spot in the sky, so the two cannot drift apart
-    // -- a sun sitting somewhere other than the light would read as a
-    // shadow bug.
+    // Cooked to a file, entered in the asset database, and then asked for
+    // BY ID -- rather than handed to the renderer as a texture this file
+    // happens to be holding. The long way is the point: it is the path a
+    // real project's sky takes, and going the short way would leave every
+    // part of it untried.
     //
+    // What plays the importer's part here is this file. A real importer
+    // reads an image and lives in a plugin, so that a shipped game
+    // carries no reader for any image format; this one works the sky out
+    // from directions, which is the one kind of sky that needs no reader
+    // at all.
+
+    if (!Fluxion_AssetSystem_Init(nullptr))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "The asset system would not start.");
+        return 1;
+    }
+    FLUXION_SCOPE_EXIT(
+        // Not the reverse of how they were set up, and deliberately.
+        // Shutting the asset system down releases what it still holds,
+        // and releasing a texture calls its TYPE's unload -- so the type
+        // has to still be registered while that happens.
+        Fluxion_AssetSystem_Shutdown();
+        Fluxion_TextureAsset_UnregisterType());
+
+    // The device and the queue go in here because the load has two halves
+    // and only one of them can happen on a worker: reading and decoding
+    // the file, then handing the pixels to a device.
+    if (!Fluxion_TextureAsset_RegisterType(device, graphicsQueue))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not register the texture asset type.");
+        return 1;
+    }
+
     // Thirty-two texels a face is small, and deliberately: this is a
     // gradient, and what is being shown is that a cube map is sampled by
     // direction at all, not how much detail one can hold.
+    //
+    // The same vector that aims the sun aims the bright spot in the sky,
+    // so the two cannot drift apart -- a sun sitting somewhere other than
+    // the light would read as a shadow bug.
     constexpr u32 kSkyFaceSize = 32;
     const FluxionVec3 toSun = Fluxion_Vec3_Normalize(FluxionVec3{ -0.4f, 0.7f, 0.6f });
 
-    FluxionRHITextureDesc skyDesc;
-    memset(&skyDesc, 0, sizeof(skyDesc));
-    skyDesc.width = kSkyFaceSize;
-    skyDesc.height = kSkyFaceSize;
-    skyDesc.depth = 1;
-    skyDesc.mipLevels = 1;
-    skyDesc.arrayLayers = FLUXION_RHI_CUBE_FACE_COUNT;
-    skyDesc.sampleCount = 1;
+    FluxionTextureImportSettings skySettings = Fluxion_TextureAsset_DefaultImportSettings(FLUXION_TEXTURE_USAGE_HDR);
 
-    // Full floats rather than halves: this sample has no half conversion
-    // of its own, and an environment is stored in whatever holds values
-    // above one. A real one would be halves or a block format; a
-    // thirty-two-texel gradient can afford not to be.
-    skyDesc.format = FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT;
-    skyDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_SAMPLED | FLUXION_RHI_TEXTURE_USAGE_TRANSFER_DST;
-    skyDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
-    skyDesc.debugName = "ForwardRendererDemo.Sky";
-    skyDesc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+    // Two departures from the defaults, both about this particular sky.
+    //
+    // No mips, because it is sampled at one level and a mip chain the
+    // file did not store would be a promise these settings could not
+    // keep. And not compressed: a block format's error is worst on a
+    // smooth gradient, which is exactly what a sky is, and the setting
+    // exists for cases like it.
+    skySettings.flags = 0;
+    skySettings.compression = (u32)FLUXION_TEXTURE_COMPRESSION_NONE;
 
-    FluxionRHITextureHandle skyTexture = Fluxion_RHI_CreateTexture(device, &skyDesc);
-    if (!FLUXION_HANDLE_IS_VALID(skyTexture))
+    // Asked for rather than chosen. The format follows from what the
+    // texture holds and from whether it is compressed, and a sample that
+    // picked one itself could pick a different one from the settings
+    // stored beside it -- which would come apart the first time anything
+    // read those settings back and cooked from them again.
+    //
+    // The block family is what the machine being cooked FOR can read. It
+    // decides nothing here, because nothing is being compressed.
+    const FluxionRHIFormat skyFormat = Fluxion_TextureAsset_GetCookedFormat(
+        FLUXION_TEXTURE_USAGE_HDR, (FluxionTextureCompression)skySettings.compression,
+        FLUXION_TEXTURE_BLOCK_FAMILY_BC);
+
+    // Tightly packed, six faces of one level, which is what a cooked file
+    // holds. The padding a device wants is put in when it is uploaded,
+    // and that happens inside the asset type rather than here.
+    const usize skyPixelBytes =
+        Fluxion_TextureAsset_GetTotalByteSize(skyFormat, kSkyFaceSize, kSkyFaceSize, 1, FLUXION_RHI_CUBE_FACE_COUNT);
+    std::vector<u8> skyPixels(skyPixelBytes, 0);
     {
-        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not make the sky's cube map.");
-        return 1;
-    }
-    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTexture(skyTexture));
-
-    // The staging layout comes from the engine rather than being worked
-    // out here: rows padded, each face starting on its own boundary.
-    FluxionTextureLevelPlacement skyPlacements[FLUXION_RHI_CUBE_FACE_COUNT];
-    u32 skyPlacementCount = 0;
-    const usize skyStagingSize = Fluxion_TextureAsset_PlanUpload(
-        skyDesc.format, kSkyFaceSize, kSkyFaceSize, 1, FLUXION_RHI_CUBE_FACE_COUNT,
-        skyPlacements, FLUXION_RHI_CUBE_FACE_COUNT, &skyPlacementCount);
-
-    FluxionRHIBufferDesc skyStagingDesc = { skyStagingSize, FLUXION_RHI_BUFFER_USAGE_TRANSFER_SRC,
-                                            FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU, "ForwardRendererDemo.SkyStaging" };
-    FluxionRHIBufferHandle skyStaging = Fluxion_RHI_CreateBuffer(device, &skyStagingDesc);
-
-    {
-        u8* mapped = (u8*)Fluxion_RHI_MapBuffer(skyStaging);
-        memset(mapped, 0, skyStagingSize);
-
+        FluxionHalf* texel = reinterpret_cast<FluxionHalf*>(skyPixels.data());
         for (u32 face = 0; face < FLUXION_RHI_CUBE_FACE_COUNT; ++face)
         {
             for (u32 y = 0; y < kSkyFaceSize; ++y)
             {
-                f32* row = (f32*)(mapped + skyPlacements[face].stagingOffset + (usize)y * skyPlacements[face].stagingRowBytes);
                 for (u32 x = 0; x < kSkyFaceSize; ++x)
                 {
                     // The centre of the texel, not its corner: sampling
@@ -663,61 +700,96 @@ int main(int argc, char** argv)
                     const f32 v = ((f32)y + 0.5f) / (f32)kSkyFaceSize * 2.0f - 1.0f;
 
                     const FluxionVec3 color = SkyColor(CubeFaceDirection(face, u, v), toSun);
-                    row[x * 4 + 0] = color.x;
-                    row[x * 4 + 1] = color.y;
-                    row[x * 4 + 2] = color.z;
-                    row[x * 4 + 3] = 1.0f;
+                    *texel++ = Fluxion_Half_FromFloat(color.x);
+                    *texel++ = Fluxion_Half_FromFloat(color.y);
+                    *texel++ = Fluxion_Half_FromFloat(color.z);
+                    *texel++ = Fluxion_Half_FromFloat(1.0f);
                 }
             }
         }
-
-        Fluxion_RHI_UnmapBuffer(skyStaging);
     }
 
+    FluxionTextureAssetData skyData;
+    memset(&skyData, 0, sizeof(skyData));
+    skyData.width = kSkyFaceSize;
+    skyData.height = kSkyFaceSize;
+    skyData.mipCount = 1;
+    skyData.arrayLayers = FLUXION_RHI_CUBE_FACE_COUNT;
+    skyData.format = skyFormat;
+
+    // The shape travels with the pixels. Six layers on their own are six
+    // pictures; what makes them a thing that can be sampled by direction
+    // is this, and it is stored rather than guessed from the count.
+    skyData.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+    skyData.pixels = skyPixels.data();
+    skyData.pixelBytes = skyPixels.size();
+
+    std::vector<u8> skyCooked(skyPixels.size() + 1024, 0);
+    FluxionStream skyWriter;
+    Fluxion_MemoryStream_InitWriter(&skyWriter, skyCooked.data(), skyCooked.size());
+    if (!Fluxion_TextureAsset_Write(&skyWriter, &skyData) || Fluxion_Stream_HasOverflowed(&skyWriter))
     {
-        FluxionRHICommandListHandle skyUpload = Fluxion_RHI_CreateCommandList(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
-        Fluxion_RHI_CommandList_Begin(skyUpload);
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not cook the sky.");
+        return 1;
+    }
+    skyCooked.resize(Fluxion_Stream_GetPosition(&skyWriter));
 
-        FluxionRHIBufferHandle noSkyBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
-        FluxionRHIBarrier skyToCopy = { skyTexture, noSkyBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED,
-                                        FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
-        Fluxion_RHI_CommandList_Barrier(skyUpload, &skyToCopy, 1);
-
-        for (u32 face = 0; face < FLUXION_RHI_CUBE_FACE_COUNT; ++face)
-        {
-            Fluxion_RHI_CommandList_CopyBufferToTexture(skyUpload, skyStaging, skyPlacements[face].stagingOffset, skyTexture, 0, face);
-        }
-
-        FluxionRHIBarrier skyToRead = skyToCopy;
-        skyToRead.before = FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION;
-        skyToRead.after = FLUXION_RHI_RESOURCE_STATE_SHADER_READ;
-        Fluxion_RHI_CommandList_Barrier(skyUpload, &skyToRead, 1);
-        Fluxion_RHI_CommandList_End(skyUpload);
-
-        FluxionRHIFenceHandle skyFence = Fluxion_RHI_CreateFence(device, false);
-        Fluxion_RHI_Queue_Submit(graphicsQueue, &skyUpload, 1, skyFence);
-        Fluxion_RHI_WaitForFence(skyFence);
-
-        Fluxion_RHI_DestroyFence(skyFence);
-        Fluxion_RHI_DestroyCommandList(skyUpload);
-        Fluxion_RHI_DestroyBuffer(skyStaging);
-        Fluxion_RHI_Device_CollectGarbage(device);
+    // Under the build tree rather than beside the sources, for the same
+    // reason the shader and script caches are: a checkout is never
+    // written to, and deleting the build tree is all it takes to be rid
+    // of what has accumulated here.
+    if (!Fluxion_Platform_DirectoryExists(FLUXION_DEMO_ASSET_DIR) &&
+        !Fluxion_Platform_DirectoryCreate(FLUXION_DEMO_ASSET_DIR))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not make the folder the cooked assets go in: %s", FLUXION_DEMO_ASSET_DIR);
+        return 1;
     }
 
-    // Read as a cube, which is what makes it samplable by direction --
-    // the same six layers viewed flat would be six pictures nothing can
-    // reach.
-    FluxionRHITextureViewDesc skyViewDesc;
-    memset(&skyViewDesc, 0, sizeof(skyViewDesc));
-    skyViewDesc.texture = skyTexture;
-    skyViewDesc.format = skyDesc.format;
-    skyViewDesc.mipLevelCount = 1;
-    skyViewDesc.arrayLayerCount = FLUXION_RHI_CUBE_FACE_COUNT;
-    skyViewDesc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
-    FluxionRHITextureViewHandle skyView = Fluxion_RHI_CreateTextureView(device, &skyViewDesc);
-    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTextureView(skyView));
+    // The scheme, not the folder, is what everything downstream names. A
+    // built game mounts a package under the same one, and nothing that
+    // asks for a file has to be changed.
+    if (!Fluxion_Vfs_Mount("assets", Fluxion_VfsDirectorySource_Create(FLUXION_DEMO_ASSET_DIR)))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not mount the cooked assets.");
+        return 1;
+    }
 
-    FluxionRHISamplerHandle skySampler = Fluxion_RHI_CreateSampler(device, &albedoSamplerDesc);
+    if (!Fluxion_Vfs_WriteAll("assets://Sky.fluxtex", skyCooked.data(), skyCooked.size()))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not write the cooked sky.");
+        return 1;
+    }
+
+    FluxionAssetDesc skyAsset;
+    memset(&skyAsset, 0, sizeof(skyAsset));
+    skyAsset.type = Fluxion_TextureAsset_TypeId();
+
+    // For reading logs, and nothing else. What resolves the sky is the id
+    // the database hands back below.
+    skyAsset.name = "Sky";
+    skyAsset.cookedPath = "assets://Sky.fluxtex";
+    skyAsset.version = 1;
+
+    // Stored beside it so that a re-import would produce the same file.
+    // The database keeps the bytes and hashes them; it does not read
+    // them, and could not -- a plugin's own asset type brings its own
+    // settings through the same field.
+    skyAsset.importSettings = &skySettings;
+    skyAsset.importSettingsSize = (u32)sizeof(skySettings);
+
+    FluxionUUID skyId;
+    if (!Fluxion_AssetDatabase_Add(&skyAsset, &skyId))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not enter the sky in the asset database.");
+        return 1;
+    }
+
+    // From the settings, not written out again here. Which way a texture
+    // wraps is part of what it IS -- an environment sampled past its edge
+    // would wrap round to the far side of the sky -- and the settings are
+    // where that is decided.
+    const FluxionRHISamplerDesc skySamplerDesc = Fluxion_TextureAsset_GetSamplerDesc(&skySettings);
+    FluxionRHISamplerHandle skySampler = Fluxion_RHI_CreateSampler(device, &skySamplerDesc);
     FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroySampler(skySampler));
 
     // --- Depth buffer: sized once at startup to the initial window
@@ -1138,6 +1210,27 @@ int main(int argc, char** argv)
         Fluxion_GameObject_SetLocalRotation(scene, spotObject, AimedAlong(FluxionVec3{ 0.0f, 1.0f, 0.0f }));
     }
 
+    // The sky is named by the scene, not by this file.
+    //
+    // A component holding an ID, not a texture handle. Where it is does
+    // not matter and is never read -- an environment is what surrounds
+    // everything, so it has no position to have. What it gets from being
+    // an object is what every other object gets: it can be saved, it
+    // turns up in the list of assets a build has to carry, and something
+    // that is not this program can put it there.
+    {
+        FluxionGameObjectHandle skyObject = Fluxion_Scene_CreateGameObject(scene, "Sky");
+
+        FluxionEnvironmentLight environment{};
+        environment.environment.asset = skyId;
+        environment.intensity = 1.0f;
+        if (Fluxion_GameObject_AddComponent(scene, skyObject, Fluxion_EnvironmentLight_TypeId(), &environment) == nullptr)
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put the environment on the sky object.");
+            return 1;
+        }
+    }
+
     FluxionGameObjectHandle cubeObject = Fluxion_Scene_CreateGameObject(scene, "Cube");
     Fluxion_GameObject_SetLocalPosition(scene, cubeObject, FluxionVec3{ 0.0f, 0.0f, -3.0f });
 
@@ -1200,6 +1293,12 @@ int main(int argc, char** argv)
     // Set for the single frame that follows a resize, when the depth
     // texture has been replaced and the new one has never been used.
     bool depthIsUndefined = false;
+
+    // Held across frames rather than acquired inside one: an asset takes
+    // more than a frame to arrive, and asking again each time would start
+    // the load over and never get there.
+    FluxionAssetHandle environmentAsset = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    FLUXION_SCOPE_EXIT(if (FLUXION_HANDLE_IS_VALID(environmentAsset)) Fluxion_Assets_Release(environmentAsset));
 
     while (running)
     {
@@ -1470,10 +1569,47 @@ int main(int argc, char** argv)
         }
         Fluxion_RenderView_SetLights(frameView, sceneLights, lightsUsed);
 
-        // What the world looks like in every direction. The sky behind
-        // the cube and the reflections on it will read the same texture,
-        // which is the point of it being one.
-        Fluxion_RenderView_SetEnvironment(frameView, skyView, skySampler);
+        // --- The sky, resolved from what the scene asked for -------------
+        //
+        // Every frame, and not once at startup, because what the scene
+        // asks for can change while it runs -- and because an asset is
+        // not ready the moment it is asked for. The first few frames of
+        // this demo draw no sky at all, and that is the normal state of
+        // affairs rather than a failure.
+        FluxionEnvironmentLight sceneEnvironment{};
+        const bool sceneHasEnvironment =
+            Fluxion_Scene_GatherEnvironment(scene, &sceneEnvironment) && Fluxion_AssetRef_IsSet(sceneEnvironment.environment);
+
+        if (sceneHasEnvironment)
+        {
+            // Asked for again only when it is a DIFFERENT one. Acquiring
+            // the same id every frame would be correct -- the asset
+            // system hands back one asset with two holders -- but it
+            // would also take a reference every frame and give none back.
+            const bool alreadyHeld =
+                FLUXION_HANDLE_IS_VALID(environmentAsset) &&
+                Fluxion_UUID_Equals(Fluxion_Assets_GetId(environmentAsset), sceneEnvironment.environment.asset);
+
+            if (!alreadyHeld)
+            {
+                if (FLUXION_HANDLE_IS_VALID(environmentAsset)) Fluxion_Assets_Release(environmentAsset);
+                environmentAsset = Fluxion_Assets_AcquireRef(sceneEnvironment.environment);
+            }
+        }
+
+        // The half of a load that cannot happen anywhere else: handing
+        // what a worker decoded to the device this thread owns.
+        Fluxion_Assets_Update();
+
+        if (FLUXION_HANDLE_IS_VALID(environmentAsset) &&
+            Fluxion_Assets_GetState(environmentAsset) == FLUXION_ASSET_STATE_READY)
+        {
+            const FluxionTextureAsset* sky = (const FluxionTextureAsset*)Fluxion_Assets_GetObject(environmentAsset);
+
+            // The sky behind the cube and the reflections on it read the
+            // same texture, which is the point of it being one.
+            Fluxion_RenderView_SetEnvironment(frameView, sky->view, skySampler, sceneEnvironment.intensity);
+        }
 
         Fluxion_RenderView_UpdateFrameConstants(frameView);
 

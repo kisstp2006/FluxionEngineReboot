@@ -1,5 +1,5 @@
 add_executable(ForwardRendererDemo main.cpp)
-target_link_libraries(ForwardRendererDemo PRIVATE Fluxion::RHI Fluxion::Application Fluxion::Platform Fluxion::Foundation Fluxion::ShaderCompiler Fluxion::RenderCore Fluxion::Scene Fluxion::Script Fluxion::Core)
+target_link_libraries(ForwardRendererDemo PRIVATE Fluxion::RHI Fluxion::Application Fluxion::Platform Fluxion::Foundation Fluxion::ShaderCompiler Fluxion::RenderCore Fluxion::Scene Fluxion::Script Fluxion::Core Fluxion::Assets)
 engine_set_warnings(ForwardRendererDemo)
 
 target_compile_definitions(ForwardRendererDemo PRIVATE
@@ -10,6 +10,10 @@ target_compile_definitions(ForwardRendererDemo PRIVATE
     # rid of what has accumulated here.
     FLUXION_DEMO_SCRIPT_CACHE_DIR="${CMAKE_CURRENT_BINARY_DIR}/ScriptCache"
     FLUXION_DEMO_SHADER_CACHE_DIR="${CMAKE_CURRENT_BINARY_DIR}/ShaderCache"
+    # Where the sample cooks its own sky to. Same reasoning as the two
+    # caches above: written to at run time, so it lives where a build
+    # lives and not where the sources do.
+    FLUXION_DEMO_ASSET_DIR="${CMAKE_CURRENT_BINARY_DIR}/Assets"
 )
 
 # The sample is the only thing that exercises a real device end to end --

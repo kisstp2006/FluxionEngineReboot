@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Fluxion/Assets/AssetRef.h>
 #include <Fluxion/Core/Reflection/TypeId.h>
 #include <Fluxion/Foundation/Math.h>
 #include <Fluxion/Foundation/Types.h>
@@ -75,11 +76,42 @@ typedef struct FluxionSpotLight
     f32 outerConeAngle;
 } FluxionSpotLight;
 
+// What the world looks like in every direction: a sky, and the light it
+// casts on everything.
+//
+// It is a light and not a background. The sky is what fills in every
+// direction nothing else covers, and once the irradiance from it is being
+// worked out it is also the largest light source in most scenes -- the
+// reason an object's shaded side is blue outdoors rather than black.
+// Drawing it behind everything is a consequence of having it, not the
+// purpose.
+//
+// THE ENVIRONMENT IS AN ASSET REFERENCE, not a texture handle. A scene
+// saved with a handle in it would come back pointing at whatever occupied
+// that slot next; an id is a thing that survives being written down --
+// which is the same reason every other asset in a scene is one.
+//
+// Which SHAPE that asset has is not a separate kind of asset: a sky is a
+// Texture whose dimension is a cube. Six images, one equirectangular
+// file, or a cross layout are all ways of IMPORTING one, and the importer
+// lives in a plugin -- so a built game carries no reader for any of them.
+typedef struct FluxionEnvironmentLight
+{
+    FluxionAssetRef environment;
+
+    // A multiplier over what the asset holds. The environment is stored
+    // in real units like everything else, so this is not a brightness
+    // slider: it is for a scene that wants the same sky dimmer than it
+    // was captured, without a second copy of it.
+    f32 intensity;
+} FluxionEnvironmentLight;
+
 // The ids these are registered under. A script naming the same type names
 // the same id, so a script's light and a stored light are one thing.
 FluxionTypeId Fluxion_DirectionalLight_TypeId(void);
 FluxionTypeId Fluxion_PointLight_TypeId(void);
 FluxionTypeId Fluxion_SpotLight_TypeId(void);
+FluxionTypeId Fluxion_EnvironmentLight_TypeId(void);
 
 // Every light in the scene, flattened into world space, in the shape a
 // renderer takes.
@@ -92,6 +124,18 @@ FluxionTypeId Fluxion_SpotLight_TypeId(void);
 // Reads the world matrices as they stand, so it belongs after the
 // transform update and before the frame is drawn.
 u32 Fluxion_Scene_GatherLights(FluxionSceneHandle scene, struct FluxionRenderLight* outLights, u32 capacity);
+
+// The scene's sky, if it has one.
+//
+// One rather than a list: a scene is inside one world, and two skies is
+// not a thing that has an answer. When more than one object carries the
+// component the first found wins and the rest are reported -- silently
+// picking one would make which sky you got depend on the order objects
+// happened to be created in.
+//
+// False when nothing in the scene carries the component, which is not an
+// error: a scene with no sky is lit by its lights alone.
+bool Fluxion_Scene_GatherEnvironment(FluxionSceneHandle scene, FluxionEnvironmentLight* outEnvironment);
 
 #ifdef __cplusplus
 }

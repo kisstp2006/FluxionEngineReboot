@@ -10,6 +10,7 @@
 #include "SceneInternal.h"
 
 #include <Fluxion/Foundation/Assert.h>
+#include <Fluxion/Foundation/Log.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
 #include <Fluxion/Scene/EntityQuery.h>
 #include <Fluxion/Scene/Light.h>
@@ -143,4 +144,48 @@ u32 Fluxion_Scene_GatherLights(FluxionSceneHandle scene, FluxionRenderLight* out
     // call from this, so answering with what it could hold would mean it
     // never learned it needed more.
     return total;
+}
+
+bool Fluxion_Scene_GatherEnvironment(FluxionSceneHandle scene, FluxionEnvironmentLight* outEnvironment)
+{
+    if (outEnvironment == NULL) return false;
+
+    const FluxionTypeId required[1] = { Fluxion_EnvironmentLight_TypeId() };
+
+    FluxionEntityQueryDesc desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.required = required;
+    desc.requiredCount = 1;
+
+    FluxionEntityQuery query = Fluxion_Scene_Query(scene, &desc);
+    FluxionEntityChunkView chunk;
+
+    bool found = false;
+    u32 total = 0;
+
+    while (Fluxion_EntityQuery_Next(&query, &chunk))
+    {
+        const FluxionEnvironmentLight* column =
+            (const FluxionEnvironmentLight*)Fluxion_EntityChunk_Column(&chunk, Fluxion_EnvironmentLight_TypeId());
+        if (column == NULL) continue;
+
+        total += chunk.count;
+
+        if (!found && chunk.count > 0)
+        {
+            *outEnvironment = column[0];
+            found = true;
+        }
+    }
+
+    // Reported rather than passed over. A scene is inside one world, and
+    // two skies has no answer -- so picking one silently would make which
+    // sky you got depend on the order the objects happened to be created
+    // in, which is not something anyone can look at and check.
+    if (total > 1)
+    {
+        FLUXION_LOG_WARN("Scene", "This scene has %u environments and can only be inside one; the first found is used.", total);
+    }
+
+    return found;
 }

@@ -32,6 +32,12 @@
 
 // rgb: a flat amount arriving from every direction, standing in for the
 // sky until there is one.
+//
+// w: how much the environment map counts for -- what is seen of it
+// directly and, once there is any, what it casts. It sits here rather
+// than in a field of its own because it is what the rgb above turns into:
+// when the sky becomes a real light source, this is the number that
+// survives and those are the ones that go.
 [Uniform(Frame)] Vector4 ambientColor;
 
 // x: how many lights the list below holds. yzw unused.

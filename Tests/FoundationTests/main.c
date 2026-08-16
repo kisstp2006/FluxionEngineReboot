@@ -11,6 +11,7 @@ void Test_Hashing_Run(TestContext* ctx);
 void Test_Handle_Run(TestContext* ctx);
 void Test_UUID_Run(TestContext* ctx);
 void Test_Bit_Run(TestContext* ctx);
+void Test_Half_Run(TestContext* ctx);
 void Test_Atomic_Run(TestContext* ctx);
 void Test_Math_Run(TestContext* ctx);
 void Test_ResultCpp_Run(TestContext* ctx);
@@ -37,6 +38,7 @@ int main(void)
     Test_Handle_Run(&ctx);
     Test_UUID_Run(&ctx);
     Test_Bit_Run(&ctx);
+    Test_Half_Run(&ctx);
     Test_Atomic_Run(&ctx);
     Test_Math_Run(&ctx);
     Test_ResultCpp_Run(&ctx);

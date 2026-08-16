@@ -19,91 +19,32 @@
 
 #include "BlockCompressInternal.h"
 
+#include <Fluxion/Foundation/Half.h>
+
 #include <string.h>
 
 #define FLUXION_BC6H_PRECISION 10
 
 static const u32 kBC6HWeights4[16] = { 0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64 };
 
-// --- Half precision, both directions ------------------------------------
+// --- Half precision -----------------------------------------------------
 //
-// Written here rather than reached for: this is the only thing in the
-// engine that needs them, and a conversion that rounds differently from
-// the one a decoder assumes would show up as a whole texture being
-// slightly wrong.
+// The conversion itself belongs to Foundation, because nothing about it
+// is this format's. What IS this format's is the clamp below: the
+// unsigned form of BC6H has no way to store a negative number and no
+// exponent above what a half holds, so a value outside that has to become
+// something before it is converted at all.
 
 static u16 Fluxion_BC6H_FloatToHalfBits(f32 value)
 {
-    // Negative values have no representation in the unsigned form of this
-    // format, and neither does anything above what a half can hold.
-    if (!(value > 0.0f)) return 0; // also catches NaN, which has no sensible block encoding
+    // Also catches NaN, which has no sensible block encoding -- and which
+    // the general conversion rightly preserves, so it has to be caught
+    // here rather than left to be turned into a half NaN and read back as
+    // an enormous quantized position.
+    if (!(value > 0.0f)) return 0;
     if (value > 65504.0f) value = 65504.0f;
 
-    u32 bits;
-    memcpy(&bits, &value, sizeof(bits));
-
-    const i32 exponent = (i32)((bits >> 23) & 0xFFu) - 127;
-    const u32 mantissa = bits & 0x7FFFFFu;
-
-    if (exponent < -24) return 0;
-
-    if (exponent < -14)
-    {
-        // Subnormal in half: shift the implicit one back in and round.
-        const u32 shift = (u32)(-exponent - 14);
-        const u32 full = mantissa | 0x800000u;
-        return (u16)((full + (1u << (12u + shift))) >> (13u + shift));
-    }
-
-    const u32 halfExponent = (u32)(exponent + 15);
-    u32 half = (halfExponent << 10) | (mantissa >> 13);
-
-    // Round to nearest, ties away from zero -- carrying into the exponent
-    // if the mantissa overflows, which the addition does on its own
-    // because the two fields are adjacent.
-    if ((mantissa & 0x1000u) != 0) half += 1u;
-    return (u16)half;
-}
-
-static f32 Fluxion_BC6H_HalfBitsToFloat(u16 half)
-{
-    const u32 sign = (u32)(half >> 15) & 1u;
-    const u32 exponent = (u32)(half >> 10) & 0x1Fu;
-    const u32 mantissa = (u32)half & 0x3FFu;
-
-    u32 bits;
-    if (exponent == 0)
-    {
-        if (mantissa == 0)
-        {
-            bits = sign << 31;
-        }
-        else
-        {
-            // Subnormal: normalise it into the wider exponent range.
-            u32 shifted = mantissa;
-            i32 e = -1;
-            while ((shifted & 0x400u) == 0)
-            {
-                shifted <<= 1;
-                --e;
-            }
-            shifted &= 0x3FFu;
-            bits = (sign << 31) | ((u32)(e + 15 + 112) << 23) | (shifted << 13);
-        }
-    }
-    else if (exponent == 31)
-    {
-        bits = (sign << 31) | 0x7F800000u | (mantissa << 13);
-    }
-    else
-    {
-        bits = (sign << 31) | ((exponent + 112u) << 23) | (mantissa << 13);
-    }
-
-    f32 value;
-    memcpy(&value, &bits, sizeof(value));
-    return value;
+    return Fluxion_Half_FromFloat(value);
 }
 
 // --- The format's own arithmetic ----------------------------------------
@@ -301,7 +242,7 @@ void Fluxion_BC6H_DecodeBlock(const u8 block[16], f32 outTexels[64])
         for (u32 channel = 0; channel < 3; ++channel)
         {
             const u16 half = Fluxion_BC6H_Finish(Fluxion_BC6H_Interpolate(endpoint0[channel], endpoint1[channel], kBC6HWeights4[index]));
-            outTexels[i * 4 + channel] = Fluxion_BC6H_HalfBitsToFloat(half);
+            outTexels[i * 4 + channel] = Fluxion_Half_ToFloat(half);
         }
 
         // Said rather than left as whatever the caller's buffer held: this

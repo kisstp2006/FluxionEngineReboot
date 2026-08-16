@@ -19,6 +19,8 @@
 #include "OpenGLCommon.h"
 #include "OpenGLFunctions.h"
 
+#include <Fluxion/Foundation/Log.h>
+
 #include <cstring>
 
 // --- Generic slot pool -------------------------------------------------------
@@ -153,7 +155,15 @@ void Fluxion_RHIOpenGL_MapPixelTransferFormat(FluxionRHIFormat format, GLenum* o
             *outFormat = GL_BGRA; *outType = GL_UNSIGNED_BYTE; return;
         case FLUXION_RHI_FORMAT_R32_FLOAT:
             *outFormat = GL_RED; *outType = GL_FLOAT; return;
+        // Half, and it has to be said. This pair decides how wide the
+        // driver believes each texel in the SOURCE bytes is, and a half
+        // texture described as full floats is read at twice its stride:
+        // every row picks up the row after it, and the last one runs off
+        // the end of the buffer -- which is the only part of that a
+        // driver can see, and it is the last thing to go wrong rather
+        // than the first.
         case FLUXION_RHI_FORMAT_R16G16B16A16_FLOAT:
+            *outFormat = GL_RGBA; *outType = GL_HALF_FLOAT; return;
         case FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT:
             *outFormat = GL_RGBA; *outType = GL_FLOAT; return;
         case FLUXION_RHI_FORMAT_R32G32B32_FLOAT:
@@ -161,6 +171,12 @@ void Fluxion_RHIOpenGL_MapPixelTransferFormat(FluxionRHIFormat format, GLenum* o
         case FLUXION_RHI_FORMAT_R32G32_FLOAT:
             *outFormat = GL_RG; *outType = GL_FLOAT; return;
         default:
+            // Said out loud rather than guessed at. Everything above is a
+            // format this backend can move pixels for; anything else
+            // reaching here is a format somebody added without coming
+            // through this function, and answering with a plausible pair
+            // would upload it at the wrong stride and report nothing.
+            FLUXION_LOG_ERROR("RHI.OpenGL", "no pixel transfer format for %d; the upload would be read at the wrong stride", (int)format);
             *outFormat = GL_RGBA; *outType = GL_UNSIGNED_BYTE; return;
     }
 }

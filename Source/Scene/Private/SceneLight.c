@@ -24,18 +24,22 @@
 #define FLUXION_SCENE_DIRECTIONAL_PROPERTY_COUNT 1
 #define FLUXION_SCENE_POINT_PROPERTY_COUNT       2
 #define FLUXION_SCENE_SPOT_PROPERTY_COUNT        4
+#define FLUXION_SCENE_ENVIRONMENT_PROPERTY_COUNT 2
 
 static FluxionPropertyInfo s_directionalProperties[FLUXION_SCENE_DIRECTIONAL_PROPERTY_COUNT];
 static FluxionPropertyInfo s_pointProperties[FLUXION_SCENE_POINT_PROPERTY_COUNT];
 static FluxionPropertyInfo s_spotProperties[FLUXION_SCENE_SPOT_PROPERTY_COUNT];
+static FluxionPropertyInfo s_environmentProperties[FLUXION_SCENE_ENVIRONMENT_PROPERTY_COUNT];
 
 static FluxionTypeInfo s_directionalType;
 static FluxionTypeInfo s_pointType;
 static FluxionTypeInfo s_spotType;
+static FluxionTypeInfo s_environmentType;
 
 FluxionTypeId Fluxion_DirectionalLight_TypeId(void) { return FLUXION_TYPE_ID_OF(FluxionDirectionalLight); }
 FluxionTypeId Fluxion_PointLight_TypeId(void) { return FLUXION_TYPE_ID_OF(FluxionPointLight); }
 FluxionTypeId Fluxion_SpotLight_TypeId(void) { return FLUXION_TYPE_ID_OF(FluxionSpotLight); }
+FluxionTypeId Fluxion_EnvironmentLight_TypeId(void) { return FLUXION_TYPE_ID_OF(FluxionEnvironmentLight); }
 
 // Every field is written out, unlike the transform -- there is nothing
 // here that is worked out from something else, so there is nothing to
@@ -63,6 +67,17 @@ static void Fluxion_SceneLight_DescribeProperties(void)
         FLUXION_REFLECT_PROPERTY(FluxionSpotLight, outerConeAngle, FLUXION_TYPE_ID_OF(f32), FLUXION_PROPERTY_FLAG_NONE),
     };
     memcpy(s_spotProperties, spot, sizeof(spot));
+
+    // The asset reference is reflected like any other field, which is
+    // what lets Fluxion_Scene_GatherAssetReferences find it: a build that
+    // has to know which assets a scene reaches for cannot ask the scene,
+    // it has to look at the declared type of every field.
+    const FluxionPropertyInfo environment[FLUXION_SCENE_ENVIRONMENT_PROPERTY_COUNT] =
+    {
+        FLUXION_REFLECT_PROPERTY(FluxionEnvironmentLight, environment, Fluxion_AssetRef_TypeId(), FLUXION_PROPERTY_FLAG_NONE),
+        FLUXION_REFLECT_PROPERTY(FluxionEnvironmentLight, intensity, FLUXION_TYPE_ID_OF(f32), FLUXION_PROPERTY_FLAG_NONE),
+    };
+    memcpy(s_environmentProperties, environment, sizeof(environment));
 }
 
 static bool Fluxion_SceneLight_RegisterOne(FluxionTypeInfo* type, const char* name, FluxionTypeId id, u32 size,
@@ -100,7 +115,12 @@ bool Fluxion_SceneLight_EnsureRegistered(void)
                                         FLUXION_SCENE_POINT_PROPERTY_COUNT))
         return false;
 
-    return Fluxion_SceneLight_RegisterOne(&s_spotType, "FluxionSpotLight", Fluxion_SpotLight_TypeId(),
-                                          (u32)sizeof(FluxionSpotLight), s_spotProperties,
-                                          FLUXION_SCENE_SPOT_PROPERTY_COUNT);
+    if (!Fluxion_SceneLight_RegisterOne(&s_spotType, "FluxionSpotLight", Fluxion_SpotLight_TypeId(),
+                                        (u32)sizeof(FluxionSpotLight), s_spotProperties,
+                                        FLUXION_SCENE_SPOT_PROPERTY_COUNT))
+        return false;
+
+    return Fluxion_SceneLight_RegisterOne(&s_environmentType, "FluxionEnvironmentLight", Fluxion_EnvironmentLight_TypeId(),
+                                          (u32)sizeof(FluxionEnvironmentLight), s_environmentProperties,
+                                          FLUXION_SCENE_ENVIRONMENT_PROPERTY_COUNT);
 }

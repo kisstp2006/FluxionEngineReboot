@@ -11,6 +11,7 @@ engine_add_test(
         Test_Handle.c
         Test_UUID.c
         Test_Bit.c
+        Test_Half.c
         Test_Atomic.c
         Test_Math.c
         Test_ResultCpp.cpp

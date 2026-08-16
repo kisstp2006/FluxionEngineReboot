@@ -2,8 +2,10 @@
 
 #include <Fluxion/Core/Reflection/Registry.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
+#include <Fluxion/Assets/AssetRef.h>
 #include <Fluxion/Scene/Light.h>
 #include <Fluxion/Scene/Scene.h>
+#include <Fluxion/Scene/SceneSerialization.h>
 
 #include <cmath>
 #include <cstring>
@@ -214,6 +216,160 @@ void AllThreeKindsComeBackTogether(TestContext& ctx)
     Fluxion_Scene_Destroy(scene);
 }
 
+// A made-up id, used only so that "which id came back" is a question
+// with a wrong answer available.
+FluxionUUID SkyId()
+{
+    FluxionUUID id{};
+    for (u32 i = 0; i < 16; ++i) id.bytes[i] = (u8)(0xA0 + i);
+    return id;
+}
+
+void ASceneWithNoSkyIsNotAnError(TestContext& ctx)
+{
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+
+    // A light, so that "nothing found" cannot come from an empty scene.
+    FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(scene, "Sun");
+    FluxionDirectionalLight sun{};
+    sun.color = FluxionVec3{ 1.0f, 1.0f, 1.0f };
+    Fluxion_GameObject_AddComponent(scene, object, Fluxion_DirectionalLight_TypeId(), &sun);
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    // Filled in first, and checked afterwards: a false return that had
+    // written something anyway would leave a caller holding a sky it was
+    // told it did not have.
+    FluxionEnvironmentLight environment{};
+    environment.intensity = 12345.0f;
+
+    TEST_CHECK(ctx, !Fluxion_Scene_GatherEnvironment(scene, &environment));
+    TEST_CHECK(ctx, Near(environment.intensity, 12345.0f, 0.001f));
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+void TheSkyComesBackWithItsAssetAndItsIntensity(TestContext& ctx)
+{
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+
+    FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(scene, "Sky");
+
+    FluxionEnvironmentLight sky{};
+    sky.environment.asset = SkyId();
+    sky.intensity = 0.75f;
+    TEST_CHECK(ctx, Fluxion_GameObject_AddComponent(scene, object, Fluxion_EnvironmentLight_TypeId(), &sky) != nullptr);
+
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    FluxionEnvironmentLight found{};
+    TEST_CHECK(ctx, Fluxion_Scene_GatherEnvironment(scene, &found));
+    TEST_CHECK(ctx, Fluxion_UUID_Equals(found.environment.asset, SkyId()));
+    TEST_CHECK(ctx, Near(found.intensity, 0.75f, 0.001f));
+
+    // Where the object is does not reach the sky. An environment is what
+    // surrounds everything; moving the object that carries it would
+    // otherwise look like it should move the world.
+    Fluxion_GameObject_SetLocalPosition(scene, object, FluxionVec3{ 100.0f, 0.0f, 0.0f });
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    FluxionEnvironmentLight moved{};
+    TEST_CHECK(ctx, Fluxion_Scene_GatherEnvironment(scene, &moved));
+    TEST_CHECK(ctx, Fluxion_UUID_Equals(moved.environment.asset, SkyId()));
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+void ASkyAndALampOnOneObjectStayApart(TestContext& ctx)
+{
+    // Both on one object, so the two of them share a block. A gather that
+    // read its column by position rather than by type would hand back the
+    // wrong bytes here and nowhere else -- on separate objects the two
+    // blocks each hold one thing, and the mistake would come out right.
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+
+    FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(scene, "SkyAndLamp");
+
+    FluxionEnvironmentLight sky{};
+    sky.environment.asset = SkyId();
+    sky.intensity = 0.5f;
+    Fluxion_GameObject_AddComponent(scene, object, Fluxion_EnvironmentLight_TypeId(), &sky);
+
+    FluxionPointLight lamp{};
+    lamp.color = FluxionVec3{ 7.0f, 8.0f, 9.0f };
+    lamp.range = 4.0f;
+    Fluxion_GameObject_AddComponent(scene, object, Fluxion_PointLight_TypeId(), &lamp);
+
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    FluxionEnvironmentLight found{};
+    TEST_CHECK(ctx, Fluxion_Scene_GatherEnvironment(scene, &found));
+    TEST_CHECK(ctx, Fluxion_UUID_Equals(found.environment.asset, SkyId()));
+    TEST_CHECK(ctx, Near(found.intensity, 0.5f, 0.001f));
+
+    // And the lamp is still a lamp, with its own numbers.
+    FluxionRenderLight lights[4];
+    const u32 count = Fluxion_Scene_GatherLights(scene, lights, 4);
+    TEST_CHECK(ctx, count == 1);
+    if (count == 1)
+    {
+        TEST_CHECK(ctx, lights[0].type == FLUXION_RENDER_LIGHT_POINT);
+        TEST_CHECK(ctx, Near(lights[0].color.x, 7.0f, 0.001f));
+        TEST_CHECK(ctx, Near(lights[0].range, 4.0f, 0.001f));
+    }
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+void TwoSkiesGiveOneAnswer(TestContext& ctx)
+{
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+
+    for (u32 i = 0; i < 2; ++i)
+    {
+        FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(scene, "Sky");
+        FluxionEnvironmentLight sky{};
+        sky.environment.asset = SkyId();
+        sky.intensity = 1.0f + (f32)i;
+        Fluxion_GameObject_AddComponent(scene, object, Fluxion_EnvironmentLight_TypeId(), &sky);
+    }
+
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    // One, not two and not none. Which one is not promised -- what is
+    // promised is that the caller gets a usable answer and a warning it
+    // can act on, rather than the second one quietly overwriting the
+    // first.
+    FluxionEnvironmentLight found{};
+    TEST_CHECK(ctx, Fluxion_Scene_GatherEnvironment(scene, &found));
+    TEST_CHECK(ctx, Fluxion_UUID_Equals(found.environment.asset, SkyId()));
+    TEST_CHECK(ctx, Near(found.intensity, 1.0f, 0.001f) || Near(found.intensity, 2.0f, 0.001f));
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+void TheSkysAssetIsOneTheBuildWillFind(TestContext& ctx)
+{
+    // The reason the reference is REFLECTED rather than just stored.
+    // Whoever packages a build walks the fields of every component and
+    // asks which of them are asset references; a sky whose field was not
+    // declared would be left out of the package, and the failure would be
+    // a black sky in a shipped game and nothing at all before it.
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+
+    FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(scene, "Sky");
+    FluxionEnvironmentLight sky{};
+    sky.environment.asset = SkyId();
+    sky.intensity = 1.0f;
+    Fluxion_GameObject_AddComponent(scene, object, Fluxion_EnvironmentLight_TypeId(), &sky);
+
+    FluxionUUID assets[4];
+    const u32 count = Fluxion_Scene_GatherAssetReferences(scene, assets, 4);
+    TEST_CHECK(ctx, count == 1);
+    if (count == 1) TEST_CHECK(ctx, Fluxion_UUID_Equals(assets[0], SkyId()));
+
+    Fluxion_Scene_Destroy(scene);
+}
+
 } // namespace
 
 void Test_SceneLights_Run(TestContext& ctx)
@@ -223,4 +379,9 @@ void Test_SceneLights_Run(TestContext& ctx)
     ConeAnglesTheWrongWayRoundAreMadeHarmless(ctx);
     TheCountIsHowManyThereAreNotHowManyFitted(ctx);
     AllThreeKindsComeBackTogether(ctx);
+    ASceneWithNoSkyIsNotAnError(ctx);
+    TheSkyComesBackWithItsAssetAndItsIntensity(ctx);
+    ASkyAndALampOnOneObjectStayApart(ctx);
+    TwoSkiesGiveOneAnswer(ctx);
+    TheSkysAssetIsOneTheBuildWillFind(ctx);
 }

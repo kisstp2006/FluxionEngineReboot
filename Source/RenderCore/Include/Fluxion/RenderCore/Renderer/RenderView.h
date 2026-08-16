@@ -219,8 +219,14 @@ void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRen
 // all, since a shader cannot ask whether a texture is bound and a backend
 // handed an empty slot refuses the whole group rather than the one
 // binding.
+//
+// `intensity` multiplies what the environment contributes -- both what is
+// seen of it directly and, once there is any, the light it casts. One
+// number for both, because they are the same thing seen two ways: a sky
+// shown brighter than it lights is a sky that does not match its own
+// reflections, and nothing in a picture says which of the two is wrong.
 void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHITextureViewHandle cubeView,
-                                       FluxionRHISamplerHandle sampler);
+                                       FluxionRHISamplerHandle sampler, f32 intensity);
 
 // Records the copy that puts those lights where the GPU can read them.
 //

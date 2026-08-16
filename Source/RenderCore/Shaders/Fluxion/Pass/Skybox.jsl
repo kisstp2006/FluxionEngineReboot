@@ -28,7 +28,11 @@ void main() {
   // in the right direction with the wrong weight between faces.
   Vector3 direction = normalize(vDirection);
 
-  Vector3 color = texture(environmentMap, direction).xyz;
+  // The same multiplier the lighting will apply to what this sky casts.
+  // Shown and cast have to move together, or the reflections on an object
+  // stop matching the sky behind it -- and a picture cannot say which of
+  // the two is the wrong one.
+  Vector3 color = texture(environmentMap, direction).xyz * ambientColor.w;
 
   // The same camera as everything else, and that is not a detail. The
   // scene's lights are in real units and are brought down by this
