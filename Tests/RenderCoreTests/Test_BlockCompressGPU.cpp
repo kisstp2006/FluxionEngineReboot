@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 
+#include <Fluxion/Foundation/Handle.hpp>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/Foundation/Math.h>
 #include <Fluxion/RHI/RHI.h>
@@ -40,9 +41,12 @@ constexpr u32 kSize = 16; // four blocks by four
 
 struct GpuFixture
 {
-    FluxionRHIInstanceHandle instance{};
-    FluxionRHIDeviceHandle device{};
-    FluxionRHIQueueHandle queue{};
+    // Invalid rather than zeroed: index zero is a real slot, so a zeroed
+    // handle reads as valid and a rig that gave up early would tear down
+    // work that is not its own.
+    FluxionRHIInstanceHandle instance = Fluxion::Foundation::NoHandle<FluxionRHIInstanceHandle>();
+    FluxionRHIDeviceHandle device = Fluxion::Foundation::NoHandle<FluxionRHIDeviceHandle>();
+    FluxionRHIQueueHandle queue = Fluxion::Foundation::NoHandle<FluxionRHIQueueHandle>();
     bool usable = false;
 };
 

@@ -46,4 +46,21 @@ struct Handle
     }
 };
 
+// A raw C handle that points at nothing.
+//
+// The C handles have no default of their own, and that is a trap worth
+// naming: `FluxionRHITextureHandle texture{}` gives index ZERO, and index
+// zero is a perfectly good slot -- FLUXION_HANDLE_IS_VALID rejects only
+// the all-ones index. A struct full of zeroed handles therefore reads as
+// though it holds every one of them, and cleaning it up frees whatever
+// happens to be sitting in slot zero, which belongs to somebody else.
+//
+// The Handle above cannot go wrong that way because its default is
+// written into the type. This is for the C ones, which cannot have that.
+template<typename RawHandle>
+constexpr RawHandle NoHandle()
+{
+    return RawHandle{ kHandleInvalidIndex, 0 };
+}
+
 } // namespace Fluxion::Foundation

@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 
+#include <Fluxion/Foundation/Handle.hpp>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/Foundation/Math.h>
 #include <Fluxion/RHI/RHI.h>
@@ -155,24 +156,34 @@ f32 HalfBitsToFloat(u16 half)
     return value;
 }
 
+// Everything this test builds, so that giving up halfway is one call to
+// tear down rather than a list somebody has to keep in step.
+//
+// EVERY HANDLE STARTS INVALID, not zeroed, and that is the whole reason
+// this struct spells its fields out. A zeroed handle has index zero, and
+// index zero is a real slot -- so a rig that gave up before it built
+// anything would still look like it held everything, and tearing it down
+// would free whatever is sitting in slot zero. On a machine where every
+// backend works nothing gives up and it never happens; on a machine
+// missing one, it is the other backend's work being freed.
 struct LightingRig
 {
-    FluxionRHIInstanceHandle instance{};
-    FluxionRHIDeviceHandle device{};
-    FluxionRHIQueueHandle queue{};
+    FluxionRHIInstanceHandle instance = Fluxion::Foundation::NoHandle<FluxionRHIInstanceHandle>();
+    FluxionRHIDeviceHandle device = Fluxion::Foundation::NoHandle<FluxionRHIDeviceHandle>();
+    FluxionRHIQueueHandle queue = Fluxion::Foundation::NoHandle<FluxionRHIQueueHandle>();
 
-    FluxionShaderProgramHandle program{};
-    FluxionMeshBufferHandle mesh{};
-    FluxionRenderPipelineHandle pipeline{};
-    FluxionRendererHandle renderer{};
+    FluxionShaderProgramHandle program = Fluxion::Foundation::NoHandle<FluxionShaderProgramHandle>();
+    FluxionMeshBufferHandle mesh = Fluxion::Foundation::NoHandle<FluxionMeshBufferHandle>();
+    FluxionRenderPipelineHandle pipeline = Fluxion::Foundation::NoHandle<FluxionRenderPipelineHandle>();
+    FluxionRendererHandle renderer = Fluxion::Foundation::NoHandle<FluxionRendererHandle>();
 
-    FluxionRHITextureHandle color{};
-    FluxionRHITextureViewHandle colorView{};
-    FluxionRHITextureHandle depth{};
-    FluxionRHITextureViewHandle depthView{};
-    FluxionRenderTargetHandle target{};
-    FluxionRHIBufferHandle readback{};
-    FluxionRHISamplerHandle sampler{};
+    FluxionRHITextureHandle color = Fluxion::Foundation::NoHandle<FluxionRHITextureHandle>();
+    FluxionRHITextureViewHandle colorView = Fluxion::Foundation::NoHandle<FluxionRHITextureViewHandle>();
+    FluxionRHITextureHandle depth = Fluxion::Foundation::NoHandle<FluxionRHITextureHandle>();
+    FluxionRHITextureViewHandle depthView = Fluxion::Foundation::NoHandle<FluxionRHITextureViewHandle>();
+    FluxionRenderTargetHandle target = Fluxion::Foundation::NoHandle<FluxionRenderTargetHandle>();
+    FluxionRHIBufferHandle readback = Fluxion::Foundation::NoHandle<FluxionRHIBufferHandle>();
+    FluxionRHISamplerHandle sampler = Fluxion::Foundation::NoHandle<FluxionRHISamplerHandle>();
 
     bool usable = false;
 };
