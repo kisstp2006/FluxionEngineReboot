@@ -39,21 +39,14 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// Converting between the thirty-two-bit float the machine computes in and
-// the sixteen-bit one a texture stores.
+// Converting between the thirty-two-bit float and the sixteen-bit one a
+// texture stores. Both are sign + exponent + mantissa in different
+// widths; the layout is named once at the top and nothing below repeats
+// a number from it. Three cases:
 //
-// Both formats are the same three fields in different widths -- a sign, an
-// exponent, and a mantissa -- so everything below is written in terms of
-// those three and never in terms of bit patterns. The layout is named once
-// at the top; nothing further down repeats a number from it.
-//
-// Three cases have to be handled separately, and only one is the ordinary
-// one:
-//
-//   too small   the exponent cannot go low enough, so the number is stored
-//               SUBNORMAL: the leading one that is normally implied gets
-//               written out and the mantissa shifts down to make room
-//   ordinary    rebias the exponent, drop the mantissa bits that do not fit
+//   too small   stored SUBNORMAL: the implied one written out, mantissa
+//               shifted down
+//   ordinary    rebias the exponent, drop the bits that do not fit
 //   too large   infinity
 //
 // Rounding is nearest, ties to even, in one place used by both paths.

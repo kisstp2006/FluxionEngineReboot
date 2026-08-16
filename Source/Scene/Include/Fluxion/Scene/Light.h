@@ -109,24 +109,15 @@ typedef struct FluxionSpotLight
 } FluxionSpotLight;
 
 // What the world looks like in every direction: a sky, and the light it
-// casts on everything.
+// casts. A LIGHT, not a background -- usually the largest light source
+// in the scene, the reason a shaded side is blue outdoors; drawing it
+// behind everything is a consequence, not the purpose.
 //
-// It is a light and not a background. The sky is what fills in every
-// direction nothing else covers, and once the irradiance from it is being
-// worked out it is also the largest light source in most scenes -- the
-// reason an object's shaded side is blue outdoors rather than black.
-// Drawing it behind everything is a consequence of having it, not the
-// purpose.
-//
-// THE ENVIRONMENT IS AN ASSET REFERENCE, not a texture handle. A scene
-// saved with a handle in it would come back pointing at whatever occupied
-// that slot next; an id is a thing that survives being written down --
-// which is the same reason every other asset in a scene is one.
-//
-// Which SHAPE that asset has is not a separate kind of asset: a sky is a
-// Texture whose dimension is a cube. Six images, one equirectangular
-// file, or a cross layout are all ways of IMPORTING one, and the importer
-// lives in a plugin -- so a built game carries no reader for any of them.
+// AN ASSET REFERENCE, not a texture handle: a handle in a saved scene
+// would come back pointing at whatever occupied the slot next. Not a
+// separate asset kind either -- a sky is a Texture whose dimension is a
+// cube; six images, equirectangular or a cross are ways of IMPORTING
+// one, and the importer lives in a plugin.
 typedef struct FluxionEnvironmentLight
 {
     FluxionAssetRef environment;
