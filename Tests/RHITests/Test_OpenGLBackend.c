@@ -48,21 +48,11 @@
 #include <Fluxion/RHI/RHI.h>
 
 // Exercises the real OpenGL backend end to end, mirroring
-// Test_VulkanBackend.c as closely as this backend's differences allow.
-// Unlike Vulkan, this backend's Fluxion_RHI_CreateDevice bootstraps its
-// own hidden native window internally (see the design note at the top of
-// Source/RHI/Private/OpenGL/OpenGLCommon.h) -- so device/resource creation
-// below doesn't itself need a window. A real, visible window is only
-// needed to exercise the swapchain, which this test also does, retargeting
-// the same context onto that window. RHITests has no existing pattern for
-// a test needing the window system, so Init/Shutdown are bracketed locally
-// here to avoid leaking window-system state into any other test in the
-// same process.
-//
-// A machine with no usable OpenGL 4.5 core-profile driver (no display, no
-// GPU driver, a software/CI environment) soft-skips the device-level
-// checks instead of failing the suite, same graceful-skip philosophy
-// already established by Test_VulkanBackend.c.
+// Test_VulkanBackend.c. CreateDevice bootstraps its own hidden window
+// (see OpenGLCommon.h), so only the swapchain checks need a visible one;
+// the window system is Init/Shutdown-bracketed locally to keep its state
+// out of other tests. No usable GL 4.5 driver soft-skips rather than
+// failing, same as the Vulkan test.
 void Test_OpenGLBackend_Run(TestContext* ctx)
 {
     FluxionRHIInstanceDesc instanceDesc = { "RHITests", true };

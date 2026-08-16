@@ -332,23 +332,15 @@ FluxionRHIBindGroupLayoutHandle Fluxion_RHID3D12_CreateBindGroupLayout(FluxionRH
 void Fluxion_RHID3D12_DestroyBindGroupLayout(FluxionRHIBindGroupLayoutHandle layout);
 const FluxionRHIBindGroupLayoutDesc* Fluxion_RHID3D12_ResolveBindGroupLayoutDesc(FluxionRHIBindGroupLayoutHandle layout);
 
-// Shared by D3D12Binding.cpp (populating an actual BindGroup's heap
-// range) and D3D12Pipeline.cpp (sizing a root signature's descriptor
-// table ranges) -- both MUST derive identical counts from the same
-// FluxionRHIBindGroupLayoutDesc, since the heap layout a BindGroup
-// writes (CBV block, then SRV block, then UAV block, each exactly this
-// many slots) is only correct if the root signature's per-range
-// NumDescriptors agrees exactly. A FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER
-// entry counts as BOTH one SRV and one UAV slot -- this engine's
-// ShaderCompiler emits a storage buffer as a read-only StructuredBuffer
-// (SRV, `t` register) in a vertex/fragment stage and a read-write
-// RWStructuredBuffer (UAV, `u` register) in a compute stage (see
-// HLSLBackend.cpp's EmitStorageBuffers), and the SAME BindGroupLayout
-// entry may be visible to both a compute pipeline and a graphics
-// pipeline at once (e.g. this demo's Object-group brightness buffer) --
-// so both a valid SRV and a valid UAV are always created for it,
-// whichever pipeline kind ends up binding this group only ever
-// references the one table (SRV or UAV) its own root signature declared.
+// Shared by D3D12Binding.cpp (writing a BindGroup's heap) and
+// D3D12Pipeline.cpp (sizing root-signature ranges) -- both MUST derive
+// identical counts from the same layout desc, or the heap's CBV/SRV/UAV
+// blocks land at offsets the root signature does not expect. A
+// STORAGE_BUFFER entry counts as BOTH one SRV and one UAV slot: the
+// compiler emits it read-only in vertex/fragment and read-write in
+// compute, and the same layout may serve both pipeline kinds -- so both
+// views always exist, and each pipeline references only the table its
+// own root signature declared.
 struct FluxionRHID3D12LayoutCounts
 {
     u32 cbvCount = 0;

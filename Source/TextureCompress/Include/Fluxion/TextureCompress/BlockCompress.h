@@ -48,25 +48,15 @@
 extern "C" {
 #endif
 
-// Turning an image into blocks, and back again.
+// Turning an image into blocks, and back again. NOT part of what ships:
+// importers and the editor link it, the built game only reads blocks.
 //
-// This module is NOT part of what ships. Compressing a texture is
-// something an importer does once, on a machine that has the original
-// image; a built game only ever reads the blocks. It is a separate module
-// for exactly that reason -- an importer plugin and the editor link it,
-// and the shipped program does not.
-//
-// The encoders here are written from the published descriptions of the
-// formats. They do not reach for every mode each format offers: a BC7
-// block written in one mode is still a BC7 block, and every decoder in
-// hardware reads it. What that costs is quality at a given size, not
-// correctness, and it is said here rather than left to be discovered from
-// the pictures.
-//
-// The decoders are not here to be fast. They exist so that an encoder can
-// be checked against something -- and, because an encoder checked against
-// nothing but its own matching decoder agrees with itself and proves
-// nothing, so can the hardware.
+// The encoders are written from the published format descriptions and
+// use one mode each -- still valid blocks every hardware decoder reads;
+// the cost is quality at a given size, not correctness. The decoders
+// exist so encoders can be checked against something, including the
+// hardware -- an encoder that only agrees with its own decoder proves
+// nothing.
 
 // What one image's worth of blocks occupies, tightly packed -- the same
 // layout a cooked texture level holds. Zero for a format this module does

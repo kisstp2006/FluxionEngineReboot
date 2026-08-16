@@ -95,21 +95,13 @@ void Fluxion_Renderer_DrawMesh(FluxionRendererHandle renderer, FluxionMeshBuffer
 // the render graph itself.
 void Fluxion_Renderer_EndFrame(FluxionRendererHandle renderer, FluxionRHICommandListHandle commandList);
 
-// The colour format the renderer's own built-in debug-draw pipeline is
-// built against. It has to be the format of the colour attachment
-// EndFrame draws that geometry into, or the draw is rejected outright by
-// the backend -- and nothing reachable from inside RenderCore says what
-// that format is, since a FluxionRHITextureViewHandle carries no
-// queryable format (the same reason
-// FluxionRendererInternal_RenderView_GetViewport exists for its extent).
-// So the caller, which created the swapchain or the target and therefore
-// knows, says it.
-//
-// FLUXION_RHI_FORMAT_R8G8B8A8_UNORM until told otherwise. Saying the
-// format already in force does nothing; saying a different one rebuilds
-// the pipeline, so this belongs with the rest of a program's setup and
-// must not be called between BeginFrame and EndFrame. A program that
-// never calls Fluxion_DebugDraw_* need not call this at all.
+// The colour format the built-in debug-draw pipeline is built against.
+// It must match the attachment EndFrame draws into, and nothing in
+// RenderCore can find that out -- a texture view carries no queryable
+// format -- so the caller who made the target says it. R8G8B8A8_UNORM
+// until told otherwise; a different value rebuilds the pipeline, so call
+// it at setup, never between BeginFrame and EndFrame. Programs that
+// never debug-draw need not call it.
 void Fluxion_Renderer_SetDebugDrawColorFormat(FluxionRendererHandle renderer, FluxionRHIFormat format);
 
 // The depth target debug geometry is tested against, for the same reason

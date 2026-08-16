@@ -40,22 +40,12 @@
 // SPDX-License-Identifier: CPAL-1.0
 
 // OpenGL RHI backend entry point: instance/adapter enumeration, device
-// (= real WGL/GLX context) creation, queue resolution, format mapping, and
-// the vtable that dispatches every other Fluxion_RHI_* call into the rest
-// of Private/OpenGL/*.cpp.
-//
-// Design note: see the comment block at the top of OpenGLCommon.h for why
-// device creation bootstraps its own hidden native window rather than
-// requiring one up front -- Fluxion_RHI_CreateDevice's signature (adapter
-// + desc only) has no window parameter, but WGL/GLX context creation
-// fundamentally needs a real HDC/Drawable to create against. This backend
-// only ever reports one adapter ("the current OpenGL implementation");
-// real adapter info (renderer/vendor strings, GL_MAX_* limits) is only
-// knowable once a context exists, so Fluxion_RHI_EnumerateAdapters hands
-// out a placeholder handle and Fluxion_RHI_GetAdapterInfo lazily creates
-// (and keeps, for later reuse as the real device context) a temporary
-// bootstrap context the first time info is requested, if a device hasn't
-// already been created.
+// (= real WGL/GLX context) creation, format mapping, and the dispatching
+// vtable. See OpenGLCommon.h for the hidden bootstrap window. One
+// adapter only ("the current OpenGL implementation"): real adapter info
+// needs a context, so EnumerateAdapters hands out a placeholder and
+// GetAdapterInfo lazily creates the bootstrap context on first ask,
+// keeping it for reuse as the device context.
 
 #include "OpenGLCommon.h"
 #include "OpenGLFunctions.h"

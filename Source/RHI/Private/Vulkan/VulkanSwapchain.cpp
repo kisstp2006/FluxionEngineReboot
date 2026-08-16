@@ -39,22 +39,14 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// Surface + swapchain. The surface is created from the Application
-// module's native window/display escape hatches (Win32: HWND + HINSTANCE
-// from GetModuleHandle; Linux: Xlib Window + Display* via
-// Fluxion_WindowSystem_GetNativeDisplayHandle). Recreation on resize:
-// recreate on VK_ERROR_OUT_OF_DATE_KHR (skip the frame, no submit) and on
-// VK_SUBOPTIMAL_KHR (present this frame, then recreate), with an
-// explicit 0x0 (minimized) guard.
+// Surface + swapchain, built from the Application module's native window
+// escape hatches. Recreated on OUT_OF_DATE (skip the frame) and
+// SUBOPTIMAL (present, then recreate), with a 0x0 minimized guard.
 //
-// Acquire correctness: the RHI contract's Queue_Submit has no
-// wait-semaphore parameter, so there is no portable way for a submitted
-// command buffer to wait on the acquire semaphore GPU-side.
-// AcquireNextImage here therefore also waits on an internal VkFence
-// CPU-side before returning, guaranteeing the image is truly available
-// by the time the caller records/submits against it -- this trades away
-// some CPU/GPU overlap for correctness within the current contract;
-// revisit if/when Queue_Submit grows a wait-semaphore list.
+// Queue_Submit has no wait-semaphore parameter, so AcquireNextImage also
+// waits on an internal fence CPU-side before returning -- trading some
+// overlap for correctness within the current contract. Revisit if
+// Queue_Submit grows a wait list.
 
 #include "VulkanCommon.h"
 

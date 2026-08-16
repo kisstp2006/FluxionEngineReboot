@@ -39,23 +39,15 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// Prefabs: an object and everything below it, kept so it can be put into
-// a scene more than once.
+// Prefabs: an object and everything below it, reusable across scenes.
 //
-// The whole of it rests on one choice, and it is worth saying why. What a
-// copy differs from its prefab in is not RECORDED as it happens -- it is
-// worked out by comparing the two whenever anyone asks. Recording is the
-// obvious alternative and it cannot be done: a component is written
-// through a plain pointer into the storage, so there is no moment at
-// which anything could notice.
-//
-// Comparing needs the prefab's objects to exist, which they do not: the
-// prefab is bytes. So the three operations that compare open the prefab
-// into a scene of its own for as long as they take, and close it again.
-// That costs a scene slot for the length of one call, and it means the
-// comparison uses exactly the same code everything else uses to read
-// components -- rather than a second reader of the same bytes, which
-// could disagree with the first.
+// Differences from the prefab are worked out by COMPARING when asked,
+// never recorded -- components are written through plain pointers, so
+// there is no moment to record. Comparing needs the prefab's objects to
+// exist, and the prefab is bytes: the comparing operations open it into
+// a scene of its own for the length of one call, which also means the
+// comparison reads components through the same code as everything else
+// rather than a second reader that could disagree.
 
 #include <Fluxion/Scene/Prefab.h>
 

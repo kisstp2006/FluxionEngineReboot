@@ -50,21 +50,13 @@
 extern "C" {
 #endif
 
-// The parameters the engine itself understands.
-//
-// Material.h can set any parameter a shader declares, by name. That is
-// enough to draw with and not enough to reason with: naming a parameter
-// at the call site means the caller knows what the shader called it, and
-// the engine does not know anything.
-//
-// These are the ones the engine does know. Each is a fixed name with a
-// fixed meaning and a fixed kind, so that the renderer can ask a material
-// what colour it is without being told where to look -- which is what
-// lighting, sorting and packaging all need.
-//
-// A material declares as many or as few as it likes. What it may not do
-// is declare one of these names as something else: see
-// Fluxion_Material_Create's refusal below.
+// The parameters the engine itself understands. Material.h can set
+// anything a shader declares by name, which is enough to draw with and
+// not to reason with; these are fixed names with fixed meanings and
+// kinds, so the renderer can ask a material what colour it is without
+// being told where to look. Declare as many or as few as you like --
+// but not one of these names as something else (Fluxion_Material_Create
+// refuses).
 
 typedef enum FluxionMaterialParameter
 {

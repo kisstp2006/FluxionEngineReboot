@@ -251,21 +251,12 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view);
 // picture rather than a fault.
 void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRenderLight* lights, u32 count);
 
-// What the world looks like in every direction: a cube map, and the
-// sampler to read it with.
-//
-// An invalid view puts back the small black cube the engine keeps, which
-// is what a view starts with. That is not a way of saying "no
-// environment" politely -- it is the only way a shader can be written at
-// all, since a shader cannot ask whether a texture is bound and a backend
-// handed an empty slot refuses the whole group rather than the one
-// binding.
-//
-// `intensity` multiplies what the environment contributes -- both what is
-// seen of it directly and, once there is any, the light it casts. One
-// number for both, because they are the same thing seen two ways: a sky
-// shown brighter than it lights is a sky that does not match its own
-// reflections, and nothing in a picture says which of the two is wrong.
+// What the world looks like in every direction: a cube map and its
+// sampler. An invalid view puts back the engine's small black cube -- a
+// shader cannot ask whether a texture is bound, and a backend handed an
+// empty slot refuses the whole group. `intensity` multiplies both what
+// is seen of the sky and the light it casts: one number, because a sky
+// brighter than it lights does not match its own reflections.
 void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHITextureViewHandle cubeView,
                                        FluxionRHISamplerHandle sampler, f32 intensity);
 

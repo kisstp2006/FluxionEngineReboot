@@ -65,24 +65,14 @@
 #include <cstring>
 #include <vector>
 
-// What the reflectance model does, asked of a real device.
-//
-// The formulae in Fluxion/BRDF.jsl come from published papers, and there
-// is no second implementation anywhere to compare them against -- writing
-// one here would only prove that the same person made the same reading
-// twice. So this checks something better than agreement: the PROPERTIES
-// that any correct reflectance model has, whatever its formulae.
-//
-// A surface cannot send back more light than fell on it. A surface turned
-// away from the light receives none. A smoother surface concentrates its
-// highlight and is therefore brighter in the mirror direction than a
-// rougher one. A metal has no diffuse colour, so away from its highlight
-// it is nearly black where a non-metal of the same colour is not. Light a
-// surface emits is not affected by any of that.
-//
-// Each of those is a statement about physics rather than about this code,
-// and a shader that satisfies all of them on two drivers is doing what it
-// says.
+// What the reflectance model does, asked of a real device. There is no
+// second implementation to compare against -- one written here would
+// only prove the same person made the same reading twice -- so this
+// checks the PROPERTIES any correct model has: no more light out than
+// fell in; nothing received facing away; smoother is brighter in the
+// mirror direction; a metal is nearly black off its highlight where a
+// non-metal is not; emission ignores all of it. Statements about
+// physics, not about this code.
 
 namespace
 {

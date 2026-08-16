@@ -39,24 +39,15 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// Data components, stored by which set of them an object carries.
+// Data components, stored by which set of them an object carries:
+// objects with the same set sit together, components in columns, so
+// reading one component of every such object is a straight run through
+// memory. Compositions arise on their own -- no list to maintain, no
+// work here for a new component type.
 //
-// The idea in one line: objects that carry the same set of component
-// types are kept together, their components side by side in columns, so
-// that reading one component of every such object is one straight run
-// through memory.
-//
-// Nothing here is authored. A composition comes into being the moment the
-// first object carries that set, and it is nothing but that set: there is
-// no list of compositions to maintain, and introducing a new component
-// type needs no work in this file at all.
-//
-// What it costs, and it is the whole trade: giving an object a component
-// changes WHICH set it carries, so the object no longer belongs where it
-// was. Its components are copied to a block of the new composition and
-// the old row is closed up. That is why a pointer into this storage
-// survives only until the next structural change, and why anything
-// changing objects while walking over them records the changes and lets
+// The whole trade: adding or removing a component moves the object to a
+// different composition, so a pointer into this storage survives only
+// until the next structural change -- walkers record changes and let
 // them land afterwards.
 
 #include "SceneInternal.h"

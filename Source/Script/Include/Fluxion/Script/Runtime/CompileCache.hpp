@@ -51,24 +51,13 @@
 namespace Fluxion::Script
 {
 
-// Compiling is the slowest thing a host does with a script, and almost
-// every run compiles exactly what the last run did. This keeps the image
-// the compiler produced beside the source it was produced from, so a run
-// that would have produced the same thing reads it instead.
-//
-// What counts as "the same thing" is everything that goes into the answer
-// and nothing else: the source, the language's own prelude, whatever
-// prelude the host added, the versions of the language and the instruction
-// set this build understands, and the shape of the engine types the source
-// was compiled against. Change any of them and the entry no longer
-// answers -- a stale image would otherwise be loaded against an engine it
-// no longer matches.
-//
-// A cache is an optimization and never a source of failure. A file that is
-// missing, truncated, filled with something else, or written by an older
-// build is a miss and nothing more: the compiler runs, and the answer
-// replaces whatever was there. Nothing here reports such a file as an
-// error, because from the caller's point of view nothing went wrong.
+// Keeps the compiled image beside its source, so a run that would have
+// produced the same thing reads it instead. The key is everything that
+// goes into the answer and nothing else: source, both preludes, the
+// language and instruction-set versions, and the shape of the engine
+// types compiled against. A cache is never a source of failure -- a
+// missing, truncated or foreign file is a miss and nothing more, because
+// from the caller's point of view nothing went wrong.
 
 struct CompileCacheOptions
 {

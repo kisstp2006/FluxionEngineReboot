@@ -39,24 +39,16 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// BC6H, unsigned, written in one of its fourteen modes.
+// BC6H, unsigned: three channels of HDR colour, no alpha. This encoder
+// writes mode 10 throughout -- one region, ten bits per endpoint
+// channel, both endpoints in full, the one mode with no difference
+// encoding and therefore a plain sequence of fields.
 //
-// BC6H stores three channels of high-dynamic-range colour and no alpha.
-// Its modes trade endpoint precision against cutting a block into two
-// regions; most of them also store the second endpoint as a small
-// difference from the first, which is what makes their bit layouts
-// intricate. This encoder writes mode 10 throughout: one region, ten bits
-// per endpoint channel, both endpoints written out in full. It is the one
-// mode with no difference encoding, and therefore the one whose layout is
-// a plain sequence of fields.
-//
-// The numbers in a BC6H block are not the colour. They are quantized
-// positions that a decoder expands into sixteen-bit values, interpolates
-// between, scales by thirty-one sixty-fourths, and finally READS AS THE
-// BITS OF A HALF-PRECISION FLOAT. That last step is the one worth saying
-// out loud: the interpolation happens in a space that is roughly
-// logarithmic in brightness, not linear in it, which is exactly what a
-// format for values above one wants and is nothing like how BC7 behaves.
+// The numbers in a block are not the colour: they are quantized
+// positions the decoder expands, interpolates, scales by 31/64 and
+// finally READS AS THE BITS OF A HALF -- interpolation in a roughly
+// logarithmic space, which is what an HDR format wants and nothing like
+// BC7.
 
 #include "BlockCompressInternal.h"
 

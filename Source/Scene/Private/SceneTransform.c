@@ -39,24 +39,15 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// The transform component: registering it, and working out world
-// matrices for a whole scene at once.
+// The transform component, and world matrices for a whole scene at once.
+// Two things the on-demand path cannot do:
 //
-// Two things happen here that the on-demand path in Scene.c cannot do.
+// The previous-world copy, for EVERY object before anything recomputes
+// -- an object that stopped moving must report no motion, not the motion
+// it had two frames ago. As a column, one memcpy per block.
 //
-// The first is the previous-world copy. A renderer that compares one
-// frame against the last needs where a thing was, and the only copy of
-// that is the world matrix about to be overwritten. So every object's
-// world is copied into its previous before anything is recomputed --
-// every object, not only the ones that moved, because an object that
-// stopped moving must report no motion rather than the motion it had two
-// frames ago. As a column that is one memcpy per block.
-//
-// The second is doing the recomputation in parallel. A child cannot be
-// worked out before its parent, which reads like a sequential problem
-// and is not: objects at the same depth cannot be each other's parents,
-// so a whole depth can go at once, and by the time a depth is reached
-// every parent it needs is done. Depth by depth, each depth in parallel.
+// Parallel recomputation: objects at one depth cannot be each other's
+// parents, so each depth goes at once, depth by depth.
 
 #include "SceneInternal.h"
 

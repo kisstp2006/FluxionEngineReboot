@@ -44,21 +44,12 @@
 
 #include "Fluxion/Math.jsl"
 
-// Turning a sky into nine numbers per channel, once.
-//
-// Runs when an environment is loaded and never again while it is
-// unchanged, which is what lets it be this direct: every thread walks the
-// whole sky, and there is no reduction between threads, no shared memory
-// and no atomics. Nine threads, one per coefficient. Everything a thread
-// needs is its own.
-//
-// The alternative -- splitting the sky between threads and combining
-// afterwards -- is faster and is a different program, with a second pass
-// and a barrier in it. It is worth writing when this shows up in a
-// measurement, and not before.
-//
-// The maths is from the published description of the method; see
-// SHADER_SOURCES.md.
+// Turning a sky into nine numbers per channel, once per environment.
+// Nine threads, one per coefficient, each walking the whole sky -- no
+// reduction, no shared memory, no atomics. The faster split-and-combine
+// version is a different program with a barrier in it, worth writing
+// when this shows up in a measurement and not before. Maths from the
+// published description; see SHADER_SOURCES.md.
 
 // The Global group, and the choice is load-bearing: a group's name IS its
 // descriptor set index, and this pipeline is built with exactly one bind

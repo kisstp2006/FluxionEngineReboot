@@ -375,20 +375,13 @@ void Fluxion_RHIOpenGL_ApplyPipelineState(FluxionRHIOpenGLDevice* deviceState, c
 
 // --- Pipeline cache ---------------------------------------------------------
 //
-// The payload is [u32 programCount] then, per program, [u32 binaryFormat]
-// [u32 blobSize][blob bytes] -- wrapped by the shared engine header that
-// records which backend, adapter, and driver produced it. Loading only
-// ever primes the driver's own internal shader cache, as a side effect of
-// calling glProgramBinary on scratch program objects that are immediately
-// deleted: there is no way to retroactively attach a loaded binary to a
-// *future* Fluxion_RHI_CreateGraphicsPipeline call without a stable cache
-// key the RHI contract doesn't provide.
-//
-// That side-effect-only design is exactly why the identity check matters
-// here. A program binary is only meaningful to the driver that produced
-// it; glProgramBinary is required to fail cleanly on a foreign one, so
-// feeding it a whole file's worth would be slow and silent rather than
-// dangerous. Refusing the file up front turns that into nothing at all.
+// Payload: [u32 programCount], then per program [u32 binaryFormat]
+// [u32 blobSize][bytes], wrapped in the shared engine header. Loading
+// only primes the driver's own cache, via glProgramBinary on scratch
+// objects immediately deleted -- the RHI contract has no stable key to
+// attach a binary to a future pipeline. The identity check up front is
+// what stops a foreign file being fed through that path slowly and
+// silently.
 
 // GL exposes no adapter ids, only strings, so the strings are what
 // identifies the device here.

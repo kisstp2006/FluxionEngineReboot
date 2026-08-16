@@ -51,22 +51,13 @@
 namespace Fluxion::Script
 {
 
-// Turning a compiled module into bytes and back, so a module can outlive
-// the run that produced it.
-//
-// The versioned header a module already carries -- a signature plus the
-// language, instruction-set and engine-interface versions it was built
-// against -- is what makes this safe to do at all, and it is written out
-// first so a reader can refuse before it has allocated anything.
-//
-// The reader assumes nothing about what it is handed. A file on disk may
-// have been truncated by a crash, half-written by another process, or
-// filled with something else entirely, so no length and no index read out
-// of it is trusted until it has been checked against how many bytes
-// actually arrived and against what the rest of the image says. A reader
-// that finds anything it cannot account for refuses the whole image and
-// says why, rather than handing back something half-formed for the
-// interpreter to discover the hard way.
+// Turning a compiled module into bytes and back. The versioned header
+// (signature + language, instruction-set and engine-interface versions)
+// goes first, so a reader can refuse before allocating anything. The
+// reader trusts nothing: every length and index is checked against how
+// many bytes actually arrived, and anything unaccountable refuses the
+// whole image with a reason -- rather than handing the interpreter
+// something half-formed to discover the hard way.
 
 // Appends the module's image to `outBytes`, which is cleared first. Fails
 // only when some part of the module is larger than the format can name,

@@ -371,25 +371,15 @@ void Fluxion_RHIVulkan_CommandListBeginRendering(FluxionRHICommandListHandle com
     if (deviceState != nullptr && deviceState->cmdBeginRendering != nullptr)
         deviceState->cmdBeginRendering(cl->commandBuffer, &renderingInfo);
 
-    // Every pipeline in this backend enables VK_DYNAMIC_STATE_VIEWPORT/
-    // SCISSOR, so Vulkan requires them to be set before any draw. A
-    // per-draw viewport isn't meaningful yet (nothing calls for anything
-    // other than "cover the whole render target"), so a single
-    // full-render-area default set once per BeginRendering is exactly
-    // what every caller wants -- this also avoids adding SetViewport/
-    // SetScissor to the RHI contract before anything actually needs a
-    // different value.
-    // The viewport is given a negative height, starting at the bottom
-    // rather than the top. Vulkan's clip space puts +Y downwards, unlike
-    // every other backend here, and a flipped viewport is what turns it
-    // back the right way up -- so a positive Y is upwards on the screen
-    // whichever backend is running, and nothing above the RHI has to know
-    // which one that is. Left uncompensated, the difference hides inside
-    // anything symmetrical and only shows when something is not: a cube
-    // looks identical either way, a line pointing up does not.
+    // Every pipeline enables dynamic viewport/scissor, so they must be
+    // set before any draw; one full-render-area default per
+    // BeginRendering is what every caller wants, and keeps SetViewport
+    // out of the RHI contract until something needs it.
     //
-    // Available without asking since Vulkan 1.1, and this backend already
-    // refuses anything below 1.2.
+    // Negative height on purpose: Vulkan's clip space puts +Y downwards,
+    // and the flipped viewport turns it back up so +Y means the same on
+    // every backend. Uncompensated, the difference hides inside anything
+    // symmetrical. Core since 1.1; this backend requires 1.2.
     VkViewport viewport = { 0.0f, (f32)desc->height, (f32)desc->width, -(f32)desc->height, 0.0f, 1.0f };
     VkRect2D scissor = { { 0, 0 }, { desc->width, desc->height } };
     vkCmdSetViewport(cl->commandBuffer, 0, 1, &viewport);

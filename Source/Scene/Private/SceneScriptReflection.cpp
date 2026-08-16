@@ -39,25 +39,13 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// Putting the scripting language's classes into the engine's own type
-// registry, so that a script component is described in exactly the place
-// everything else is.
-//
-// What this is not: a second copy of what the machine already knows. The
-// machine's field table stays the one source -- these descriptors point
-// back into it, and the accessors read and write through the machine's
-// own field access. Nothing here caches a value, and nothing here decides
-// what a field means.
-//
-// What it is: a translation of that table into the shape the rest of the
-// engine reads types in. Before this, anything wanting to write a script
-// component out or show it in an editor had to know the scripting
-// runtime's own headers. Now it needs to know the registry, which it
-// already had to.
-//
-// Rebuilt whenever the classes can have changed -- when a machine is
-// attached and after every reload -- because a reload is exactly the case
-// where a stale description would describe fields that no longer exist.
+// Putting the scripting language's classes into the engine's type
+// registry, so a script component is described where everything else is.
+// Not a second copy: the machine's field table stays the one source, and
+// these descriptors point back into it through the machine's own field
+// access. Rebuilt whenever the classes can have changed -- on attach and
+// after every reload, which is exactly when a stale description would
+// describe fields that no longer exist.
 
 #include <Fluxion/Scene/ScriptReflection.h>
 #include <Fluxion/Scene/SceneScript.hpp>

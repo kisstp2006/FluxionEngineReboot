@@ -47,23 +47,14 @@
 extern "C" {
 #endif
 
-// A thing that can be put into a scene more than once.
-//
-// A prefab is a scene written down: an object and everything below it,
-// with their components. Nothing about it is a special kind of storage --
-// it is the same bytes a saved scene is made of, which is why a prefab
-// survives whatever a scene survives and needs no format of its own.
-//
-// What a copy remembers is the one thing that cannot be worked out again:
-// which prefab it came from, and which of that prefab's objects each of
-// its own objects corresponds to. Everything else about the relationship
-// -- which values were changed since, what to put back, what to push
-// across -- is worked out by comparing the two, at the moment it is
-// asked.
-//
-// That is not a shortcut. Recording changes as they happen is the obvious
-// alternative and it cannot be done here: a component is written through
-// a plain pointer into the storage, so there is no moment to record.
+// A thing that can be put into a scene more than once: an object and
+// everything below it, written down as the same bytes a saved scene is
+// made of. A copy remembers only what cannot be worked out again --
+// which prefab, and which object corresponds to which. Everything else
+// (what changed, what to put back, what to push across) is worked out by
+// COMPARING at the moment it is asked: recording changes as they happen
+// is impossible, because a component is written through a plain pointer
+// and there is no moment to record.
 
 typedef struct FluxionPrefab FluxionPrefab;
 

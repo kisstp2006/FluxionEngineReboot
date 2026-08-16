@@ -39,25 +39,14 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// BC7, written in one of its eight modes.
-//
-// BC7 blocks come in modes that trade endpoint precision against the
-// number of independent regions a block may be cut into. This encoder
-// writes mode 6 throughout: one region, colour and alpha carried together
-// at seven bits an endpoint channel plus a shared eighth, and four-bit
-// indices. It is the mode with the most index precision and no partition,
-// which makes it the best single choice when only one is being made -- a
-// block of smoothly varying colour is reproduced very closely, and a
-// block containing two unrelated materials that a partitioned mode would
-// have separated is reproduced less well.
-//
-// A mode-6 block is a valid BC7 block. Every decoder in hardware reads
-// it. What is given up by not writing the other modes is quality at a
-// given size, and nothing else.
-//
-// The decoder below reads mode 6 only, and says so rather than guessing,
-// because the only blocks it is ever handed are the ones written above
-// it.
+// BC7, mode 6 throughout: one region, colour and alpha together at
+// 7+1 bits per endpoint channel, four-bit indices -- the most index
+// precision and no partition, the best single choice when only one mode
+// is written. Smooth blocks reproduce very closely; a block a
+// partitioned mode would have split reproduces less well. Still a valid
+// BC7 block every hardware decoder reads; the cost is quality, never
+// correctness. The decoder below reads mode 6 only and says so, because
+// those are the only blocks it is ever handed.
 
 #include "BlockCompressInternal.h"
 

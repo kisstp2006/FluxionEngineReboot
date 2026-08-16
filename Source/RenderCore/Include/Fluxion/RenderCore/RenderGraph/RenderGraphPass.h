@@ -83,19 +83,12 @@ typedef struct FluxionRenderGraphPassType
 
 // --- Builder calls, valid only from inside a Setup callback ----------------
 //
-// `resourceName` is how passes and JSON-described nodes refer to the same
-// logical resource by string (the "pin" identity) -- the builder resolves
-// it against every resource name already known to the graph (created or
-// imported by any node, regardless of node order -- a Read/Write may name
-// a resource a later-added node creates; the dependency is derived from
-// what creates/reads/writes what, not from the order nodes were added) or
-// registers a brand-new one for Create*. A Read/Write naming a resource
-// nothing ever creates or imports is a hard error -- surfaced by
-// Fluxion_RenderGraph_Compile returning false, not a silent no-op.
-//
-// The handles returned here are placeholders valid only for this same
-// pass instance's later Execute call, to look up its own resolved RHI
-// handle via Fluxion_RenderGraph_ResolveTexture/ResolveBuffer.
+// `resourceName` is the string "pin" identity passes share. Node order
+// does not matter -- dependencies are derived from what creates, reads
+// and writes what -- and a Read/Write naming a resource nothing ever
+// creates or imports fails Compile rather than silently no-oping. The
+// returned handles are placeholders valid only in this pass's own
+// Execute, via Fluxion_RenderGraph_ResolveTexture/ResolveBuffer.
 
 FluxionRenderGraphTextureHandle Fluxion_RenderGraphBuilder_CreateTexture(FluxionRenderGraphBuilder* builder, const char* resourceName, const FluxionRHITextureDesc* desc);
 FluxionRenderGraphBufferHandle Fluxion_RenderGraphBuilder_CreateBuffer(FluxionRenderGraphBuilder* builder, const char* resourceName, const FluxionRHIBufferDesc* desc);

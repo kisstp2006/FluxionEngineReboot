@@ -562,21 +562,13 @@ u32 Fluxion_RHI_Swapchain_AcquireNextImage(FluxionRHISwapchainHandle swapchain, 
 FluxionRHITextureHandle Fluxion_RHI_Swapchain_GetTexture(FluxionRHISwapchainHandle swapchain, u32 imageIndex);
 void Fluxion_RHI_Swapchain_Present(FluxionRHISwapchainHandle swapchain, u32 imageIndex, FluxionRHISemaphoreHandle waitSemaphore);
 
-// The swapchain's actual current image extent -- can differ from the
-// width/height originally passed to Fluxion_RHI_CreateSwapchain (window
-// resize, DPI adjustments, a resize the backend already absorbed on a
-// prior Acquire/Present). A caller building a FluxionRHIRenderingDesc
-// around a swapchain-acquired texture must use this, not a separately
-// queried window size, or risk a size mismatch between the two.
-//
-// Query it *after* acquiring, never before: a backend is free to notice a
-// resize during the acquire and rebuild there, so an extent read
-// beforehand describes the swapchain that is being replaced.
-//
-// Zero means there is currently no drawable surface at all -- a minimised
-// window, most commonly. The acquire that preceded it produced nothing
-// usable, so the whole frame has to be skipped: there is nothing to
-// render into, and nothing to present either.
+// The swapchain's actual current image extent -- can differ from what
+// CreateSwapchain was given (resize, DPI). Use this, not a separately
+// queried window size, when building a rendering desc around an acquired
+// image. Query it AFTER acquiring: a backend may rebuild during the
+// acquire, and an extent read beforehand describes the swapchain being
+// replaced. Zero means no drawable surface (minimised) -- skip the whole
+// frame.
 void Fluxion_RHI_Swapchain_GetExtent(FluxionRHISwapchainHandle swapchain, u32* outWidth, u32* outHeight);
 
 // --- Synchronization ----------------------------------------------------------
