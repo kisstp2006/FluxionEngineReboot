@@ -60,8 +60,13 @@
 // The maths is from the published description of the method; see
 // SHADER_SOURCES.md.
 
-[Texture(Object)] TextureCube environmentSource;
-[Buffer(Object)] Vector4 irradianceOut;
+// The Global group, and the choice is load-bearing: a group's name IS its
+// descriptor set index, and this pipeline is built with exactly one bind
+// group layout, at index zero. Global is the group that maps to zero. A
+// binding declared in any other group would land in a set the pipeline
+// never declared, and the backend would refuse the whole pipeline.
+[Texture(Global)] TextureCube environmentSource;
+[Buffer(Global)] Vector4 irradianceOut;
 
 // How finely the sky is walked, per face, regardless of how large it
 // actually is.

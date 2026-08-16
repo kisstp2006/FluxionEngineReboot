@@ -44,6 +44,7 @@
 
 #include "Fluxion/BRDF.jsl"
 #include "Fluxion/Frame.jsl"
+#include "Fluxion/SphericalHarmonics.jsl"
 
 // What actually reaches the eye from a surface.
 //
@@ -170,9 +171,28 @@ Vector3 EvaluateOneLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 P, F
     return EvaluateDirectionalLight(surface, N, V, L, light.color.xyz * attenuation);
 }
 
+// What the surroundings send to this surface.
+//
+// The nine coefficients describe the whole sky, so this reads a different
+// amount depending on which way the surface faces -- which is the thing a
+// flat ambient could not do at all. A surface turned up towards a bright
+// sky is lit; the same surface turned down is not.
+//
+// The SAME diffuse reflectance as the direct lights use. What comes out
+// of the coefficients is irradiance -- light falling on the surface -- and
+// turning that into light leaving it is the reflectance model's job, not
+// this file's. Applying anything else here would make a surface answer
+// differently to the sun and to the sky, which is the one thing that
+// makes an image look assembled rather than lit.
 Vector3 EvaluateAmbient(SurfaceData surface, Vector3 ambient)
 {
     return ComputeDiffuseColor(surface) * ambient * surface.ambientOcclusion;
+}
+
+Vector3 EvaluateEnvironmentDiffuse(SurfaceData surface, Vector3 N)
+{
+    Vector3 irradiance = Fluxion_SH_Irradiance(N) * ambientColor.w;
+    return Fd_Lambert(ComputeDiffuseColor(surface)) * irradiance * surface.ambientOcclusion;
 }
 
 // The whole of what a surface sends towards the eye, with the frame's own
@@ -195,7 +215,13 @@ Vector3 EvaluateLighting(SurfaceData surface, Vector3 N, Vector3 P)
         color = color + EvaluateOneLight(surface, N, V, P, lights[i]);
     }
 
+    // Two separate sources, not one written twice. The flat ambient is a
+    // number somebody set by hand, for a scene with no sky at all; the
+    // second is the sky there actually is. A scene that has an environment
+    // sets the first to zero -- and one that does not is exactly as it
+    // was before any of this existed.
     color = color + EvaluateAmbient(surface, ambientColor.xyz);
+    color = color + EvaluateEnvironmentDiffuse(surface, N);
 
     // Light the surface gives off, which no amount of shadow or occlusion
     // takes away -- that is what emitting means.

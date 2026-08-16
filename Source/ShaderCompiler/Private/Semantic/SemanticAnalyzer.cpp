@@ -113,6 +113,7 @@ public:
                     auto* d = static_cast<UniformDecl*>(decl.get());
                     CheckName(d->name, d->location);
                     m_globals[d->name] = d->type;
+                    if (d->isStorageBuffer) m_storageBuffers.insert(d->name);
                     break;
                 }
                 case DeclKind::StageIO: {
@@ -177,6 +178,14 @@ private:
     Program& m_program;
     DiagnosticList& m_diagnostics;
     std::unordered_map<std::string, ShaderType> m_globals;
+
+    // The globals that are storage buffers, by name. Needed because a
+    // buffer's declared type is its ELEMENT type: `lights[i]` on a buffer
+    // of structs must come out as the struct, and `irradianceSH[0]` on a
+    // buffer of vectors as the vector -- while `v[0]` on an ordinary
+    // vector variable stays a component. The expression alone cannot tell
+    // those apart; what the name was declared as can.
+    std::unordered_set<std::string> m_storageBuffers;
     std::unordered_map<std::string, std::vector<FunctionDecl*>> m_functions;
 
     // What each declared struct contains. A field's type is the only way
@@ -471,6 +480,21 @@ private:
                 auto& e = static_cast<IndexExpr&>(expr);
                 AnalyzeExpr(*e.base);
                 AnalyzeExpr(*e.index);
+
+                // Indexing a STORAGE BUFFER yields one element of it,
+                // whatever the element is. The vector rule below must not
+                // apply: a buffer declared `Vector4 name` holds many
+                // Vector4s, and `name[0]` is the first of them, not the
+                // first component of anything. The two cases read
+                // identically at the expression, so the declaration is
+                // what tells them apart.
+                if (e.base->kind == ExprKind::VarRef &&
+                    m_storageBuffers.count(static_cast<VarRefExpr&>(*e.base).name) != 0)
+                {
+                    expr.resolvedType = e.base->resolvedType;
+                    break;
+                }
+
                 expr.resolvedType = IsVector(e.base->resolvedType.kind) ? ShaderType{ TypeKind::Float } : e.base->resolvedType;
                 break;
             }

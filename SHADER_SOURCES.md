@@ -385,6 +385,40 @@ What changed:       The smoothing is written out as t*t*(3-2t) rather
 Licence doubt:      none
 ```
 
+```
+Feature:            Diffuse irradiance as spherical harmonics
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Ramamoorthi & Hanrahan, "An Efficient Representation
+                    for Irradiance Environment Maps" (SIGGRAPH 2001):
+                    the first three SH bands, their normalisation
+                    constants, and the per-band cosine-lobe convolution
+                    factors (pi, 2pi/3, pi/4). The per-texel solid angle
+                    of a cube map is the standard closed form obtained by
+                    integrating the differential solid angle over a cell
+                    and evaluating at its four corners.
+Our implementation: Source/RenderCore/Shaders/Fluxion/SphericalHarmonics.jsl
+                    (evaluation, per surface),
+                    Source/RenderCore/Shaders/Fluxion/Pass/IrradianceProject.jsl
+                    (projection, compute, once per environment),
+                    Source/RenderCore/Private/Renderer/Irradiance.cpp
+                    (the dispatch around it)
+What changed:       The nine terms are written out one by one rather than
+                    looped over an array -- the shading language has no
+                    arrays outside storage buffers. The projection gives
+                    each coefficient to one thread, each walking the whole
+                    sky over a fixed 64x64 grid per face, so there is no
+                    reduction step; the paper does not prescribe a
+                    parallel decomposition at all. The cosine convolution
+                    is folded into the stored coefficients at projection
+                    time, so evaluation is a bare dot product. The solid
+                    angle's corner term uses the one-argument arctangent,
+                    valid because its denominator sqrt(x^2+y^2+1) is
+                    always positive.
+Licence doubt:      none
+```
+
 Not yet written, and named here so that their absence is a decision
 rather than an oversight: the split-sum environment approximation (Karis
 2013) and multiscatter energy compensation, both of which need the

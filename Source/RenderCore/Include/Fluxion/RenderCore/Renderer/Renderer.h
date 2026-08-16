@@ -65,6 +65,19 @@ FLUXION_DEFINE_HANDLE(FluxionRendererHandle);
 FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle device, FluxionRHIQueueHandle queue);
 void Fluxion_Renderer_Destroy(FluxionRendererHandle renderer);
 
+// Works the view's environment out into the nine coefficients a surface
+// reads, if it changed since the last time this was asked.
+//
+// OUTSIDE a render pass, like the light upload it sits beside: what it
+// records is a compute dispatch, and a dispatch cannot happen between a
+// BeginRendering and its EndRendering.
+//
+// Cheap to call every frame and meant to be: it does nothing at all
+// unless the environment changed, and a sky that did not move cannot have
+// a different answer.
+void Fluxion_Renderer_UpdateEnvironment(FluxionRendererHandle renderer, FluxionRenderViewHandle view,
+                                        FluxionRHICommandListHandle commandList);
+
 void Fluxion_Renderer_BeginFrame(FluxionRendererHandle renderer, FluxionRenderViewHandle view);
 
 // Every DrawMesh call is immediately visible to "ForwardOpaquePass" --

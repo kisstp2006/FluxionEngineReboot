@@ -1662,6 +1662,11 @@ int main(int argc, char** argv)
         // recorded copy rather than as a write.
         Fluxion_RenderView_UploadLights(frameView, cmd);
 
+        // The sky into the nine numbers the surfaces read. Does nothing
+        // on a frame whose environment did not change, which is every
+        // frame after the first.
+        Fluxion_Renderer_UpdateEnvironment(renderer, frameView, cmd);
+
         // The backbuffer is always imported as UNDEFINED, not "UNDEFINED
         // on frame 0, PRESENT afterward": a single demo-wide "first frame"
         // flag is wrong the moment there is more than one swapchain image

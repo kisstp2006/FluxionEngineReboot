@@ -128,7 +128,15 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeFrameLay
     desc.entries[3].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
     desc.entries[3].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
-    desc.entryCount = 4;
+    // The sky, as nine coefficients. A second storage buffer rather than
+    // more fields in the block at binding 0, because a compute pass is
+    // what fills it: a uniform buffer would have to be written from the
+    // processor, and by then the numbers are already on the device.
+    desc.entries[4].binding = 4;
+    desc.entries[4].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[4].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entryCount = 5;
     desc.debugName = "Fluxion.Renderer.FrameBindGroupLayout";
     return desc;
 }
@@ -235,6 +243,16 @@ typedef struct FluxionRenderer
     // pipeline exists is an object nothing gives back -- which a device
     // says out loud at shutdown and nowhere earlier.
     FluxionRHIBindGroupLayoutHandle skyboxFrameLayout;
+
+    // Turning an environment into nine coefficients. Owned here rather
+    // than by a view, for the ordinary reason: a view may be made and
+    // thrown away every frame, and building a shader program that often
+    // is not something anyone would do on purpose.
+    FluxionShaderProgramHandle irradianceProgram;
+    FluxionRHIPipelineHandle irradiancePipeline;
+    FluxionRHIBindGroupLayoutHandle irradianceLayout;
+    FluxionRHIBindGroupHandle irradianceBindGroup;
+    bool irradianceFailed;
     FluxionRHIFormat skyboxColorFormat;
     FluxionRHIFormat skyboxDepthFormat;
 
@@ -267,6 +285,32 @@ void FluxionRendererInternal_Skybox_Destroy(FluxionRenderer* renderer);
 FluxionRHIPipelineHandle FluxionRendererInternal_ShaderProgram_CreateSkyboxPipeline(
     FluxionRHIDeviceHandle device, FluxionShaderProgramHandle program, const FluxionRHIVertexLayout* vertexLayout,
     FluxionRHIFormat colorFormat, FluxionRHIFormat depthFormat, FluxionRHIBindGroupLayoutHandle* outFrameLayout);
+
+// --- The environment, turned into the nine numbers a surface reads -------
+
+bool FluxionRendererInternal_Irradiance_EnsureResources(FluxionRenderer* renderer);
+
+// Records the dispatch that fills the view's coefficients from its
+// environment, if the environment changed since the last time.
+//
+// Once per environment rather than once per frame: what it produces
+// depends only on the sky, and a sky that did not move cannot have a
+// different answer.
+void FluxionRendererInternal_Irradiance_Project(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList,
+                                                FluxionRenderViewHandle view);
+
+void FluxionRendererInternal_Irradiance_Destroy(FluxionRenderer* renderer);
+
+// What a view holds for this. The renderer owns the program; the buffer
+// it writes into belongs to whichever view is being drawn.
+FluxionRHIBufferHandle FluxionRendererInternal_RenderView_GetIrradianceBuffer(FluxionRenderViewHandle view);
+FluxionRHITextureViewHandle FluxionRendererInternal_RenderView_GetEnvironmentView(FluxionRenderViewHandle view);
+FluxionRHISamplerHandle FluxionRendererInternal_RenderView_GetEnvironmentSampler(FluxionRenderViewHandle view);
+
+// True once, after the environment changed. Asking CLEARS it: the
+// projection is recorded in answer to this, and a flag left set would
+// have it recorded again on every frame that followed.
+bool FluxionRendererInternal_RenderView_TakeEnvironmentDirty(FluxionRenderViewHandle view);
 
 // --- Cross-file internal accessors ------------------------------------------
 //

@@ -42,6 +42,7 @@
 #include "TestFramework.h"
 
 #include <Fluxion/Foundation/Handle.hpp>
+#include <Fluxion/RenderCore/Renderer/TextureAsset.h>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/Foundation/Math.h>
 #include <Fluxion/RHI/RHI.h>
@@ -154,6 +155,12 @@ struct Configuration
     // is putting in front of the surface.
     FluxionRenderLight extraLights[FLUXION_TEST_MAX_LIGHTS];
     u32 extraLightCount;
+
+    // An environment for the view, when a check brings one. Invalid means
+    // the view keeps its black cube, which is every check but the sky
+    // ones.
+    FluxionRHITextureViewHandle environmentView = Fluxion::Foundation::NoHandle<FluxionRHITextureViewHandle>();
+    FluxionRHISamplerHandle environmentSampler = Fluxion::Foundation::NoHandle<FluxionRHISamplerHandle>();
 };
 
 struct Rgb
@@ -473,11 +480,26 @@ Rgb RenderOne(TestContext* ctx, LightingRig& rig, const Configuration& configura
     Fluxion_RenderView_SetLights(view, lights, lightCount);
     Fluxion_RenderView_UpdateFrameConstants(view);
 
+    // The environment, when a check brings one. Set before the frame
+    // constants go out so the intensity lands in them.
+    if (FLUXION_HANDLE_IS_VALID(configuration.environmentView))
+    {
+        Fluxion_RenderView_SetEnvironment(view, configuration.environmentView, configuration.environmentSampler, 1.0f);
+        Fluxion_RenderView_UpdateFrameConstants(view);
+    }
+
     FluxionRHICommandListHandle cmd = Fluxion_RHI_CreateCommandList(rig.device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
     Fluxion_RHI_CommandList_Begin(cmd);
 
     // Inside the recording, before anything draws with this view.
     Fluxion_RenderView_UploadLights(view, cmd);
+
+    // Unconditional, and load-bearing even for the checks with no
+    // environment of their own: the surfaces READ the nine coefficients
+    // on every path, and a fresh view's buffer holds whatever the
+    // allocator handed over until this projects the black cube into it.
+    // Nine zeroes is the answer "no sky", and this is what writes it.
+    Fluxion_Renderer_UpdateEnvironment(rig.renderer, view, cmd);
 
     FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(rig.device);
     Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Color0", rig.color, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
@@ -1075,6 +1097,128 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     none.ambient[2] = 0.4f;
     const Rgb noneColor = RenderOne(ctx, rig, none);
     TEST_CHECK(ctx, noneColor.r > 0.35f && noneColor.r < 0.45f);
+
+    // --- A uniform sky, checked against the number it must produce ---------
+    //
+    // Under a sky radiating the same L in every direction, the irradiance
+    // on ANY surface is exactly pi times L -- the cosine lobe integrates
+    // to pi over the hemisphere -- and Lambert then divides that same pi
+    // back out. So what leaves the surface is albedo times L, with no
+    // approximation in it anywhere: the nine-coefficient fit is EXACT for
+    // a constant, since a constant is the whole of band zero.
+    //
+    // That is what makes this a real check on the projection rather than
+    // a smoke test. The pi from the quadrature and the 1/pi from the
+    // reflectance come from two different files, and a factor lost or
+    // doubled in either -- the classic failure of exactly this feature --
+    // moves the answer by pi, not by a rounding error.
+    {
+        // One texel per face, radiance 0.5 in every one of them. A
+        // constant sky needs no resolution at all: every direction reads
+        // the same texel back whatever the grid does between them.
+        constexpr f32 kSkyRadiance = 0.5f;
+
+        FluxionRHITextureDesc skyDesc{};
+        skyDesc.width = 1;
+        skyDesc.height = 1;
+        skyDesc.depth = 1;
+        skyDesc.mipLevels = 1;
+        skyDesc.arrayLayers = FLUXION_RHI_CUBE_FACE_COUNT;
+        skyDesc.sampleCount = 1;
+        skyDesc.format = FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT;
+        skyDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_SAMPLED | FLUXION_RHI_TEXTURE_USAGE_TRANSFER_DST;
+        skyDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
+        skyDesc.debugName = "LightingGPU.UniformSky";
+        skyDesc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+        FluxionRHITextureHandle skyTexture = Fluxion_RHI_CreateTexture(rig.device, &skyDesc);
+        TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(skyTexture));
+
+        FluxionTextureLevelPlacement placements[FLUXION_RHI_CUBE_FACE_COUNT];
+        u32 placementCount = 0;
+        const usize stagingSize = Fluxion_TextureAsset_PlanUpload(
+            skyDesc.format, 1, 1, 1, FLUXION_RHI_CUBE_FACE_COUNT,
+            placements, FLUXION_RHI_CUBE_FACE_COUNT, &placementCount);
+        TEST_CHECK(ctx, stagingSize != 0 && placementCount == FLUXION_RHI_CUBE_FACE_COUNT);
+
+        FluxionRHIBufferDesc stagingDesc{ stagingSize, FLUXION_RHI_BUFFER_USAGE_TRANSFER_SRC,
+                                          FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU, "LightingGPU.UniformSky.Staging" };
+        FluxionRHIBufferHandle staging = Fluxion_RHI_CreateBuffer(rig.device, &stagingDesc);
+
+        u8* stagingBytes = (u8*)Fluxion_RHI_MapBuffer(staging);
+        TEST_CHECK(ctx, stagingBytes != nullptr);
+        if (stagingBytes != nullptr)
+        {
+            std::memset(stagingBytes, 0, stagingSize);
+            for (u32 face = 0; face < FLUXION_RHI_CUBE_FACE_COUNT; ++face)
+            {
+                f32* texel = (f32*)(stagingBytes + placements[face].stagingOffset);
+                texel[0] = kSkyRadiance;
+                texel[1] = kSkyRadiance;
+                texel[2] = kSkyRadiance;
+                texel[3] = 1.0f;
+            }
+            Fluxion_RHI_UnmapBuffer(staging);
+        }
+
+        FluxionRHICommandListHandle upload = Fluxion_RHI_CreateCommandList(rig.device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
+        Fluxion_RHI_CommandList_Begin(upload);
+
+        FluxionRHIBufferHandle noBuffer = Fluxion::Foundation::NoHandle<FluxionRHIBufferHandle>();
+        FluxionRHIBarrier toCopy = { skyTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED,
+                                     FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
+        Fluxion_RHI_CommandList_Barrier(upload, &toCopy, 1);
+        for (u32 face = 0; face < FLUXION_RHI_CUBE_FACE_COUNT; ++face)
+        {
+            Fluxion_RHI_CommandList_CopyBufferToTexture(upload, staging, placements[face].stagingOffset, skyTexture, 0, face);
+        }
+        FluxionRHIBarrier toRead = toCopy;
+        toRead.before = FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION;
+        toRead.after = FLUXION_RHI_RESOURCE_STATE_SHADER_READ;
+        Fluxion_RHI_CommandList_Barrier(upload, &toRead, 1);
+        Fluxion_RHI_CommandList_End(upload);
+
+        FluxionRHIFenceHandle fence = Fluxion_RHI_CreateFence(rig.device, false);
+        Fluxion_RHI_Queue_Submit(rig.queue, &upload, 1, fence);
+        TEST_CHECK(ctx, Fluxion_RHI_WaitForFence(fence));
+        Fluxion_RHI_DestroyFence(fence);
+        Fluxion_RHI_DestroyCommandList(upload);
+        Fluxion_RHI_DestroyBuffer(staging);
+
+        FluxionRHITextureViewDesc skyViewDesc{};
+        skyViewDesc.texture = skyTexture;
+        skyViewDesc.format = skyDesc.format;
+        skyViewDesc.mipLevelCount = 1;
+        skyViewDesc.arrayLayerCount = FLUXION_RHI_CUBE_FACE_COUNT;
+        skyViewDesc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+        FluxionRHITextureViewHandle skyView = Fluxion_RHI_CreateTextureView(rig.device, &skyViewDesc);
+        TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(skyView));
+
+        Configuration sky = BaseConfiguration();
+        sky.name = "uniform sky, no other light";
+        sky.sunColor[0] = 0.0f;
+        sky.sunColor[1] = 0.0f;
+        sky.sunColor[2] = 0.0f;
+        sky.environmentView = skyView;
+        sky.environmentSampler = rig.sampler;
+
+        const Rgb skyColor = RenderOne(ctx, rig, sky);
+
+        // albedo * L, and the base configuration's albedo is one, so the
+        // answer is L itself: 0.5. The pi that the cosine lobe brings in
+        // and the pi that Lambert divides out come from two different
+        // files, and this is the check that they really cancel -- a pi
+        // lost or gained lands at 0.16 or 1.57, nowhere near the window.
+        // What the window allows for is the grid quadrature summing to
+        // almost-exactly 4pi, and halves on the way out: the measured
+        // answer is 0.499756, which is 0.5 to the last bit a half holds.
+        const f32 expected = 1.0f * kSkyRadiance;
+        TEST_CHECK(ctx, skyColor.r > expected * 0.97f && skyColor.r < expected * 1.03f);
+        TEST_CHECK(ctx, skyColor.g > expected * 0.97f && skyColor.g < expected * 1.03f);
+        TEST_CHECK(ctx, skyColor.b > expected * 0.97f && skyColor.b < expected * 1.03f);
+
+        Fluxion_RHI_DestroyTextureView(skyView);
+        Fluxion_RHI_DestroyTexture(skyTexture);
+    }
 
     Fluxion_TextureDefaults_Shutdown();
     DestroyRig(rig);

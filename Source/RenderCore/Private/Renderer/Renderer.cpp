@@ -390,6 +390,15 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     renderer->skyboxPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->skyboxFrameLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
 
+    // Written out rather than left to the zeroing above: a zeroed handle
+    // has index zero, and index zero is a real slot -- so an unbuilt
+    // program would read as one that was already there.
+    renderer->irradianceProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->irradiancePipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->irradianceLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->irradianceBindGroup = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->irradianceFailed = false;
+
     // What a caller that never says otherwise gets. It is a guess, and it
     // is why saying so exists: a frame drawn into a colour attachment of
     // any other format needs the pipeline rebuilt against that one.
@@ -425,6 +434,7 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
 
     // The sky goes with the renderer that built it.
     FluxionRendererInternal_Skybox_Destroy(renderer);
+    FluxionRendererInternal_Irradiance_Destroy(renderer);
 
     Fluxion_RenderGraphPassRegistry_Unregister("ForwardOpaquePass");
 
@@ -449,6 +459,15 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
 
     renderer->alive = false;
     ++renderer->generation;
+}
+
+extern "C" void Fluxion_Renderer_UpdateEnvironment(FluxionRendererHandle rendererHandle, FluxionRenderViewHandle view,
+                                                   FluxionRHICommandListHandle commandList)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return;
+
+    FluxionRendererInternal_Irradiance_Project(renderer, commandList, view);
 }
 
 extern "C" void Fluxion_Renderer_BeginFrame(FluxionRendererHandle rendererHandle, FluxionRenderViewHandle view)

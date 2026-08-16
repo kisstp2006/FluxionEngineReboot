@@ -228,7 +228,12 @@ private:
         // read-write [Buffer(Group)] from a read-only [Uniform(Group)].
         for (const IRResourceBinding& b : m_module.storageBuffers)
         {
-            m_out << "layout(std430, binding = " << OpenGLFlatBinding(b.group, b.binding) << ") buffer Group" << GroupName(b.group) << "StorageBlock\n{\n";
+            // The buffer's own name is part of the block's, not only the
+            // group's. A block is named once per BUFFER, and two buffers
+            // in one group -- the frame's lights and its irradiance --
+            // would otherwise both declare a block of the same name,
+            // which this language rejects as a redeclaration.
+            m_out << "layout(std430, binding = " << OpenGLFlatBinding(b.group, b.binding) << ") buffer Group" << GroupName(b.group) << "_" << b.name << "_StorageBlock\n{\n";
             m_out << "    " << GLSLTypeName(b.type) << " " << b.name << "[];\n";
             m_out << "};\n";
         }
