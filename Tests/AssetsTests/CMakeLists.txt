@@ -8,6 +8,7 @@ engine_add_test(
         Test_AssetLoading.cpp
         Test_Package.cpp
         Test_AssetImport.cpp
+        Test_AssetReload.cpp
     DEPENDENCIES
         Fluxion::Assets
         # These checks put files on disk and read the finished package

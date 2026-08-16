@@ -161,6 +161,14 @@ static const FluxionVfsSourceVTable s_packageVTable = {
     Fluxion_PackageSource_GetSize,
     NULL, // A package is what shipped. Nothing writes into it.
     Fluxion_PackageSource_Destroy,
+
+    // And nothing rewrites it either: what is inside a package cannot
+    // change while it is mounted, so there is nothing to watch. Said with
+    // a NULL rather than with a function that always answers the same
+    // thing, because it is the absence that makes watching FREE -- a
+    // built game mounts packages and therefore looks at no files at all,
+    // with no setting for anybody to remember.
+    NULL,
 };
 
 // Walks the index without storing it, to find out how much room the paths

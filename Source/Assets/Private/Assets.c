@@ -9,6 +9,7 @@
 #include <Fluxion/Foundation/Containers/HashMap.h>
 #include <Fluxion/Foundation/Hashing.h>
 #include <Fluxion/Foundation/Log.h>
+#include <Fluxion/Platform/Time.h>
 
 #include <string.h>
 
@@ -44,13 +45,60 @@ typedef struct FluxionAssetSlot
     void* userData;
 
     FluxionJobHandle loadJob;
+
+    // --- Reading it again, when the file behind it changes ---------------
+    //
+    // A second, complete set of the load's working state rather than
+    // reusing the fields above. The asset stays USABLE for the whole of a
+    // reload -- its state stays ready and its object stays valid -- and
+    // that is only true because the new one is built somewhere else and
+    // swapped in at the end.
+
+    // What the file looked like when it was last read. Zero means it was
+    // never known, which is the same as "this file cannot change" and is
+    // why a package costs nothing here.
+    u64 revision;
+
+    // The worker writes this one, the owning thread reads it -- the same
+    // arrangement as `state` above, and for the same reason.
+    FluxionAtomicI32 reloadState;
+
+    void* reloadObject;
+    FluxionJobHandle reloadJob;
+
+    u32 reloadCount;
 } FluxionAssetSlot;
+
+// Where a reload has got to. Deliberately NOT FluxionAssetState: the
+// asset's own state stays ready throughout, because the asset IS ready
+// throughout, and using one field for both would make a reload look like
+// an unload to everything that asks.
+typedef enum FluxionAssetReloadState
+{
+    FLUXION_ASSET_RELOAD_IDLE = 0,
+    FLUXION_ASSET_RELOAD_READING,
+
+    // Read and decoded; waiting for the step that has to happen on the
+    // thread that owns the device.
+    FLUXION_ASSET_RELOAD_CPU_READY,
+    FLUXION_ASSET_RELOAD_FAILED,
+} FluxionAssetReloadState;
 
 static FluxionAllocator* s_allocator = NULL;
 static FluxionAssetSlot s_slots[FLUXION_ASSETS_MAX_LOADED];
 static FluxionHashMap s_byId; // FluxionUUID -> u32 slot index
 static u32 s_loadedCount = 0;
 static bool s_initialized = false;
+
+// How often the files behind loaded assets are looked at.
+//
+// Two hundred milliseconds is chosen to be under what a person notices
+// between saving a file and seeing it, while being far more than the cost
+// of asking -- one question per held asset, five times a second.
+#define FLUXION_ASSETS_DEFAULT_WATCH_MILLISECONDS 200
+
+static u32 s_watchMilliseconds = FLUXION_ASSETS_DEFAULT_WATCH_MILLISECONDS;
+static u64 s_lastWatchTicks = 0;
 
 void Fluxion_Assets_Init(FluxionAllocator* allocator)
 {
@@ -60,6 +108,13 @@ void Fluxion_Assets_Init(FluxionAllocator* allocator)
     memset(s_slots, 0, sizeof(s_slots));
     Fluxion_HashMap_Init(&s_byId, s_allocator, sizeof(FluxionUUID), sizeof(u32), Fluxion_HashBytes64, Fluxion_BytesEqual);
     s_loadedCount = 0;
+
+    // Now, not zero. Zero would make the first Update look like a whole
+    // clock's worth of time had passed, so every asset would be asked
+    // about on the very frame it was loaded -- which is the one frame it
+    // certainly has not changed on.
+    s_lastWatchTicks = Fluxion_Platform_GetHighResolutionTicks();
+
     s_initialized = true;
 }
 
@@ -69,6 +124,11 @@ static void Fluxion_Assets_ReleaseSlot(FluxionAssetSlot* slot);
 void Fluxion_Assets_Shutdown(void)
 {
     if (!s_initialized) return;
+
+    // Back to what a fresh run has. A build that starts the asset system
+    // twice would otherwise carry the previous run's setting into a
+    // second one that never asked for it.
+    s_watchMilliseconds = FLUXION_ASSETS_DEFAULT_WATCH_MILLISECONDS;
 
     for (u32 i = 0; i < FLUXION_ASSETS_MAX_LOADED; ++i)
     {
@@ -143,11 +203,196 @@ static void Fluxion_Assets_FinishSlot(FluxionAssetSlot* slot)
     Fluxion_AtomicI32_Store(&slot->state, ok ? (i32)FLUXION_ASSET_STATE_READY : (i32)FLUXION_ASSET_STATE_FAILED);
 }
 
+// ---------------------------------------------------------------------
+// Reading one again, because its file changed.
+//
+// The same two steps as a first load, in the same order, run by the same
+// two functions the type provided -- which is what makes this work for
+// every asset type there is and for every one added later, with nothing
+// written per type.
+//
+// What is different is where the result goes. A first load has nothing to
+// protect and writes straight into the slot; this one builds the new
+// object beside the old and swaps at the very end, so that the asset is
+// usable at every instant in between.
+// ---------------------------------------------------------------------
+
+static void Fluxion_Assets_RunReload(void* data)
+{
+    FluxionAssetSlot* slot = *(FluxionAssetSlot**)data;
+
+    usize size = 0;
+    u8* bytes = Fluxion_Vfs_ReadAll(slot->cookedPath, &size);
+    if (!bytes)
+    {
+        Fluxion_AtomicI32_Store(&slot->reloadState, (i32)FLUXION_ASSET_RELOAD_FAILED);
+        return;
+    }
+
+    void* object = NULL;
+    const bool ok = slot->load(bytes, size, &object, slot->userData);
+    Fluxion_Vfs_FreeBuffer(bytes, size);
+
+    if (!ok)
+    {
+        Fluxion_AtomicI32_Store(&slot->reloadState, (i32)FLUXION_ASSET_RELOAD_FAILED);
+        return;
+    }
+
+    slot->reloadObject = object;
+    Fluxion_AtomicI32_Store(&slot->reloadState, (i32)FLUXION_ASSET_RELOAD_CPU_READY);
+}
+
+// Puts the new object in place of the old one.
+//
+// The order is the whole of it: finish the new one, put it in, and only
+// then let go of the old one. Reversed, there would be a moment when the
+// asset had nothing -- and a frame that landed on that moment would draw
+// with a destroyed texture rather than with the previous one.
+static void Fluxion_Assets_SwapInReload(FluxionAssetSlot* slot)
+{
+    void* replaced = slot->object;
+    slot->object = slot->reloadObject;
+    slot->reloadObject = NULL;
+
+    if (replaced && slot->unload) slot->unload(replaced, slot->userData);
+
+    ++slot->reloadCount;
+
+    // Said out loud, once per reload. Something changing on screen with
+    // nothing to say why is the harder thing to work with of the two --
+    // and when it does NOT change, this line is how somebody finds out
+    // whether the file was even noticed.
+    char text[37];
+    Fluxion_UUID_ToString(slot->id, text);
+    FLUXION_LOG_INFO(FLUXION_ASSETS_LOG_CATEGORY, "asset %s changed on disc and was read again", text);
+}
+
+// Everything a reload leaves behind when it comes to nothing.
+static void Fluxion_Assets_AbandonReload(FluxionAssetSlot* slot, const char* why)
+{
+    if (slot->reloadObject && slot->unload) slot->unload(slot->reloadObject, slot->userData);
+    slot->reloadObject = NULL;
+
+    char text[37];
+    Fluxion_UUID_ToString(slot->id, text);
+
+    // The old one is still there and still correct, so this is a message
+    // and not a failure. An asset marked failed here would take a working
+    // picture off the screen because a half-written file was read once.
+    FLUXION_LOG_ERROR(FLUXION_ASSETS_LOG_CATEGORY,
+                      "asset %s was not read again (%s); what was already loaded is still in use", text, why);
+}
+
+// Carries a reload as far as this thread can take it, which is all the
+// way -- the device-side step is this thread's to run.
+static void Fluxion_Assets_FinishReload(FluxionAssetSlot* slot)
+{
+    const FluxionAssetReloadState state = (FluxionAssetReloadState)Fluxion_AtomicI32_Load(&slot->reloadState);
+
+    if (state == FLUXION_ASSET_RELOAD_FAILED)
+    {
+        Fluxion_Assets_AbandonReload(slot, "the file could not be read or made sense of");
+        Fluxion_AtomicI32_Store(&slot->reloadState, (i32)FLUXION_ASSET_RELOAD_IDLE);
+        return;
+    }
+
+    if (state != FLUXION_ASSET_RELOAD_CPU_READY) return;
+
+    if (slot->finalize && !slot->finalize(slot->reloadObject, slot->userData))
+    {
+        Fluxion_Assets_AbandonReload(slot, "it could not be given to the device");
+        Fluxion_AtomicI32_Store(&slot->reloadState, (i32)FLUXION_ASSET_RELOAD_IDLE);
+        return;
+    }
+
+    Fluxion_Assets_SwapInReload(slot);
+    Fluxion_AtomicI32_Store(&slot->reloadState, (i32)FLUXION_ASSET_RELOAD_IDLE);
+}
+
+static void Fluxion_Assets_StartReload(FluxionAssetSlot* slot)
+{
+    Fluxion_AtomicI32_Store(&slot->reloadState, (i32)FLUXION_ASSET_RELOAD_READING);
+    slot->reloadObject = NULL;
+
+    if (Fluxion_JobSystem_IsInitialized())
+    {
+        FluxionJobDesc desc;
+        memset(&desc, 0, sizeof(desc));
+        desc.function = Fluxion_Assets_RunReload;
+        desc.dataSize = sizeof(FluxionAssetSlot*);
+        memcpy(desc.data, &slot, sizeof(FluxionAssetSlot*));
+
+        slot->reloadJob = Fluxion_JobSystem_Submit(&desc);
+
+        // Same two possibilities as the first load: it already ran here,
+        // or there was no room for it. The state tells them apart.
+        if (!FLUXION_HANDLE_IS_VALID(slot->reloadJob) &&
+            (FluxionAssetReloadState)Fluxion_AtomicI32_Load(&slot->reloadState) == FLUXION_ASSET_RELOAD_READING)
+        {
+            Fluxion_AtomicI32_Store(&slot->reloadState, (i32)FLUXION_ASSET_RELOAD_FAILED);
+        }
+    }
+    else
+    {
+        Fluxion_Assets_RunReload(&slot);
+    }
+}
+
+// Looks at the file behind every held asset, and starts reading again the
+// ones that changed.
+static void Fluxion_Assets_LookForChanges(void)
+{
+    for (u32 i = 0; i < FLUXION_ASSETS_MAX_LOADED; ++i)
+    {
+        FluxionAssetSlot* slot = &s_slots[i];
+        if (!slot->inUse) continue;
+
+        // Never known, which is what a file that cannot change looks
+        // like. Asking again would cost a question per asset per poll for
+        // an answer that is always the same.
+        if (slot->revision == 0) continue;
+
+        // Still arriving for the first time, or already being read again.
+        // Either way there is a load in flight writing into this slot,
+        // and a second one would race it.
+        const FluxionAssetState state = (FluxionAssetState)Fluxion_AtomicI32_Load(&slot->state);
+        if (state == FLUXION_ASSET_STATE_LOADING || state == FLUXION_ASSET_STATE_CPU_READY ||
+            state == FLUXION_ASSET_STATE_UPLOADING)
+            continue;
+        if ((FluxionAssetReloadState)Fluxion_AtomicI32_Load(&slot->reloadState) != FLUXION_ASSET_RELOAD_IDLE) continue;
+
+        const u64 revision = Fluxion_Vfs_GetRevision(slot->cookedPath);
+
+        // Zero is "no answer just now" -- the file is missing, or
+        // something is in the middle of writing it. Not a change, and
+        // treating it as one would read a half-written file.
+        if (revision == 0 || revision == slot->revision) continue;
+
+        // Written down BEFORE the attempt, and that is what stops a file
+        // that cannot be loaded from being tried five times a second for
+        // the rest of the run. It gets one attempt per change, which is
+        // what a person editing it expects.
+        slot->revision = revision;
+
+        Fluxion_Assets_StartReload(slot);
+    }
+}
+
 static void Fluxion_Assets_ReleaseSlot(FluxionAssetSlot* slot)
 {
     // Whatever is still being decoded belongs to this asset, and there
-    // would be nowhere for it to land once the slot is gone.
+    // would be nowhere for it to land once the slot is gone. True of a
+    // reload as much as of a first load -- and a reload is the easier one
+    // to forget, because the asset it is rebuilding looks perfectly
+    // finished from outside.
     if (FLUXION_HANDLE_IS_VALID(slot->loadJob)) Fluxion_JobSystem_Wait(slot->loadJob);
+    if (FLUXION_HANDLE_IS_VALID(slot->reloadJob)) Fluxion_JobSystem_Wait(slot->reloadJob);
+
+    // The half-built one first: it belongs to nobody, so nothing can
+    // notice it going, and leaving it would leak exactly as much as the
+    // asset itself is worth.
+    if (slot->reloadObject && slot->unload) slot->unload(slot->reloadObject, slot->userData);
 
     if (slot->object && slot->unload) slot->unload(slot->object, slot->userData);
 
@@ -270,8 +515,23 @@ FluxionAssetHandle Fluxion_Assets_Acquire(FluxionUUID id)
     // here that waits on this would otherwise wait on whatever job
     // happened to be sitting in the first slot.
     slot->loadJob = Fluxion_Assets_InvalidJobHandle();
+    slot->reloadJob = Fluxion_Assets_InvalidJobHandle();
+
+    // What the file looks like right now, taken BEFORE anything reads it.
+    //
+    // Before, so that a change made while the read is happening is not
+    // written down as already seen. The worst that order costs is one
+    // reload of a file that was already current; the other order loses
+    // the change entirely.
+    //
+    // Taken on this thread rather than in the job, because this is the
+    // thread that owns the mount table -- and zero coming back is the
+    // ordinary answer for a file that cannot change, which is what makes
+    // a packaged asset free to hold.
+    slot->revision = Fluxion_Vfs_GetRevision(slot->cookedPath);
 
     Fluxion_AtomicI32_Store(&slot->state, (i32)FLUXION_ASSET_STATE_LOADING);
+    Fluxion_AtomicI32_Store(&slot->reloadState, (i32)FLUXION_ASSET_RELOAD_IDLE);
 
     if (!Fluxion_HashMap_Set(&s_byId, &id, &index))
     {
@@ -384,8 +644,51 @@ void Fluxion_Assets_Update(void)
 
     for (u32 i = 0; i < FLUXION_ASSETS_MAX_LOADED; ++i)
     {
-        if (s_slots[i].inUse) Fluxion_Assets_FinishSlot(&s_slots[i]);
+        if (!s_slots[i].inUse) continue;
+
+        Fluxion_Assets_FinishSlot(&s_slots[i]);
+
+        // A reload that is waiting for this thread gets it here, in the
+        // same pass. Finishing one is what puts the new object in place,
+        // so a reload that never reached this line would have read the
+        // file for nothing.
+        Fluxion_Assets_FinishReload(&s_slots[i]);
     }
+
+    if (s_watchMilliseconds == 0) return;
+
+    const u64 ticks = Fluxion_Platform_GetHighResolutionTicks();
+    const u64 frequency = Fluxion_Platform_GetHighResolutionFrequency();
+    if (frequency == 0) return;
+
+    // Multiplied out rather than divided down, so that an interval
+    // shorter than one tick is not rounded to nothing.
+    const u64 elapsedMilliseconds = (ticks - s_lastWatchTicks) * 1000ull / frequency;
+    if (elapsedMilliseconds < (u64)s_watchMilliseconds) return;
+
+    s_lastWatchTicks = ticks;
+    Fluxion_Assets_LookForChanges();
+}
+
+void Fluxion_Assets_SetWatchInterval(u32 milliseconds)
+{
+    s_watchMilliseconds = milliseconds;
+
+    // The clock starts again from here. Otherwise switching watching back
+    // on after a long pause would look like the interval had elapsed many
+    // times over, and every held asset would be asked about at once.
+    s_lastWatchTicks = Fluxion_Platform_GetHighResolutionTicks();
+}
+
+u32 Fluxion_Assets_GetWatchInterval(void)
+{
+    return s_watchMilliseconds;
+}
+
+u32 Fluxion_Assets_GetReloadCount(FluxionAssetHandle handle)
+{
+    const FluxionAssetSlot* slot = Fluxion_Assets_Resolve(handle);
+    return slot ? slot->reloadCount : 0;
 }
 
 FluxionAssetState Fluxion_Assets_Wait(FluxionAssetHandle handle)
@@ -400,5 +703,18 @@ FluxionAssetState Fluxion_Assets_Wait(FluxionAssetHandle handle)
     }
 
     Fluxion_Assets_FinishSlot(slot);
+
+    // And a reload, if one happens to be in flight. A caller waiting to
+    // use this asset means the newest of it, not whichever version was
+    // there when the wait began -- and leaving one half-finished would
+    // hold a decoded object nothing goes back to.
+    if (FLUXION_HANDLE_IS_VALID(slot->reloadJob))
+    {
+        Fluxion_JobSystem_Wait(slot->reloadJob);
+        slot->reloadJob = Fluxion_Assets_InvalidJobHandle();
+    }
+
+    Fluxion_Assets_FinishReload(slot);
+
     return (FluxionAssetState)Fluxion_AtomicI32_Load(&slot->state);
 }

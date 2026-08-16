@@ -38,6 +38,23 @@ bool  Fluxion_Platform_FileSeek(FluxionFile* file, i64 offset);
 bool  Fluxion_Platform_FileExists(const char* path);
 bool  Fluxion_Platform_FileDelete(const char* path);
 
+// When a file was last written, and how large it is, WITHOUT opening it.
+//
+// For noticing that a file changed. Opening it to find out costs a handle
+// and, on a file something else is in the middle of writing, may fail for
+// a reason that has nothing to do with the question being asked.
+//
+// The time is in whatever unit the platform keeps -- it is meant to be
+// compared with an earlier answer for the same file and nothing else. The
+// two are reported together because neither is enough on its own: a file
+// system that keeps times to the second cannot tell two writes in the
+// same second apart, and a file rewritten with different contents of the
+// same length has the same size as before.
+//
+// False when the file is not there or cannot be asked about, and the two
+// outputs are then left alone.
+bool  Fluxion_Platform_FileStat(const char* path, u64* outModifiedTime, u64* outSize);
+
 bool  Fluxion_Platform_DirectoryExists(const char* path);
 
 // Creates ONE directory, whose parent must already be there. True when it

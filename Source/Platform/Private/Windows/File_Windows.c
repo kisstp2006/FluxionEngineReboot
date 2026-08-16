@@ -99,6 +99,22 @@ bool Fluxion_Platform_FileDelete(const char* path)
     return DeleteFileA(path) != 0;
 }
 
+bool Fluxion_Platform_FileStat(const char* path, u64* outModifiedTime, u64* outSize)
+{
+    if (path == NULL || outModifiedTime == NULL || outSize == NULL) return false;
+
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &info)) return false;
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return false;
+
+    // Two thirty-two-bit halves of one number, which is how this platform
+    // reports a time. Put back together rather than compared as a pair,
+    // so that whoever asked has one value to remember.
+    *outModifiedTime = ((u64)info.ftLastWriteTime.dwHighDateTime << 32) | (u64)info.ftLastWriteTime.dwLowDateTime;
+    *outSize = ((u64)info.nFileSizeHigh << 32) | (u64)info.nFileSizeLow;
+    return true;
+}
+
 bool Fluxion_Platform_DirectoryExists(const char* path)
 {
     DWORD attributes = GetFileAttributesA(path);

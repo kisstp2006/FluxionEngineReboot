@@ -2,6 +2,7 @@
 
 #include <Fluxion/Foundation/Assert.h>
 #include <Fluxion/Foundation/Log.h>
+#include <Fluxion/Foundation/Hashing.h>
 #include <Fluxion/Platform/File.h>
 
 #include <string.h>
@@ -261,6 +262,36 @@ usize Fluxion_Vfs_GetSize(const char* path)
     return 0;
 }
 
+u64 Fluxion_Vfs_GetRevision(const char* path)
+{
+    char relative[FLUXION_VFS_MAX_PATH];
+    const FluxionVfsMount* mount = Fluxion_Vfs_Resolve(path, relative, sizeof(relative));
+    if (!mount) return 0;
+
+    // Newest mount first, the same order a read takes -- so the revision
+    // that comes back belongs to the file that would actually be read,
+    // and not to one shadowed underneath it.
+    for (u32 i = mount->sourceCount; i > 0; --i)
+    {
+        FluxionVfsSource* source = mount->sources[i - 1];
+
+        // A source with no revision function holds files that cannot
+        // change. Its say stops the search: if IT has the file, that is
+        // the file a read would return, and no source below it gets to
+        // answer for a file nothing will read.
+        if (!source->vtable->getRevision)
+        {
+            if (source->vtable->exists && source->vtable->exists(source, relative)) return 0;
+            continue;
+        }
+
+        const u64 revision = source->vtable->getRevision(source, relative);
+        if (revision != 0) return revision;
+    }
+
+    return 0;
+}
+
 u8* Fluxion_Vfs_ReadAll(const char* path, usize* outSize)
 {
     if (outSize) *outSize = 0;
@@ -430,6 +461,34 @@ static usize Fluxion_VfsDirectorySource_GetSize(FluxionVfsSource* source, const 
     return size > 0 ? (usize)size : 0u;
 }
 
+// When a file on a disk last changed, as one number.
+//
+// The time and the size are folded together because neither is enough on
+// its own: a file system that keeps times only to the second cannot tell
+// two writes in the same second apart, and a file rewritten with
+// different contents of the same length keeps its size. Both would have
+// to come out unchanged for a real change to go unnoticed.
+//
+// It is still not proof of sameness, and nothing here pretends otherwise
+// -- proving that means reading the file, which is the cost this exists
+// to avoid.
+static u64 Fluxion_VfsDirectorySource_GetRevision(FluxionVfsSource* source, const char* relative)
+{
+    const FluxionVfsDirectorySource* self = (const FluxionVfsDirectorySource*)source;
+    char full[FLUXION_VFS_MAX_PATH];
+    if (!Fluxion_VfsDirectorySource_BuildPath(self, relative, full, sizeof(full))) return 0;
+
+    u64 stamp[2];
+    if (!Fluxion_Platform_FileStat(full, &stamp[0], &stamp[1])) return 0;
+
+    const u64 revision = Fluxion_HashBytes64(stamp, sizeof(stamp));
+
+    // Zero is the one value that means "no answer", so a hash landing
+    // there has to be moved off it. Which value it moves to does not
+    // matter: nothing reads this number, it is only ever compared.
+    return revision != 0 ? revision : 1;
+}
+
 static bool Fluxion_VfsDirectorySource_WriteAll(FluxionVfsSource* source, const char* relative, const void* data, usize size)
 {
     const FluxionVfsDirectorySource* self = (const FluxionVfsDirectorySource*)source;
@@ -470,6 +529,7 @@ static const FluxionVfsSourceVTable s_directoryVTable = {
     Fluxion_VfsDirectorySource_GetSize,
     Fluxion_VfsDirectorySource_WriteAll,
     Fluxion_VfsDirectorySource_Destroy,
+    Fluxion_VfsDirectorySource_GetRevision,
 };
 
 FluxionVfsSource* Fluxion_VfsDirectorySource_Create(const char* rootPath)

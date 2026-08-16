@@ -10,6 +10,7 @@ void Test_AssetDatabase_Run(TestContext& ctx);
 void Test_AssetLoading_Run(TestContext& ctx);
 void Test_Package_Run(TestContext& ctx);
 void Test_AssetImport_Run(TestContext& ctx);
+void Test_AssetReload_Run(TestContext& ctx);
 
 int main()
 {
@@ -29,6 +30,7 @@ int main()
     Test_AssetLoading_Run(ctx);
     Test_Package_Run(ctx);
     Test_AssetImport_Run(ctx);
+    Test_AssetReload_Run(ctx);
 
     Fluxion_ServiceRegistry_Shutdown();
 

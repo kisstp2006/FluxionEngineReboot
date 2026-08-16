@@ -86,6 +86,23 @@ bool Fluxion_Platform_FileDelete(const char* path)
     return unlink(path) == 0;
 }
 
+bool Fluxion_Platform_FileStat(const char* path, u64* outModifiedTime, u64* outSize)
+{
+    if (path == NULL || outModifiedTime == NULL || outSize == NULL) return false;
+
+    struct stat info;
+    if (stat(path, &info) != 0) return false;
+    if (S_ISDIR(info.st_mode)) return false;
+
+    // Nanoseconds where the file system keeps them. Seconds alone cannot
+    // tell two writes in the same second apart, and that is exactly the
+    // case somebody editing a file and looking straight at the result
+    // runs into.
+    *outModifiedTime = (u64)info.st_mtim.tv_sec * 1000000000ull + (u64)info.st_mtim.tv_nsec;
+    *outSize = (u64)info.st_size;
+    return true;
+}
+
 bool Fluxion_Platform_DirectoryExists(const char* path)
 {
     struct stat st;

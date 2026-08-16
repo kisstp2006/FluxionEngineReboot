@@ -62,6 +62,29 @@ typedef struct FluxionVfsSourceVTable
     bool (*writeAll)(FluxionVfsSource* self, const char* path, const void* data, usize size);
 
     void (*destroy)(FluxionVfsSource* self);
+
+    // A number that CHANGES WHEN THE FILE DOES, and means nothing else.
+    //
+    // Not a time, not a size, not a hash -- whoever asks it may only
+    // compare it with an earlier answer for the same path. That is
+    // deliberate: a source works it out however it can, and no caller
+    // gets to depend on how.
+    //
+    // NULL on a source whose files cannot change while it is mounted,
+    // which is the ordinary case for a shipped package. That is not a
+    // limitation to work around: it is what makes watching cost nothing
+    // in a built game, with no setting for anybody to remember.
+    //
+    // Zero from a source that HAS this function means "no answer just
+    // now" -- the file is missing, or cannot be asked about this instant.
+    // Zero is never compared as a value, so a file caught mid-write is
+    // not mistaken for a file that changed.
+    //
+    // LAST in this table on purpose. Every vtable below is written out as
+    // a positional list, so an entry added anywhere else would quietly
+    // shift the ones after it into the wrong slots -- and one left out of
+    // an older list lands here as NULL, which is the safe answer.
+    u64 (*getRevision)(FluxionVfsSource* self, const char* path);
 } FluxionVfsSourceVTable;
 
 // Every concrete source embeds this as its first member, so the file
@@ -96,6 +119,14 @@ bool Fluxion_Vfs_Exists(const char* path);
 // ask Exists, and every caller that does not would have had to handle
 // both the same way anyway.
 usize Fluxion_Vfs_GetSize(const char* path);
+
+// What the source behind this path says its revision is -- see
+// `getRevision` above for what that number is and is not.
+//
+// Zero when nothing has the file, when the source that has it cannot
+// change, or when it cannot be asked just now. A caller compares two
+// non-zero answers and does nothing with anything else.
+u64 Fluxion_Vfs_GetRevision(const char* path);
 
 // Reads through the scheme's sources, newest mount first, and stops at
 // the first one that has the file. NULL when no source does, or when the

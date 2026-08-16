@@ -75,7 +75,50 @@ u32 Fluxion_Assets_GetLoadedCount(void);
 
 // Carries out the steps that can only happen on this thread. Call it once
 // per frame from the thread that owns the device.
+//
+// This is also where a file that changed on disc gets noticed -- see
+// below.
 void Fluxion_Assets_Update(void);
+
+// --- Assets that change while the game is running ------------------------
+//
+// A cooked file that is rewritten while something is holding it gets read
+// again, and what the holder has changes underneath it. NOTHING HAS TO ASK
+// FOR THIS AND NOTHING HAS TO BE WRITTEN PER TYPE: the handle stays the
+// same, so every reference already pointing at the asset goes on pointing
+// at it, and the new object is built by the type's own load and finalize
+// -- the same two functions that built the first one.
+//
+// What a holder must not do is keep the pointer from Fluxion_Assets_GetObject
+// across frames. Asking again each time is one call and always right;
+// something that really must cache can watch Fluxion_Assets_GetReloadCount
+// below.
+//
+// Which files are watched is not a setting. It follows from where they
+// come from: a directory can change and is looked at, a package cannot and
+// is not. A built game mounts packages, so it looks at nothing at all.
+//
+// The old object is unloaded only AFTER the new one is finished, so there
+// is no moment when the asset is neither -- and a reload that fails leaves
+// the old one exactly where it was, with a message saying so, rather than
+// a hole.
+
+// How often the files behind loaded assets are looked at, in
+// milliseconds. Zero switches it off entirely.
+//
+// It is a poll and not a subscription. Every platform reports changes
+// differently, several report them for directories rather than files, and
+// the ones that report nothing would need this anyway -- so there is one
+// mechanism instead of one plus a fallback that only ever runs on the
+// machines nobody tests.
+void Fluxion_Assets_SetWatchInterval(u32 milliseconds);
+u32 Fluxion_Assets_GetWatchInterval(void);
+
+// How many times this asset has been read again since it was first
+// loaded. For a holder that cannot ask for the object every time it needs
+// it: when this number changes, whatever was worked out from the old one
+// is out of date.
+u32 Fluxion_Assets_GetReloadCount(FluxionAssetHandle handle);
 
 // Blocks until this asset is ready or has failed.
 //
