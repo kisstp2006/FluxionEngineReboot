@@ -1,8 +1,14 @@
 # Khronos GL/KHR extension headers (glcorearb.h, khrplatform.h, wglext.h,
-# glxext.h) -- vendored, unmodified, Khronos Free Use License (MIT-
-# equivalent; see ARCHITECTURE_RULES.md dependency policy). Third-party
-# code: not run through engine_set_warnings or forced onto our C23/C++23
-# setting.
+# glxext.h) -- vendored and unmodified. Third-party code: not run through
+# engine_set_warnings or forced onto our C23/C++23 setting.
+#
+# The licence is per FILE and not per project: glcorearb.h, wglext.h and
+# glxext.h carry SPDX-License-Identifier: MIT, while the khrplatform.h
+# copy here is older and spells out an MIT notice worded with "Materials"
+# instead of "Software". Both texts are in LICENSES/, and the table in
+# LICENSES/README.md records which file is which -- re-read the top of a
+# header whenever it is refreshed, because Khronos has changed these over
+# time.
 #
 # Unlike Vulkan (where the full SDK is located via find_package(Vulkan)),
 # there is no equivalent OpenGL SDK to find -- the base GL 1.1 entry

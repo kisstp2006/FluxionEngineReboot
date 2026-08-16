@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="Branding/Fluxion-Logo-OnDark.png">
+    <img src="Branding/Fluxion-Logo.png" alt="Fluxion Engine" width="520">
+  </picture>
+</p>
+
 # Fluxion Engine
 
 Open source version of the Fluxion Engine.
@@ -9,9 +16,42 @@ Written in C and C++ (C23 / C++23).
 The original, closed-source Fluxion had grown too large to keep patching,
 refactoring, or restructuring in place. Rather than fight that codebase, it
 is being rewritten from scratch, carrying over what still makes sense from
-the original (everything written by me), and released under a new,
-permissive license that puts as few restrictions as possible on who can use
-the engine and how.
+the original (everything written by me), and released as open source.
+
+## License
+
+Fluxion Engine is **dual licensed**. Use it either way:
+
+- **[CPAL-1.0](LICENSES/CPAL-1.0.txt)**, at no cost, with the terms below. See
+  [`license.md`](license.md) — there is only one version of that license.
+- **[Fluxion Engine Commercial License](LICENSES/LicenseRef-Fluxion-Commercial-1.0.md)**,
+  bought and granted separately, which lifts the source-disclosure and
+  attribution obligations for whoever holds one.
+
+Nobody holds a commercial license by default. Without one, the CPAL terms are
+the terms.
+
+CPAL is a copyleft license, not a permissive one, and two of its terms are
+worth knowing before you build on the engine:
+
+- **Attribution (Section 14).** A game you build on this engine does **not**
+  have to display anything: Exhibit B of [`license.md`](license.md) says
+  attribution is not required in a "Larger Work", which is the license's term
+  for anything combining the engine with code of your own. It is owed only by
+  someone who ships the engine itself, or a modified version of it, as a
+  program with a user interface.
+- **Network use (Section 15).** Making the engine or your modifications of it
+  usable by other people over a network counts as distribution, and the source
+  has to be made available on the same terms.
+
+The copyleft is per file, inherited from the Mozilla Public License 1.1 that
+CPAL is built on: changes to the engine's own files stay under CPAL, while
+files of your own that merely sit alongside them in a larger work do not.
+CPAL is not compatible with the GPL, so the engine cannot be combined with
+GPL-licensed code.
+
+Code under `ThirdParty/` is not covered by any of this and keeps its own
+license — see [`LICENSES/README.md`](LICENSES/README.md).
 
 Unlike the original, which was written mostly in C#, this version is
 written in C and C++ — to natively support more platforms with as few
@@ -43,9 +83,23 @@ toolchain agree.
 
 ## Third party
 
+Full text of every license below is in [`LICENSES/`](LICENSES/), one file per
+SPDX identifier, along with the copyright line each component's own files
+carry. Adding a dependency means adding a row here *and* an entry there — see
+[`LICENSES/README.md`](LICENSES/README.md).
+
 | Library | Used for | License |
 |---|---|---|
-| [pdjson](https://github.com/skeeto/pdjson) | Parsing `.plugin` descriptor files | Unlicense (Public Domain) |
-| [VulkanMemoryAllocator (VMA)](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | GPU memory sub-allocation in the Vulkan RHI backend | MIT |
-| [D3D12MemoryAllocator (D3D12MA)](https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator) | GPU memory sub-allocation in the D3D12 RHI backend | MIT |
-| The Khronos Group `glcorearb.h` / `khrplatform.h` / `wglext.h` / `glxext.h` | GL 1.2+ and WGL/GLX extension declarations in the OpenGL RHI backend | Khronos Free Use License |
+| [pdjson](https://github.com/skeeto/pdjson) | Parsing `.plugin` descriptor files | [Unlicense](LICENSES/Unlicense.txt) (Public Domain) |
+| [VulkanMemoryAllocator (VMA)](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | GPU memory sub-allocation in the Vulkan RHI backend | [MIT](LICENSES/MIT.txt) |
+| [D3D12MemoryAllocator (D3D12MA)](https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator) | GPU memory sub-allocation in the D3D12 RHI backend | [MIT](LICENSES/MIT.txt) |
+| The Khronos Group `glcorearb.h` / `wglext.h` / `glxext.h` | GL 1.2+ and WGL/GLX extension declarations in the OpenGL RHI backend | [MIT](LICENSES/MIT.txt) |
+| The Khronos Group `khrplatform.h` | Fixed-width types the GL headers are declared in terms of | [MIT wording variant](LICENSES/LicenseRef-Khronos-MIT-Materials.txt) |
+
+The two Khronos rows are split because the files do not agree with each other:
+the three generated headers carry `SPDX-License-Identifier: MIT`, while the
+copy of `khrplatform.h` here predates that tagging and spells out a notice that
+is MIT word for word except that it says "Materials" throughout. Which license
+a Khronos header is under is a fact about the *file version* in the tree, not
+about Khronos headers in general — so re-read the top of the file whenever one
+is refreshed.
