@@ -188,24 +188,14 @@ void Fluxion_RHI_CommandList_Dispatch(FluxionRHICommandListHandle commandList, u
 
 void Fluxion_RHI_CommandList_CopyBuffer(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHIBufferHandle dst, usize dstOffset, usize size);
 void Fluxion_RHI_CommandList_CopyTexture(FluxionRHICommandListHandle commandList, FluxionRHITextureHandle src, FluxionRHITextureHandle dst);
-// The layout CopyBufferToTexture reads pixel data in. Every row must
-// start FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT bytes apart, and every
-// mip's data must start at a srcOffset that is a multiple of
-// FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT.
-//
-// A "row" here is a row of BLOCKS, which is a row of texels only for the
-// formats whose block covers one texel. Fluxion_RHI_GetFormatRowBytes
-// (Format.h) answers how wide one is; asking it rather than multiplying
-// by a bytes-per-texel is what keeps a compressed texture from being
-// staged as though it were eight times its real size -- an error that
-// makes the buffer too big rather than too small, so nothing fails and
-// the picture is simply wrong. These are the strictest
-// backend's rules, adopted for all of them: a layout defined per backend
-// would mean staging data laid out for one is quietly misread by
-// another, and "quietly" is the operative word -- a 256-byte-wide image
-// happens to satisfy both tight packing and this rule at once, which is
-// exactly how such a disagreement stays invisible until the first
-// narrower mip level.
+// The layout CopyBufferToTexture reads pixel data in: rows spaced
+// ROW_ALIGNMENT apart, each mip starting at a PLACEMENT_ALIGNMENT
+// multiple. A "row" is a row of BLOCKS -- ask Fluxion_RHI_GetFormatRowBytes
+// rather than multiplying by bytes-per-texel, or a compressed texture is
+// staged at several times its real size and the picture is quietly
+// wrong. The strictest backend's rules, adopted for all: a 256-byte-wide
+// image satisfies both tight packing and this rule at once, which is
+// exactly how a per-backend disagreement would stay invisible.
 #define FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT       ((usize)256)
 #define FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT ((usize)512)
 
