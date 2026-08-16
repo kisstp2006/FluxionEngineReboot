@@ -434,6 +434,9 @@ bool Fluxion_SceneTransform_EnsureRegistered(void);
 // not heard of has no size, so the storage cannot make room for it.
 bool Fluxion_SceneLight_EnsureRegistered(void);
 
+// The camera component, for the same reason and at the same moment.
+bool Fluxion_SceneCamera_EnsureRegistered(void);
+
 // This object's transform, or null when the handle names no live object.
 FluxionTransform* Fluxion_SceneInternal_Transform(FluxionSceneRecord* record, FluxionGameObjectHandle object);
 

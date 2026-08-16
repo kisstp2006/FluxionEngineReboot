@@ -134,10 +134,8 @@ extern "C" bool FluxionRendererInternal_Irradiance_EnsureResources(FluxionRender
 extern "C" void FluxionRendererInternal_Irradiance_Project(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList,
                                                            FluxionRenderViewHandle view)
 {
-    // Asked first, and asking clears it. Everything below is skipped for
-    // a sky that has not changed, which is every frame but the first
-    // after one is set.
-    if (!FluxionRendererInternal_RenderView_TakeEnvironmentDirty(view)) return;
+    // WHEN is the caller's question: UpdateEnvironment holds the dirty
+    // flag, because this is no longer the only pass that answers to it.
     if (!FluxionRendererInternal_Irradiance_EnsureResources(renderer)) return;
 
     const FluxionRHIBufferHandle target = FluxionRendererInternal_RenderView_GetIrradianceBuffer(view);

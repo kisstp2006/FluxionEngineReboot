@@ -118,6 +118,46 @@ void Fluxion_RHIOpenGL_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup)
     Fluxion_RHIOpenGL_PoolFree(s_bindGroupSlots, FLUXION_RHI_OPENGL_MAX_BIND_GROUPS, bindGroup.index, bindGroup.generation);
 }
 
+// --- The binding cache, told about deletions ---------------------------------
+//
+// Deleting a GL object silently unbinds it from every binding point of
+// the current context, and GL recycles the freed name for the next
+// object made. A cache that was not told still holds that name -- so the
+// next SetBindGroup with the recycled name compares equal, skips the
+// bind, and the draw samples an EMPTY unit. Zeros, not an error, which
+// is the worst way for it to come out.
+
+void Fluxion_RHIOpenGL_BindingCacheForgetTexture(GLuint name)
+{
+    FluxionRHIOpenGLDevice* deviceState = Fluxion_RHIOpenGL_SoleDevice();
+    if (deviceState == nullptr || name == 0) return;
+    for (u32 i = 0; i < FLUXION_RHIOPENGL_TOTAL_BINDING_SLOTS; ++i)
+    {
+        if (deviceState->bindingCache.boundTexture[i] == name) deviceState->bindingCache.boundTexture[i] = 0;
+    }
+}
+
+void Fluxion_RHIOpenGL_BindingCacheForgetSampler(GLuint name)
+{
+    FluxionRHIOpenGLDevice* deviceState = Fluxion_RHIOpenGL_SoleDevice();
+    if (deviceState == nullptr || name == 0) return;
+    for (u32 i = 0; i < FLUXION_RHIOPENGL_TOTAL_BINDING_SLOTS; ++i)
+    {
+        if (deviceState->bindingCache.boundSampler[i] == name) deviceState->bindingCache.boundSampler[i] = 0;
+    }
+}
+
+void Fluxion_RHIOpenGL_BindingCacheForgetBuffer(GLuint name)
+{
+    FluxionRHIOpenGLDevice* deviceState = Fluxion_RHIOpenGL_SoleDevice();
+    if (deviceState == nullptr || name == 0) return;
+    for (u32 i = 0; i < FLUXION_RHIOPENGL_TOTAL_BINDING_SLOTS; ++i)
+    {
+        if (deviceState->bindingCache.boundUBO[i] == name) deviceState->bindingCache.boundUBO[i] = 0;
+        if (deviceState->bindingCache.boundSSBO[i] == name) deviceState->bindingCache.boundSSBO[i] = 0;
+    }
+}
+
 // --- SetBindGroup ------------------------------------------------------------
 
 void Fluxion_RHIOpenGL_CommandListSetBindGroup(FluxionRHICommandListHandle commandList, u32 groupIndex, FluxionRHIBindGroupHandle bindGroup)

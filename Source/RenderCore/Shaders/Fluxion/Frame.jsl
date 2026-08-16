@@ -127,6 +127,24 @@ struct FluxionLight
 // nothing would refuse the whole bind group rather than the one slot.
 [Texture(Frame)] TextureCube environmentMap;
 
+// The same world pre-blurred for rough reflections: each mip holds the
+// environment as a mirror of one roughness sees it, mip zero sharp and
+// the last mip fully diffuse. Written by a compute pass when the
+// environment changes; a view that has no environment holds a black one
+// here for the same reason as above.
+[Texture(Frame)] TextureCube prefilteredMap;
+
+// How many mips the chain above holds. The engine allocates the texture
+// from the same number -- FLUXION_RENDERER_PREFILTERED_MIPS in
+// RendererInternal.h -- and the two must agree, because this is what
+// turns a roughness into a mip level.
+#define FLUXION_PREFILTERED_MIP_COUNT 8.0
+
+// The split-sum environment integral's other half: for a viewing angle
+// and a roughness, a scale and a bias on the head-on reflectance. Filled
+// by a compute pass once per view, from nothing -- it depends on no sky.
+[Texture(Frame)] Texture2D dfgTable;
+
 // The lights this frame is lit by.
 //
 // A buffer rather than an array in the block above: an array would need a

@@ -1,0 +1,83 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#pragma once
+
+#include <Fluxion/Foundation/Math.h>
+#include <Fluxion/Core/Reflection/TypeId.h>
+#include <Fluxion/Scene/Scene.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// The camera is something an object HAS, like a light: it can be moved,
+// parented, saved and read back, and a script reaches it through the same
+// reflection every other component uses. WHERE it is and WHICH WAY it
+// looks come from the object's transform (forward is negative Z) and are
+// not repeated here -- two places saying where a camera is can disagree,
+// silently.
+//
+// The aspect ratio is deliberately absent: it belongs to the surface
+// being rendered into, which the scene cannot know. It is handed in when
+// the matrices are asked for.
+typedef struct FluxionCamera
+{
+    // The vertical field of view, in radians.
+    f32 fovYRadians;
+
+    f32 nearPlane;
+    f32 farPlane;
+} FluxionCamera;
+
+FluxionTypeId Fluxion_Camera_TypeId(void);
+
+// The scene's camera, as the two matrices a render view takes -- ordinary
+// row-major, the renderer owns the upload byte order.
+//
+// One camera, like one environment: the first found wins and extras are
+// reported. False when no object carries one, and the outputs are then
+// left alone.
+bool Fluxion_Scene_GatherCamera(FluxionSceneHandle scene, f32 aspect, FluxionMat4* outView, FluxionMat4* outProjection);
+
+#ifdef __cplusplus
+}
+#endif

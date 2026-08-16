@@ -83,6 +83,7 @@
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
 #include <Fluxion/RenderCore/Renderer/TextureDefaults.h>
 #include <Fluxion/Scene/EngineScript.hpp>
+#include <Fluxion/Scene/Camera.h>
 #include <Fluxion/Scene/Light.h>
 #include <Fluxion/Scene/Scene.h>
 #include <Fluxion/Scene/SceneScript.hpp>
@@ -161,44 +162,6 @@ std::string ReadDemoScripts()
     return combined;
 }
 
-// --- Small local math helpers ------------------------------------------
-//
-// Foundation keeps view/projection/rotation helpers out of FluxionMat4 on
-// purpose, so these live here. FluxionMat4 is row-major, vectors are
-// columns; both shader languages lay uniform matrices out column-major,
-// and RenderCore uploads with a plain memcpy -- so TransposeForUpload
-// must run on every matrix handed over, or the GPU gets the transpose.
-
-// The rotation that turns an object's forward axis -- negative Z, the
-// same one a camera looks down -- to point along `target`.
-//
-// Written out here because Foundation offers identity and multiplication
-// and nothing that builds a rotation from a direction. One place, so the
-// half-angle is not got wrong twice.
-FluxionQuat AimedAlong(FluxionVec3 target)
-{
-    const FluxionVec3 forward = FluxionVec3{ 0.0f, 0.0f, -1.0f };
-    const FluxionVec3 to = Fluxion_Vec3_Normalize(target);
-
-    const f32 dot = forward.x * to.x + forward.y * to.y + forward.z * to.z;
-
-    // Facing exactly backwards has no single answer -- every axis at
-    // right angles to it turns one into the other -- so one is picked
-    // rather than left to a cross product that comes out as zero.
-    if (dot < -0.9999f) return FluxionQuat{ 0.0f, 1.0f, 0.0f, 0.0f };
-    if (dot > 0.9999f) return Fluxion_Quat_Identity();
-
-    const FluxionVec3 axis = Fluxion_Vec3_Cross(forward, to);
-    const f32 s = std::sqrt((1.0f + dot) * 2.0f);
-
-    FluxionQuat q;
-    q.x = axis.x / s;
-    q.y = axis.y / s;
-    q.z = axis.z / s;
-    q.w = s * 0.5f;
-    return q;
-}
-
 // Which way a texel of a cube map faces.
 //
 // The face order is +X, -X, +Y, -Y, +Z, -Z, and within a face the two
@@ -260,30 +223,6 @@ FluxionVec3 SkyColor(FluxionVec3 direction, FluxionVec3 toSun)
     }
 
     return sky;
-}
-
-FluxionMat4 MakePerspective(f32 fovYRadians, f32 aspect, f32 nearZ, f32 farZ)
-{
-    FluxionMat4 m;
-    for (int r = 0; r < 4; ++r)
-        for (int c = 0; c < 4; ++c)
-            m.m[r][c] = 0.0f;
-    f32 f = 1.0f / std::tan(fovYRadians * 0.5f);
-    m.m[0][0] = f / aspect;
-    m.m[1][1] = f;
-    m.m[2][2] = (farZ + nearZ) / (nearZ - farZ);
-    m.m[2][3] = (2.0f * farZ * nearZ) / (nearZ - farZ);
-    m.m[3][2] = -1.0f;
-    return m;
-}
-
-FluxionMat4 TransposeForUpload(FluxionMat4 m)
-{
-    FluxionMat4 r;
-    for (int row = 0; row < 4; ++row)
-        for (int col = 0; col < 4; ++col)
-            r.m[row][col] = m.m[col][row];
-    return r;
 }
 
 } // namespace
@@ -1127,7 +1066,7 @@ int main(int argc, char** argv)
         // left shoulder and the cube's faces catch it at different angles
         // as it turns -- which is the whole visible difference between a
         // lit surface and a flat one.
-        Fluxion_GameObject_SetLocalRotation(scene, sunObject, AimedAlong(FluxionVec3{ 0.4f, -0.7f, -0.6f }));
+        Fluxion_GameObject_SetLocalRotation(scene, sunObject, Fluxion_Quat_LookRotation(FluxionVec3{ 0.4f, -0.7f, -0.6f }));
     }
 
     // A point light that goes round the cube, and a spot light aimed up
@@ -1174,7 +1113,7 @@ int main(int argc, char** argv)
         }
 
         Fluxion_GameObject_SetLocalPosition(scene, spotObject, FluxionVec3{ 0.0f, -2.2f, -3.0f });
-        Fluxion_GameObject_SetLocalRotation(scene, spotObject, AimedAlong(FluxionVec3{ 0.0f, 1.0f, 0.0f }));
+        Fluxion_GameObject_SetLocalRotation(scene, spotObject, Fluxion_Quat_LookRotation(FluxionVec3{ 0.0f, 1.0f, 0.0f }));
     }
 
     // The sky is named by the scene, not by this file: a component
@@ -1205,6 +1144,23 @@ int main(int argc, char** argv)
         {
             FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a %s on the cube: %s", componentName,
                 Fluxion_Scene_GetLastError(scene));
+            return 1;
+        }
+    }
+
+    // The eye, as an object -- sixty degrees, at the origin, looking down
+    // negative Z, which is what the fixed camera of the old demo was.
+    // Being an object means a script could move it exactly as one moves
+    // the orbiting light.
+    {
+        FluxionGameObjectHandle cameraObject = Fluxion_Scene_CreateGameObject(scene, "Camera");
+        FluxionCamera camera{};
+        camera.fovYRadians = 1.0472f;
+        camera.nearPlane = 0.1f;
+        camera.farPlane = 100.0f;
+        if (Fluxion_GameObject_AddComponent(scene, cameraObject, Fluxion_Camera_TypeId(), &camera) == nullptr)
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put the camera on its object.");
             return 1;
         }
     }
@@ -1466,19 +1422,22 @@ int main(int argc, char** argv)
         targetDesc.depthView = depthView;
         FluxionRenderTargetHandle frameTarget = Fluxion_RenderTarget_Create(device, &targetDesc);
 
-        // FRAME viewProjection: no separate camera/view transform in this
-        // demo (camera fixed at the origin, same as the previous version
-        // of this demo), so viewMatrix is the identity and the
-        // perspective projection alone carries the transpose-for-upload
-        // step (see TransposeForUpload's comment above -- (AB)^T = B^T A^T,
-        // and Fluxion_RenderView_UpdateFrameConstants computes
-        // projectionMatrix * viewMatrix with no transpose of its own).
+        // The eye is an object in the scene, like the lights: asked for
+        // every frame, because something can move it. Only the aspect
+        // comes from here -- it belongs to the surface, not the scene.
         f32 aspect = surfaceHeight != 0 ? (f32)surfaceWidth / (f32)surfaceHeight : 1.0f;
-        FluxionMat4 projection = MakePerspective(1.0472f /* 60 degrees */, aspect, 0.1f, 100.0f);
+        FluxionMat4 cameraView = Fluxion_Mat4_Identity();
+        FluxionMat4 cameraProjection = Fluxion_Mat4_Identity();
+        if (!Fluxion_Scene_GatherCamera(scene, aspect, &cameraView, &cameraProjection))
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "The scene has no camera to look through.");
+            running = false;
+            continue;
+        }
 
         FluxionRenderViewDesc viewDesc{};
-        viewDesc.viewMatrix = Fluxion_Mat4_Identity();
-        viewDesc.projectionMatrix = TransposeForUpload(projection);
+        viewDesc.viewMatrix = cameraView;
+        viewDesc.projectionMatrix = cameraProjection;
         viewDesc.viewport = FluxionViewport{ 0.0f, 0.0f, (f32)surfaceWidth, (f32)surfaceHeight, 0.0f, 1.0f };
         viewDesc.scissor = FluxionScissorRect{ 0, 0, surfaceWidth, surfaceHeight };
         viewDesc.renderTarget = frameTarget;

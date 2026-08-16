@@ -68,7 +68,11 @@ param(
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)] [string[]]$Rest
 )
 
-$ErrorActionPreference = "Stop"
+# "Continue", deliberately: under "Stop", PowerShell 5.1 turns any stderr
+# line from a native tool into a fatal error the moment output is captured
+# -- CMake merely mentioning a re-run killed the build. Failure detection
+# is the explicit $LASTEXITCODE check after every native call instead.
+$ErrorActionPreference = "Continue"
 $Source = Split-Path -Parent $PSScriptRoot
 $FastRoot = Join-Path $env:USERPROFILE ".fluxion"
 

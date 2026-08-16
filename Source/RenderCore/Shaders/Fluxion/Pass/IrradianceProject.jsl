@@ -42,6 +42,7 @@
 #ifndef FLUXION_PASS_IRRADIANCE_PROJECT_INCLUDED
 #define FLUXION_PASS_IRRADIANCE_PROJECT_INCLUDED
 
+#include "Fluxion/CubeMapping.jsl"
 #include "Fluxion/Math.jsl"
 
 // Turning a sky into nine numbers per channel, once per environment.
@@ -73,20 +74,6 @@
 // than the texture still sees an average rather than a scattering of
 // single texels.
 #define FLUXION_IRRADIANCE_GRID 64
-
-// Which way the middle of a cell on this face looks.
-//
-// The same six-face convention as everything else that builds or reads a
-// cube map here: +X, -X, +Y, -Y, +Z, -Z, with +Y straight up.
-Vector3 Fluxion_Irradiance_FaceDirection(int face, float u, float v)
-{
-    if (face < 1) { return Vector3(1.0, -v, -u); }
-    if (face < 2) { return Vector3(-1.0, -v, u); }
-    if (face < 3) { return Vector3(u, 1.0, v); }
-    if (face < 4) { return Vector3(u, -1.0, -v); }
-    if (face < 5) { return Vector3(u, -v, 1.0); }
-    return Vector3(-u, -v, -1.0);
-}
 
 // The corner term of the solid angle a cube-map cell covers -- a middle
 // cell covers more of the sphere than a corner one, and weighting them
@@ -167,7 +154,7 @@ void main()
                                      - Fluxion_Irradiance_AreaElement(x1, y0)
                                      + Fluxion_Irradiance_AreaElement(x0, y0);
 
-                    Vector3 direction = normalize(Fluxion_Irradiance_FaceDirection(face, u, v));
+                    Vector3 direction = normalize(Fluxion_CubeMap_FaceDirection(face, u, v));
 
                     // An explicit level, because there is no other kind
                     // available here. A dispatch has no neighbouring

@@ -258,6 +258,44 @@ static inline FluxionQuat Fluxion_Quat_Multiply(FluxionQuat a, FluxionQuat b)
     return r;
 }
 
+static inline FluxionMat4 Fluxion_Mat4_Transposed(FluxionMat4 m)
+{
+    FluxionMat4 r;
+    for (int row = 0; row < 4; ++row)
+        for (int column = 0; column < 4; ++column)
+            r.m[row][column] = m.m[column][row];
+    return r;
+}
+
+// The rotation that turns an object's forward axis -- negative Z, the
+// same one a camera looks down -- to point along `target`. Facing exactly
+// backwards has no single answer, so one axis is picked rather than left
+// to a cross product that comes out zero.
+static inline FluxionQuat Fluxion_Quat_LookRotation(FluxionVec3 target)
+{
+    const FluxionVec3 forward = { 0.0f, 0.0f, -1.0f };
+    const FluxionVec3 to = Fluxion_Vec3_Normalize(target);
+
+    const f32 dot = forward.x * to.x + forward.y * to.y + forward.z * to.z;
+
+    if (dot < -0.9999f)
+    {
+        FluxionQuat around = { 0.0f, 1.0f, 0.0f, 0.0f };
+        return around;
+    }
+    if (dot > 0.9999f) return Fluxion_Quat_Identity();
+
+    const FluxionVec3 axis = Fluxion_Vec3_Cross(forward, to);
+    const f32 s = sqrtf((1.0f + dot) * 2.0f);
+
+    FluxionQuat q;
+    q.x = axis.x / s;
+    q.y = axis.y / s;
+    q.z = axis.z / s;
+    q.w = s * 0.5f;
+    return q;
+}
+
 #ifdef __cplusplus
 }
 #endif

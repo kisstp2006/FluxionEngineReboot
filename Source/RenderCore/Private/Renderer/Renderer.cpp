@@ -399,6 +399,21 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     renderer->irradianceBindGroup = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->irradianceFailed = false;
 
+    renderer->prefilterProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->prefilterPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->prefilterLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    for (u32 mip = 0; mip < FLUXION_RENDERER_PREFILTERED_MIPS; ++mip)
+    {
+        renderer->prefilterBindGroups[mip] = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
+    renderer->dfgProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->dfgPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->dfgLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->dfgBindGroup = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->environmentParamsBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->environmentScratchBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->prefilterFailed = false;
+
     // What a caller that never says otherwise gets. It is a guess, and it
     // is why saying so exists: a frame drawn into a colour attachment of
     // any other format needs the pipeline rebuilt against that one.
@@ -435,6 +450,7 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
     // The sky goes with the renderer that built it.
     FluxionRendererInternal_Skybox_Destroy(renderer);
     FluxionRendererInternal_Irradiance_Destroy(renderer);
+    FluxionRendererInternal_Prefilter_Destroy(renderer);
 
     Fluxion_RenderGraphPassRegistry_Unregister("ForwardOpaquePass");
 
@@ -467,7 +483,18 @@ extern "C" void Fluxion_Renderer_UpdateEnvironment(FluxionRendererHandle rendere
     FluxionRenderer* renderer = Resolve(rendererHandle);
     if (renderer == nullptr) return;
 
+    // The table first: it shares the scratch buffer with the chain, and
+    // it only ever runs once per view.
+    FluxionRendererInternal_Dfg_Compute(renderer, commandList, view);
+
+    // One flag, taken once, answered by both passes: the coefficients
+    // and the prefiltered chain describe the same sky, and refreshing
+    // one without the other would light the diffuse and the specular
+    // halves of a surface from two different worlds.
+    if (!FluxionRendererInternal_RenderView_TakeEnvironmentDirty(view)) return;
+
     FluxionRendererInternal_Irradiance_Project(renderer, commandList, view);
+    FluxionRendererInternal_Prefilter_Project(renderer, commandList, view);
 }
 
 extern "C" void Fluxion_Renderer_BeginFrame(FluxionRendererHandle rendererHandle, FluxionRenderViewHandle view)
@@ -495,7 +522,12 @@ extern "C" void Fluxion_Renderer_DrawMesh(FluxionRendererHandle rendererHandle, 
     }
 
     u32 slot = renderer->packetCount++;
-    renderer->packetTransforms[slot] = (transform != nullptr) ? *transform : Fluxion_Mat4_Identity();
+
+    // Transposed HERE, at the upload boundary, matching the frame
+    // constants: callers pass ordinary row-major matrices, and the
+    // shader languages read them column-major. See UpdateFrameConstants.
+    renderer->packetTransforms[slot] =
+        Fluxion_Mat4_Transposed((transform != nullptr) ? *transform : Fluxion_Mat4_Identity());
 
     FluxionDrawPacket& packet = renderer->packets[slot];
     packet.mesh = mesh;

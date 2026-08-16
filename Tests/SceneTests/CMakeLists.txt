@@ -60,6 +60,7 @@ engine_add_test(
         Test_World.cpp
         Test_SceneAssetReferences.cpp
         Test_SceneLights.cpp
+        Test_SceneCamera.cpp
     DEPENDENCIES
         Fluxion::Scene
         Fluxion::Script

@@ -1,0 +1,134 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_PASS_SPECULAR_PREFILTER_INCLUDED
+#define FLUXION_PASS_SPECULAR_PREFILTER_INCLUDED
+
+#include "Fluxion/CubeMapping.jsl"
+#include "Fluxion/ImportanceSampling.jsl"
+
+// Blurring the sky the way a rough mirror would, one roughness per run.
+//
+// A rough surface reflects a cone of directions, not one; what this pass
+// writes for a texel is the sky averaged over that cone, so that at draw
+// time reading one texel answers what an integral would have. Runs once
+// per environment per mip, never per frame. Maths from the published
+// description; see SHADER_SOURCES.md.
+//
+// Global group, one bind group at index zero, same as every pass that
+// runs alone -- see IrradianceProject.jsl for why the name is
+// load-bearing.
+[Uniform(Global)] Vector4 prefilterParams;
+[Texture(Global)] TextureCube environmentSource;
+[Buffer(Global)] Vector4 prefilterOut;
+
+// prefilterParams:
+//   x  the face width in texels of the mip being written
+//   y  the perceptual roughness this mip stands for
+//   z  texels from one output row to the next (copy alignment padding)
+//   w  texels from one face to the next (copy alignment padding)
+
+#define FLUXION_PREFILTER_SAMPLE_COUNT 1024
+
+Vector3 Fluxion_Prefilter_Filter(Vector3 N, float perceptualRoughness)
+{
+    // The one approximation this technique is named for: the viewer is
+    // taken to be looking straight along the normal. It costs the
+    // stretched grazing-angle highlights, and it is what makes the
+    // result a function of one direction -- storable in a cube map at
+    // all.
+    Vector3 V = N;
+
+    float alphaRoughness = Square(perceptualRoughness);
+
+    Vector3 total = Vector3(0.0, 0.0, 0.0);
+    float totalWeight = 0.0;
+
+    for (int i = 0; i < FLUXION_PREFILTER_SAMPLE_COUNT; i = i + 1)
+    {
+        Vector2 samplePoint = Fluxion_Sampling_Hammersley(i, FLUXION_PREFILTER_SAMPLE_COUNT);
+        Vector3 H = Fluxion_Sampling_GGXHalfVector(samplePoint, alphaRoughness, N);
+        Vector3 L = H * (2.0 * dot(V, H)) - V;
+
+        float NoL = dot(N, L);
+        if (NoL > 0.0)
+        {
+            // Weighted by the cosine, which the published description
+            // adopts for looking better rather than deriving -- the
+            // approximation above already left exactness behind.
+            total = total + textureLod(environmentSource, L, 0.0).xyz * NoL;
+            totalWeight = totalWeight + NoL;
+        }
+    }
+
+    return total / max(totalWeight, FLUXION_EPSILON);
+}
+
+void main()
+{
+    int id = int(ThreadID);
+
+    int width = int(prefilterParams.x);
+    int texelsPerFace = width * width;
+
+    // The dispatch is rounded up to whole groups, so the tail threads
+    // have no texel. The buffer holds only what the copies read.
+    if (id < texelsPerFace * 6)
+    {
+        int face = id / texelsPerFace;
+        int local = id - face * texelsPerFace;
+        int y = local / width;
+        int x = local - y * width;
+
+        float cell = 1.0 / float(width);
+        float u = (float(x) + 0.5) * 2.0 * cell - 1.0;
+        float v = (float(y) + 0.5) * 2.0 * cell - 1.0;
+
+        Vector3 N = normalize(Fluxion_CubeMap_FaceDirection(face, u, v));
+        Vector3 filtered = Fluxion_Prefilter_Filter(N, prefilterParams.y);
+
+        int rowStride = int(prefilterParams.z);
+        int faceStride = int(prefilterParams.w);
+        prefilterOut[face * faceStride + y * rowStride + x] = Vector4(filtered, 1.0);
+    }
+}
+
+#endif

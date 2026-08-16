@@ -159,7 +159,14 @@ Vector3 ComputeDiffuseColor(SurfaceData surface)
 //
 // N, V and L are unit vectors in the same space: the normal, the
 // direction to the eye, and the direction to the light.
-Vector3 BRDF_Direct(SurfaceData surface, Vector3 N, Vector3 V, Vector3 L)
+//
+// `energyCompensation` returns what single scattering loses on rough
+// surfaces -- the model below counts one bounce, and light that bounced
+// twice is not gone, it is late. The factor is worked out by the caller
+// from the same table the environment lighting reads, because it is a
+// property of the surface and the angle, not of any one light; passing
+// one for every channel turns the correction off.
+Vector3 BRDF_Direct(SurfaceData surface, Vector3 N, Vector3 V, Vector3 L, Vector3 energyCompensation)
 {
     Vector3 H = normalize(V + L);
 
@@ -178,7 +185,7 @@ Vector3 BRDF_Direct(SurfaceData surface, Vector3 N, Vector3 V, Vector3 L)
     float Vis = V_SmithGGXCorrelated(NoV, NoL, alphaRoughness);
     Vector3 F = F_Schlick(ComputeF0(surface), VoH);
 
-    Vector3 specular = F * (D * Vis);
+    Vector3 specular = F * (D * Vis) * energyCompensation;
 
     // What the specular term did not reflect is what is left for the
     // diffuse one. Without this a bright metal would be brighter than the

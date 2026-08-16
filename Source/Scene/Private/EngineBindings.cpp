@@ -355,31 +355,19 @@ struct ScriptAssets
 
 // --- Drawing --------------------------------------------------------------
 
-// The renderer is handed matrices in the byte order the shaders read them
-// in, and does no rearranging of its own on the way to the buffer -- so
-// the world matrix an object carries, which is written the way the
-// arithmetic reads, is turned around here, at the one place a script's
-// draw crosses over.
-FluxionMat4 ForUpload(FluxionMat4 matrix)
-{
-    FluxionMat4 turned;
-    for (int row = 0; row < 4; ++row)
-        for (int column = 0; column < 4; ++column)
-            turned.m[row][column] = matrix.m[column][row];
-    return turned;
-}
-
 struct ScriptRenderer
 {
     // Where the mesh goes is the object's business, not the caller's:
     // a matrix is not something that can be handed to a native, and a
     // script that could pass one would only be passing on what the
-    // object it already named knows.
+    // object it already named knows. The world matrix goes over exactly
+    // as the object carries it -- the renderer owns the upload byte
+    // order now, for every caller at once.
     static void DrawMesh(EngineHandle mesh, EngineHandle material, EngineHandle pipeline, EngineHandle object)
     {
         if (!FLUXION_HANDLE_IS_VALID(s_renderer)) return;
 
-        const FluxionMat4 world = ForUpload(Fluxion_GameObject_GetWorldMatrix(s_scene, FromScript<FluxionGameObjectHandle>(object)));
+        const FluxionMat4 world = Fluxion_GameObject_GetWorldMatrix(s_scene, FromScript<FluxionGameObjectHandle>(object));
         Fluxion_Renderer_DrawMesh(s_renderer, FromScript<FluxionMeshBufferHandle>(mesh), FromScript<FluxionMaterialHandle>(material),
             FromScript<FluxionRenderPipelineHandle>(pipeline), &world);
     }

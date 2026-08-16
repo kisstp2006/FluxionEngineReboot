@@ -202,6 +202,9 @@ code):
 - Lagarde & de Rousiers, *Moving Frostbite to PBR* (2014) — the whole
   pipeline, and the energy-conservation details most implementations get
   wrong.
+- Fdez-Agüera, *A Multiple-Scattering Microfacet Model for Real-Time
+  Image-based Lighting* (JCGT 8(1), 2019) — the multiscatter energy
+  compensation over the split-sum table.
 - Hillaire, *Physically Based and Unified Volumetric Rendering in
   Frostbite* (2015) — the scattering integration the volumetric fog
   reference also points at.
@@ -419,8 +422,99 @@ What changed:       The nine terms are written out one by one rather than
 Licence doubt:      none
 ```
 
-Not yet written, and named here so that their absence is a decision
-rather than an oversight: the split-sum environment approximation (Karis
-2013) and multiscatter energy compensation, both of which need the
-precomputed table that arrives with image-based lighting.
+```
+Feature:            GGX importance sampling and the Hammersley sequence
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Karis, "Real Shading in Unreal Engine 4" (SIGGRAPH
+                    2013 course notes), the ImportanceSampleGGX
+                    pseudocode's underlying inversion; the Hammersley
+                    point set and the base-2 van der Corput radical
+                    inverse are standard quasi-Monte-Carlo constructions
+                    (Niederreiter, "Random Number Generation and
+                    Quasi-Monte Carlo Methods", 1992).
+Our implementation: Source/RenderCore/Shaders/Fluxion/ImportanceSampling.jsl
+What changed:       The radical inverse is arithmetic -- a loop peeling
+                    the lowest bit -- because the shading language has no
+                    bit operations; the published forms use bitfield
+                    reversal. The half-vector sampling takes the alpha
+                    (squared) roughness directly, matching the
+                    convention every distribution function in BRDF.jsl
+                    already uses, where the course notes square inside.
+Licence doubt:      none
+```
+
+```
+Feature:            Prefiltered specular environment chain
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Karis, "Real Shading in Unreal Engine 4" (SIGGRAPH
+                    2013 course notes), the PrefilterEnvMap pseudocode:
+                    the N = V = R approximation, cosine-weighted
+                    accumulation, one roughness per mip. The vkmerc
+                    prefilterenvmap.frag named in the index above is
+                    study-only and was not read for this.
+Our implementation: Source/RenderCore/Shaders/Fluxion/Pass/SpecularPrefilter.jsl
+                    (the filter, compute, once per environment per mip),
+                    Source/RenderCore/Private/Renderer/Prefilter.cpp
+                    (the dispatches and the copies into the cube's mips)
+What changed:       A compute pass writing a storage buffer that is then
+                    copied into the cube map's mip faces, because compute
+                    here writes buffers -- the published form is a
+                    fragment shader rendering into each face. The output
+                    rows and faces carry the copy-alignment padding in
+                    their strides, handed to the shader as parameters.
+Licence doubt:      none
+```
+
+```
+Feature:            The split-sum DFG table
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Karis, "Real Shading in Unreal Engine 4" (SIGGRAPH
+                    2013 course notes), the IntegrateBRDF pseudocode: the
+                    scale/bias split of Schlick's Fresnel, the
+                    Schlick-GGX geometry term with the k = alpha/2
+                    remapping for environment lighting. The vkmerc
+                    genbrdflut.frag named in the index above is
+                    study-only and was not read for this.
+Our implementation: Source/RenderCore/Shaders/Fluxion/Pass/DfgIntegrate.jsl
+                    (the integration, compute, once per view),
+                    Source/RenderCore/Private/Renderer/Prefilter.cpp
+                    (the dispatch and the copy into the table texture)
+What changed:       Same buffer-then-copy shape as the prefilter above,
+                    and the same arithmetic Hammersley. The table is
+                    sampled half a texel in, so its edges hold averages
+                    rather than the integrand's degenerate corners.
+Licence doubt:      none
+```
+
+```
+Feature:            Multiple-scattering energy compensation
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Fdez-Aguera, "A Multiple-Scattering Microfacet Model
+                    for Real-Time Image-based Lighting" (JCGT 8(1),
+                    2019): the FssEss radiance term, the Ems = 1 - Ess
+                    missed energy, the 1/21 hemisphere-averaged Schlick
+                    Fresnel, and the coupled diffuse share. Kulla &
+                    Conty, "Revisiting Physically Based Shading in
+                    Imageworks" (SIGGRAPH 2017 course) for the direct
+                    lighting compensation factor 1 + f0 * (1/Ess - 1).
+Our implementation: Source/RenderCore/Shaders/Fluxion/Lighting.jsl,
+                    EvaluateEnvironment (the environment side) and
+                    EvaluateLighting (the direct factor);
+                    Source/RenderCore/Shaders/Fluxion/BRDF.jsl,
+                    BRDF_Direct (where the factor lands)
+What changed:       Written from the papers' equations against the DFG
+                    table above; the compensation reaches BRDF_Direct as
+                    a parameter, so the reflectance model itself stays a
+                    function of published terms and its caller owns the
+                    table read.
+Licence doubt:      none
+```
 

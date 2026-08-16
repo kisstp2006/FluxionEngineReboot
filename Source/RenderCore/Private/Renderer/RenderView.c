@@ -85,6 +85,24 @@ typedef struct FluxionRenderViewRecord
     // what consumes it are both on the device.
     FluxionRHIBufferHandle irradianceBuffer;
 
+    // The environment pre-blurred per roughness, and the split-sum table
+    // beside it. Owned like the buffer above: the renderer's passes fill
+    // them, every surface reads them, nothing crosses back to the CPU.
+    FluxionRHITextureHandle prefilteredTexture;
+    FluxionRHITextureViewHandle prefilteredView;
+    FluxionRHITextureHandle dfgTexture;
+    FluxionRHITextureViewHandle dfgView;
+
+    // Cleared once the table's fill has been recorded. The table depends
+    // on no sky, so once is all there is.
+    bool dfgWanted;
+
+    // Whether the prefiltered chain has been filled at least once. The
+    // refill's barriers need the texture's REAL previous state: claiming
+    // "undefined" over a texture the last frame sampled is a lie one
+    // backend forgives and another answers with garbage.
+    bool prefilteredFilled;
+
     // Set when the environment changes, cleared once the projection has
     // been recorded. Without it the sky would be projected again on every
     // frame, for an answer that cannot have moved.
@@ -174,6 +192,9 @@ static FluxionRHIBindGroupHandle Fluxion_RenderViewInternal_MakeFrameBindGroup(F
                                                                                FluxionRHIBufferHandle constants,
                                                                                FluxionRHITextureViewHandle environmentView,
                                                                                FluxionRHISamplerHandle environmentSampler,
+                                                                               FluxionRHITextureViewHandle prefilteredView,
+                                                                               FluxionRHITextureViewHandle dfgView,
+                                                                               FluxionRHISamplerHandle tableSampler,
                                                                                FluxionRHIBufferHandle lights, u32 lightCapacity,
                                                                                FluxionRHIBufferHandle irradiance)
 {
@@ -181,7 +202,7 @@ static FluxionRHIBindGroupHandle Fluxion_RenderViewInternal_MakeFrameBindGroup(F
     const FluxionRHISamplerHandle noSampler = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     const FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
-    FluxionRHIBindGroupEntry entries[5];
+    FluxionRHIBindGroupEntry entries[9];
     memset(entries, 0, sizeof(entries));
 
     entries[0].binding = 0;
@@ -207,29 +228,55 @@ static FluxionRHIBindGroupHandle Fluxion_RenderViewInternal_MakeFrameBindGroup(F
     entries[2].sampler = environmentSampler;
 
     entries[3].binding = 3;
-    entries[3].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    entries[3].buffer = lights;
-    entries[3].bufferSize = (usize)lightCapacity * sizeof(FluxionRenderLightGPU);
-    entries[3].textureView = noView;
+    entries[3].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    entries[3].buffer = noBuffer;
+    entries[3].textureView = prefilteredView;
     entries[3].sampler = noSampler;
+
+    // The environment's own sampler for the chain too: trilinear with
+    // clamped edges is exactly what reading between roughness mips wants.
+    entries[4].binding = 4;
+    entries[4].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    entries[4].buffer = noBuffer;
+    entries[4].textureView = noView;
+    entries[4].sampler = tableSampler;
+
+    entries[5].binding = 5;
+    entries[5].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    entries[5].buffer = noBuffer;
+    entries[5].textureView = dfgView;
+    entries[5].sampler = noSampler;
+
+    entries[6].binding = 6;
+    entries[6].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    entries[6].buffer = noBuffer;
+    entries[6].textureView = noView;
+    entries[6].sampler = tableSampler;
+
+    entries[7].binding = 7;
+    entries[7].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    entries[7].buffer = lights;
+    entries[7].bufferSize = (usize)lightCapacity * sizeof(FluxionRenderLightGPU);
+    entries[7].textureView = noView;
+    entries[7].sampler = noSampler;
 
     // How big one light is, said rather than assumed. A backend that
     // describes a buffer by element cannot work it out, and a wrong guess
     // reads the right memory in the wrong pieces.
-    entries[3].bufferElementStride = (u32)sizeof(FluxionRenderLightGPU);
+    entries[7].bufferElementStride = (u32)sizeof(FluxionRenderLightGPU);
 
-    entries[4].binding = 4;
-    entries[4].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    entries[4].buffer = irradiance;
-    entries[4].bufferSize = FLUXION_RENDER_VIEW_IRRADIANCE_BYTES;
-    entries[4].textureView = noView;
-    entries[4].sampler = noSampler;
-    entries[4].bufferElementStride = (u32)sizeof(FluxionVec4);
+    entries[8].binding = 8;
+    entries[8].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    entries[8].buffer = irradiance;
+    entries[8].bufferSize = FLUXION_RENDER_VIEW_IRRADIANCE_BYTES;
+    entries[8].textureView = noView;
+    entries[8].sampler = noSampler;
+    entries[8].bufferElementStride = (u32)sizeof(FluxionVec4);
 
     FluxionRHIBindGroupDesc desc;
     desc.layout = layout;
     desc.entries = entries;
-    desc.entryCount = 5;
+    desc.entryCount = 9;
     return Fluxion_RHI_CreateBindGroup(device, &desc);
 }
 
@@ -310,8 +357,60 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     irradianceDesc.debugName = "Fluxion.RenderView.Irradiance";
     const FluxionRHIBufferHandle irradianceBuffer = Fluxion_RHI_CreateBuffer(device, &irradianceDesc);
 
+    // The prefiltered chain and the split-sum table, empty until the
+    // renderer's passes fill them -- which the UpdateEnvironment contract
+    // puts before the first draw that could read them. Uncompressed
+    // floats: both are written by copies from a compute pass's buffer,
+    // and both together are a couple of megabytes per view.
+    FluxionRHITextureDesc prefilteredDesc;
+    memset(&prefilteredDesc, 0, sizeof(prefilteredDesc));
+    prefilteredDesc.width = FLUXION_RENDERER_PREFILTERED_SIZE;
+    prefilteredDesc.height = FLUXION_RENDERER_PREFILTERED_SIZE;
+    prefilteredDesc.depth = 1;
+    prefilteredDesc.mipLevels = FLUXION_RENDERER_PREFILTERED_MIPS;
+    prefilteredDesc.arrayLayers = FLUXION_RHI_CUBE_FACE_COUNT;
+    prefilteredDesc.sampleCount = 1;
+    prefilteredDesc.format = FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT;
+    prefilteredDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_SAMPLED | FLUXION_RHI_TEXTURE_USAGE_TRANSFER_DST;
+    prefilteredDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
+    prefilteredDesc.debugName = "Fluxion.RenderView.PrefilteredEnvironment";
+    prefilteredDesc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+    const FluxionRHITextureHandle prefilteredTexture = Fluxion_RHI_CreateTexture(device, &prefilteredDesc);
+
+    FluxionRHITextureViewDesc prefilteredViewDesc;
+    memset(&prefilteredViewDesc, 0, sizeof(prefilteredViewDesc));
+    prefilteredViewDesc.texture = prefilteredTexture;
+    prefilteredViewDesc.format = prefilteredDesc.format;
+    prefilteredViewDesc.mipLevelCount = FLUXION_RENDERER_PREFILTERED_MIPS;
+    prefilteredViewDesc.arrayLayerCount = FLUXION_RHI_CUBE_FACE_COUNT;
+    prefilteredViewDesc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+    const FluxionRHITextureViewHandle prefilteredView = Fluxion_RHI_CreateTextureView(device, &prefilteredViewDesc);
+
+    FluxionRHITextureDesc dfgDesc;
+    memset(&dfgDesc, 0, sizeof(dfgDesc));
+    dfgDesc.width = FLUXION_RENDERER_DFG_SIZE;
+    dfgDesc.height = FLUXION_RENDERER_DFG_SIZE;
+    dfgDesc.depth = 1;
+    dfgDesc.mipLevels = 1;
+    dfgDesc.arrayLayers = 1;
+    dfgDesc.sampleCount = 1;
+    dfgDesc.format = FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT;
+    dfgDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_SAMPLED | FLUXION_RHI_TEXTURE_USAGE_TRANSFER_DST;
+    dfgDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
+    dfgDesc.debugName = "Fluxion.RenderView.DfgTable";
+    const FluxionRHITextureHandle dfgTexture = Fluxion_RHI_CreateTexture(device, &dfgDesc);
+
+    FluxionRHITextureViewDesc dfgViewDesc;
+    memset(&dfgViewDesc, 0, sizeof(dfgViewDesc));
+    dfgViewDesc.texture = dfgTexture;
+    dfgViewDesc.format = dfgDesc.format;
+    dfgViewDesc.mipLevelCount = 1;
+    dfgViewDesc.arrayLayerCount = 1;
+    const FluxionRHITextureViewHandle dfgView = Fluxion_RHI_CreateTextureView(device, &dfgViewDesc);
+
     FluxionRHIBindGroupHandle frameBindGroup = Fluxion_RenderViewInternal_MakeFrameBindGroup(
         device, frameBindGroupLayout, frameConstantBuffer, defaultEnvironment, defaultSampler,
+        prefilteredView, dfgView, defaultSampler,
         lightStorage, FLUXION_RENDER_VIEW_INITIAL_LIGHTS, irradianceBuffer);
 
     FluxionRenderViewRecord* record = &s_renderViews[index];
@@ -347,6 +446,11 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     record->environmentSampler = defaultSampler;
     record->ownedEnvironmentSampler = defaultSampler;
     record->irradianceBuffer = irradianceBuffer;
+    record->prefilteredTexture = prefilteredTexture;
+    record->prefilteredView = prefilteredView;
+    record->dfgTexture = dfgTexture;
+    record->dfgView = dfgView;
+    record->dfgWanted = true;
 
     // A fresh view starts with the black cube, whose nine coefficients are
     // nine zeroes -- but the buffer has never been written, so what is in
@@ -375,6 +479,10 @@ void Fluxion_RenderView_Destroy(FluxionRenderViewHandle view)
 
     if (FLUXION_HANDLE_IS_VALID(record->ownedEnvironmentSampler)) Fluxion_RHI_DestroySampler(record->ownedEnvironmentSampler);
     if (FLUXION_HANDLE_IS_VALID(record->irradianceBuffer)) Fluxion_RHI_DestroyBuffer(record->irradianceBuffer);
+    if (FLUXION_HANDLE_IS_VALID(record->prefilteredView)) Fluxion_RHI_DestroyTextureView(record->prefilteredView);
+    if (FLUXION_HANDLE_IS_VALID(record->prefilteredTexture)) Fluxion_RHI_DestroyTexture(record->prefilteredTexture);
+    if (FLUXION_HANDLE_IS_VALID(record->dfgView)) Fluxion_RHI_DestroyTextureView(record->dfgView);
+    if (FLUXION_HANDLE_IS_VALID(record->dfgTexture)) Fluxion_RHI_DestroyTexture(record->dfgTexture);
     if (FLUXION_HANDLE_IS_VALID(record->lightStorage)) Fluxion_RHI_DestroyBuffer(record->lightStorage);
     if (FLUXION_HANDLE_IS_VALID(record->lightStaging)) Fluxion_RHI_DestroyBuffer(record->lightStaging);
     if (FLUXION_HANDLE_IS_VALID(record->frameBindGroup)) Fluxion_RHI_DestroyBindGroup(record->frameBindGroup);
@@ -426,6 +534,15 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
     // world is the whole of drawing a sky.
     constants.inverseViewProjection = Fluxion_Mat4_Inverse(constants.viewProjection);
 
+    // THE TRANSPOSE HAPPENS HERE, once, at the upload boundary. Callers
+    // hand over ordinary row-major matrices, the way the arithmetic
+    // writes them; both shader languages read uniform matrices
+    // column-major. Before this lived here, every caller had to remember
+    // it -- and the three callers had settled on three different answers,
+    // each one working only on the inputs it happened to be given.
+    constants.viewProjection = Fluxion_Mat4_Transposed(constants.viewProjection);
+    constants.inverseViewProjection = Fluxion_Mat4_Transposed(constants.inverseViewProjection);
+
     constants.lightParams.x = (f32)record->lightCount;
 
     void* mapped = Fluxion_RHI_MapBuffer(record->frameConstantBuffer);
@@ -457,7 +574,9 @@ void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRen
 
         FluxionRHIBindGroupHandle group = Fluxion_RenderViewInternal_MakeFrameBindGroup(
             record->device, record->frameBindGroupLayout, record->frameConstantBuffer,
-            record->environmentView, record->environmentSampler, storage, capacity, record->irradianceBuffer);
+            record->environmentView, record->environmentSampler,
+            record->prefilteredView, record->dfgView, record->ownedEnvironmentSampler,
+            storage, capacity, record->irradianceBuffer);
         if (!FLUXION_HANDLE_IS_VALID(group))
         {
             Fluxion_RHI_DestroyBuffer(storage);
@@ -535,11 +654,6 @@ void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHIT
     // hardware will do anything sensible with.
     record->environmentIntensity = intensity > 0.0f ? intensity : 0.0f;
 
-    // The coefficients describe the OLD sky until something works them out
-    // again, and nothing else will notice they are stale -- a wrong
-    // ambient looks like a scene, not like an error.
-    record->environmentDirty = true;
-
     // An invalid one puts the black cube back rather than leaving the
     // binding empty. There is no state in which this view has no
     // environment -- see the header.
@@ -561,13 +675,24 @@ void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHIT
 
     FluxionRHIBindGroupHandle group = Fluxion_RenderViewInternal_MakeFrameBindGroup(
         record->device, record->frameBindGroupLayout, record->frameConstantBuffer,
-        wanted, wantedSampler, record->lightStorage, record->lightCapacity, record->irradianceBuffer);
+        wanted, wantedSampler,
+        record->prefilteredView, record->dfgView, record->ownedEnvironmentSampler,
+        record->lightStorage, record->lightCapacity, record->irradianceBuffer);
     if (!FLUXION_HANDLE_IS_VALID(group)) return;
 
     Fluxion_RHI_DestroyBindGroup(record->frameBindGroup);
     record->frameBindGroup = group;
     record->environmentView = wanted;
     record->environmentSampler = wantedSampler;
+
+    // AFTER the early return above, and that placement is the whole
+    // point: a caller that sets the same sky every frame would otherwise
+    // ask for it to be worked out again every frame -- expensive, and
+    // worse than expensive, since the passes that answer overwrite
+    // textures the frames still in flight are reading. The intensity
+    // above is different: it travels in the frame constants rather than
+    // in what those passes produce, so it changes without any of this.
+    record->environmentDirty = true;
 }
 
 FluxionRHIBufferHandle FluxionRendererInternal_RenderView_GetIrradianceBuffer(FluxionRenderViewHandle view)
@@ -614,6 +739,50 @@ bool FluxionRendererInternal_RenderView_TakeEnvironmentDirty(FluxionRenderViewHa
     const bool dirty = record->environmentDirty;
     record->environmentDirty = false;
     return dirty;
+}
+
+FluxionRHITextureHandle FluxionRendererInternal_RenderView_GetPrefilteredTexture(FluxionRenderViewHandle view)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL)
+    {
+        const FluxionRHITextureHandle none = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+        return none;
+    }
+    return record->prefilteredTexture;
+}
+
+FluxionRHITextureHandle FluxionRendererInternal_RenderView_GetDfgTexture(FluxionRenderViewHandle view)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL)
+    {
+        const FluxionRHITextureHandle none = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+        return none;
+    }
+    return record->dfgTexture;
+}
+
+// Takes, for the same reason as the dirty flag above: the one caller
+// records the fill in answer, and the table cannot go stale after.
+bool FluxionRendererInternal_RenderView_TakeDfgWanted(FluxionRenderViewHandle view)
+{
+    FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return false;
+
+    const bool wanted = record->dfgWanted;
+    record->dfgWanted = false;
+    return wanted;
+}
+
+bool FluxionRendererInternal_RenderView_MarkPrefilteredFilled(FluxionRenderViewHandle view)
+{
+    FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return false;
+
+    const bool wasFilled = record->prefilteredFilled;
+    record->prefilteredFilled = true;
+    return wasFilled;
 }
 
 void Fluxion_RenderView_UploadLights(FluxionRenderViewHandle view, FluxionRHICommandListHandle commandList)

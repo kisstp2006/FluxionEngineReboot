@@ -314,6 +314,13 @@ void Fluxion_RHIOpenGL_DestroyBindGroup(FluxionRHIBindGroupHandle bindGroup);
 FluxionRHIOpenGLBindGroup* Fluxion_RHIOpenGL_ResolveBindGroup(FluxionRHIBindGroupHandle bindGroup);
 void Fluxion_RHIOpenGL_CommandListSetBindGroup(FluxionRHICommandListHandle commandList, u32 groupIndex, FluxionRHIBindGroupHandle bindGroup);
 
+// Deleting a GL object unbinds it and frees its NAME FOR REUSE; the
+// binding cache has to be told, or the recycled name compares equal to
+// what it remembers and the rebind is skipped over an empty unit.
+void Fluxion_RHIOpenGL_BindingCacheForgetTexture(GLuint name);
+void Fluxion_RHIOpenGL_BindingCacheForgetSampler(GLuint name);
+void Fluxion_RHIOpenGL_BindingCacheForgetBuffer(GLuint name);
+
 // --- Shaders / pipelines (OpenGLPipeline.cpp) -------------------------------
 
 struct FluxionRHIOpenGLShader

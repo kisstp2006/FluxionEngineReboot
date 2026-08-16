@@ -135,6 +135,12 @@ void Test_Semantic_Run(TestContext& ctx)
 
         DiagnosticList fieldDiagnostics;
         TEST_CHECK(ctx, !AnalyzeSource("struct Thing { float shared; }\nvoid main() { }\n", fieldDiagnostics));
+
+        // `point` is the word that actually got through once: not a
+        // type or a qualifier but a geometry-stage modifier, which is
+        // why no list borrowed from a language reference had it.
+        DiagnosticList pointDiagnostics;
+        TEST_CHECK(ctx, !AnalyzeSource("void main() { Vector2 point = Vector2(0.0, 0.0); }", pointDiagnostics));
     }
     {
         // And a name that merely CONTAINS one is fine -- the rule is

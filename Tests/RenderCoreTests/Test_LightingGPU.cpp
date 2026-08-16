@@ -1195,16 +1195,47 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
 
         // albedo * L, and the base configuration's albedo is one, so the
         // answer is L itself: 0.5. The pi that the cosine lobe brings in
-        // and the pi that Lambert divides out come from two different
-        // files, and this is the check that they really cancel -- a pi
-        // lost or gained lands at 0.16 or 1.57, nowhere near the window.
-        // What the window allows for is the grid quadrature summing to
-        // almost-exactly 4pi, and halves on the way out: the measured
-        // answer is 0.499756, which is 0.5 to the last bit a half holds.
+        // and the pi that the diffuse share divides out come from two
+        // different files, and this is the check that they really cancel
+        // -- a pi lost or gained lands at 0.16 or 1.57, nowhere near the
+        // window. The specular shares are in the answer too: whatever
+        // the reflection and multiple-scattering terms claim, the
+        // diffuse share is one minus exactly that, so for an albedo of
+        // one the sum closes back to L. The window allows for the grid
+        // quadrature, the table's resolution, and halves on the way out.
         const f32 expected = 1.0f * kSkyRadiance;
         TEST_CHECK(ctx, skyColor.r > expected * 0.97f && skyColor.r < expected * 1.03f);
         TEST_CHECK(ctx, skyColor.g > expected * 0.97f && skyColor.g < expected * 1.03f);
         TEST_CHECK(ctx, skyColor.b > expected * 0.97f && skyColor.b < expected * 1.03f);
+
+        // --- The same closure, from the specular side ------------------
+        //
+        // A pure white metal has no diffuse interior: everything comes
+        // through the prefiltered chain, the table and the scattering
+        // terms, and for a reflectance of one those sum to exactly one
+        // -- so the answer is again L, at ANY roughness. Smooth reads
+        // the sharp end of the mip chain, rough the deep end, which is
+        // what makes two roughnesses two different checks.
+        {
+            Configuration mirror = sky;
+            mirror.name = "uniform sky, white metal, smooth";
+            mirror.metallic = 1.0f;
+            mirror.roughness = 0.05f;
+
+            const Rgb mirrorColor = RenderOne(ctx, rig, mirror);
+            TEST_CHECK(ctx, mirrorColor.r > expected * 0.97f && mirrorColor.r < expected * 1.03f);
+            TEST_CHECK(ctx, mirrorColor.g > expected * 0.97f && mirrorColor.g < expected * 1.03f);
+            TEST_CHECK(ctx, mirrorColor.b > expected * 0.97f && mirrorColor.b < expected * 1.03f);
+
+            Configuration roughMetal = mirror;
+            roughMetal.name = "uniform sky, white metal, rough";
+            roughMetal.roughness = 0.85f;
+
+            const Rgb roughColor = RenderOne(ctx, rig, roughMetal);
+            TEST_CHECK(ctx, roughColor.r > expected * 0.97f && roughColor.r < expected * 1.03f);
+            TEST_CHECK(ctx, roughColor.g > expected * 0.97f && roughColor.g < expected * 1.03f);
+            TEST_CHECK(ctx, roughColor.b > expected * 0.97f && roughColor.b < expected * 1.03f);
+        }
 
         Fluxion_RHI_DestroyTextureView(skyView);
         Fluxion_RHI_DestroyTexture(skyTexture);
@@ -1227,4 +1258,9 @@ extern "C" void Test_LightingGPU_Run(TestContext* ctx)
 
     CheckOnBackend(ctx, FLUXION_RHI_BACKEND_VULKAN, "Vulkan");
     CheckOnBackend(ctx, FLUXION_RHI_BACKEND_D3D12, "D3D12");
+
+    // OpenGL was missing here for no recorded reason, and its absence hid
+    // a real defect once: every check above passed while the same
+    // lighting drew wrongly on GL in front of a person.
+    CheckOnBackend(ctx, FLUXION_RHI_BACKEND_OPENGL, "OpenGL");
 }

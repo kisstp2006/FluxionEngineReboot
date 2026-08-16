@@ -1,0 +1,145 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_PASS_DFG_INTEGRATE_INCLUDED
+#define FLUXION_PASS_DFG_INTEGRATE_INCLUDED
+
+#include "Fluxion/ImportanceSampling.jsl"
+
+// The environment side of the split-sum approximation: how much of a
+// prefiltered environment a surface actually reflects, as a function of
+// nothing but viewing angle and roughness. Two numbers per entry -- a
+// scale on the head-on reflectance and a bias -- so that at draw time
+// the whole integral is `f0 * scale + bias`. Depends on no scene and no
+// sky, so it is computed once per device, ever. Maths from the published
+// description; see SHADER_SOURCES.md.
+[Uniform(Global)] Vector4 dfgParams;
+[Buffer(Global)] Vector4 dfgOut;
+
+// dfgParams:
+//   x  the table's width and height in texels
+//   y  texels from one output row to the next (copy alignment padding)
+
+#define FLUXION_DFG_SAMPLE_COUNT 1024
+
+// The Schlick-GGX geometry term with the roughness remapping the
+// published description uses FOR ENVIRONMENT LIGHTING -- the direct
+// lighting remapping is different, and mixing them is the standard way
+// to get a table that looks plausible and is wrong.
+float Fluxion_Dfg_GeometrySchlickGGX(float cosine, float k)
+{
+    return cosine / (cosine * (1.0 - k) + k);
+}
+
+Vector2 Fluxion_Dfg_Integrate(float NoV, float perceptualRoughness)
+{
+    float alphaRoughness = Square(perceptualRoughness);
+    float k = alphaRoughness * 0.5;
+
+    // The view direction reconstructed from its cosine alone -- the
+    // integral is symmetric around the normal, so which way it leans
+    // does not matter, only how far.
+    Vector3 V = Vector3(sqrt(1.0 - NoV * NoV), 0.0, NoV);
+    Vector3 N = Vector3(0.0, 0.0, 1.0);
+
+    float scale = 0.0;
+    float bias = 0.0;
+
+    for (int i = 0; i < FLUXION_DFG_SAMPLE_COUNT; i = i + 1)
+    {
+        Vector2 samplePoint = Fluxion_Sampling_Hammersley(i, FLUXION_DFG_SAMPLE_COUNT);
+        Vector3 H = Fluxion_Sampling_GGXHalfVector(samplePoint, alphaRoughness, N);
+        Vector3 L = H * (2.0 * dot(V, H)) - V;
+
+        float NoL = Saturate(L.z);
+        float NoH = Saturate(H.z);
+        float VoH = Saturate(dot(V, H));
+
+        if (NoL > 0.0)
+        {
+            float G = Fluxion_Dfg_GeometrySchlickGGX(NoL, k) * Fluxion_Dfg_GeometrySchlickGGX(NoV, k);
+
+            // The distribution itself cancelled against the sampling
+            // odds, which is the point of drawing samples from it; what
+            // is left is the geometry term over the probability's own
+            // cosines.
+            float visibleG = G * VoH / max(NoH * NoV, FLUXION_EPSILON);
+
+            // The Fresnel curve split into what every surface shares
+            // (the fifth power) and what depends on f0 -- pulling f0 out
+            // of the integral is what makes two numbers enough for every
+            // material at once.
+            float fresnelTail = Pow5(1.0 - VoH);
+
+            scale = scale + (1.0 - fresnelTail) * visibleG;
+            bias = bias + fresnelTail * visibleG;
+        }
+    }
+
+    float perSample = 1.0 / float(FLUXION_DFG_SAMPLE_COUNT);
+    return Vector2(scale * perSample, bias * perSample);
+}
+
+void main()
+{
+    int id = int(ThreadID);
+
+    int size = int(dfgParams.x);
+
+    if (id < size * size)
+    {
+        int y = id / size;
+        int x = id - y * size;
+
+        // Half a texel in, so the table's edges are the averages a
+        // sampler will actually return there rather than the integrand's
+        // degenerate corners.
+        float NoV = (float(x) + 0.5) / float(size);
+        float perceptualRoughness = (float(y) + 0.5) / float(size);
+
+        Vector2 integrated = Fluxion_Dfg_Integrate(NoV, perceptualRoughness);
+
+        int rowStride = int(dfgParams.y);
+        dfgOut[y * rowStride + x] = Vector4(integrated.x, integrated.y, 0.0, 0.0);
+    }
+}
+
+#endif

@@ -45,6 +45,11 @@
 #include <Fluxion/RenderCore/Renderer/RenderTarget.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
 
+// Engine-internal, and named here rather than reached through a header
+// the module keeps private. What it reports is not a detail: it decides
+// whether the environment passes run this frame at all.
+bool FluxionRendererInternal_RenderView_TakeEnvironmentDirty(FluxionRenderViewHandle view);
+
 void Test_RenderView_Run(TestContext* ctx)
 {
     FluxionRHIInstanceDesc instanceDesc = { "RenderCoreTests", false };
@@ -102,6 +107,52 @@ void Test_RenderView_Run(TestContext* ctx)
     // Must not assert/crash whether called once or repeatedly.
     Fluxion_RenderView_UpdateFrameConstants(view);
     Fluxion_RenderView_UpdateFrameConstants(view);
+
+    // --- Setting the same sky again asks for no work -------------------
+    //
+    // What answers this flag is a compute pass that overwrites textures
+    // the frames still in flight are reading, so a caller handing over
+    // the same environment every frame -- which is the ordinary way to
+    // write a frame loop -- must not keep it raised. It once did, and
+    // the picture went black on one backend a few frames in.
+    {
+        FluxionRHITextureDesc skyDesc = colorTextureDesc;
+        skyDesc.arrayLayers = FLUXION_RHI_CUBE_FACE_COUNT;
+        skyDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_SAMPLED;
+        skyDesc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+        skyDesc.debugName = "Test_RenderView.Sky";
+        FluxionRHITextureHandle skyTexture = Fluxion_RHI_CreateTexture(device, &skyDesc);
+
+        FluxionRHITextureViewDesc skyViewDesc = { skyTexture, skyDesc.format, 0, 1, 0,
+                                                  FLUXION_RHI_CUBE_FACE_COUNT, FLUXION_RHI_TEXTURE_DIMENSION_CUBE };
+        FluxionRHITextureViewHandle skyView = Fluxion_RHI_CreateTextureView(device, &skyViewDesc);
+
+        FluxionRHISamplerDesc skySamplerDesc = { 0 };
+        skySamplerDesc.maxAnisotropy = 1.0f;
+        skySamplerDesc.debugName = "Test_RenderView.SkySampler";
+        FluxionRHISamplerHandle skySampler = Fluxion_RHI_CreateSampler(device, &skySamplerDesc);
+
+        // A fresh view owes one projection: its buffers hold whatever the
+        // allocator handed over until something writes them.
+        TEST_CHECK(ctx, FluxionRendererInternal_RenderView_TakeEnvironmentDirty(view));
+        TEST_CHECK(ctx, !FluxionRendererInternal_RenderView_TakeEnvironmentDirty(view));
+
+        Fluxion_RenderView_SetEnvironment(view, skyView, skySampler, 1.0f);
+        TEST_CHECK(ctx, FluxionRendererInternal_RenderView_TakeEnvironmentDirty(view));
+
+        Fluxion_RenderView_SetEnvironment(view, skyView, skySampler, 1.0f);
+        TEST_CHECK(ctx, !FluxionRendererInternal_RenderView_TakeEnvironmentDirty(view));
+
+        // The intensity is not part of what the passes produce -- it
+        // travels in the frame constants -- so changing it asks for none
+        // of that work either.
+        Fluxion_RenderView_SetEnvironment(view, skyView, skySampler, 4.0f);
+        TEST_CHECK(ctx, !FluxionRendererInternal_RenderView_TakeEnvironmentDirty(view));
+
+        Fluxion_RHI_DestroySampler(skySampler);
+        Fluxion_RHI_DestroyTextureView(skyView);
+        Fluxion_RHI_DestroyTexture(skyTexture);
+    }
 
     Fluxion_RenderView_Destroy(view);
     Fluxion_RenderTarget_Destroy(renderTarget);

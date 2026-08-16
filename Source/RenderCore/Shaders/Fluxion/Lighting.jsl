@@ -66,7 +66,8 @@
 // reflectance model. It says how much light falls on the surface, which
 // is a property of the geometry rather than of the material -- and a
 // second light would otherwise apply it a second time.
-Vector3 EvaluateDirectionalLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 L, Vector3 lightColor)
+Vector3 EvaluateDirectionalLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 L, Vector3 lightColor,
+                                 Vector3 energyCompensation)
 {
     float NoL = Saturate(dot(N, L));
 
@@ -78,7 +79,7 @@ Vector3 EvaluateDirectionalLight(SurfaceData surface, Vector3 N, Vector3 V, Vect
         return Vector3(0.0, 0.0, 0.0);
     }
 
-    return BRDF_Direct(surface, N, V, L) * lightColor * NoL;
+    return BRDF_Direct(surface, N, V, L, energyCompensation) * lightColor * NoL;
 }
 
 // How much of a light reaches something this far away.
@@ -118,7 +119,8 @@ float SpotAttenuation(Vector3 lightDirection, Vector3 toSurface, float innerCos,
 }
 
 // What one light of any kind sends towards the eye from this point.
-Vector3 EvaluateOneLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 P, FluxionLight light)
+Vector3 EvaluateOneLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 P, FluxionLight light,
+                         Vector3 energyCompensation)
 {
     // The way the light travels, and the way back towards it. The
     // reflectance model wants the second; the cone below wants the first.
@@ -151,7 +153,7 @@ Vector3 EvaluateOneLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 P, F
         return Vector3(0.0, 0.0, 0.0);
     }
 
-    return EvaluateDirectionalLight(surface, N, V, L, light.color.xyz * attenuation);
+    return EvaluateDirectionalLight(surface, N, V, L, light.color.xyz * attenuation, energyCompensation);
 }
 
 // What the surroundings send to this surface.
@@ -172,10 +174,48 @@ Vector3 EvaluateAmbient(SurfaceData surface, Vector3 ambient)
     return ComputeDiffuseColor(surface) * ambient * surface.ambientOcclusion;
 }
 
-Vector3 EvaluateEnvironmentDiffuse(SurfaceData surface, Vector3 N)
+// The whole environment at once -- reflection and skylight together,
+// because energy lost by one is returned through the other. The
+// prefiltered chain answers "what does the mirror cone see", the DFG
+// table "how much of that this surface keeps", and what no specular
+// path claimed is exactly what the diffuse share gets -- so a white
+// surface under a uniform sky returns the sky, at every roughness.
+Vector3 EvaluateEnvironment(SurfaceData surface, Vector3 N, Vector3 V)
 {
-    Vector3 irradiance = Fluxion_SH_Irradiance(N) * ambientColor.w;
-    return Fd_Lambert(ComputeDiffuseColor(surface)) * irradiance * surface.ambientOcclusion;
+    float NoV = max(abs(dot(N, V)), FLUXION_EPSILON);
+    float roughness = surface.perceptualRoughness;
+
+    Vector3 R = reflect(-V, N);
+    Vector3 reflection = textureLod(prefilteredMap, R, roughness * (FLUXION_PREFILTERED_MIP_COUNT - 1.0)).xyz;
+
+    // The irradiance divided by pi: the same quantity Lambert hands
+    // back, which is the units the terms below are stated in.
+    Vector3 skylight = Fluxion_SH_Irradiance(N) * FLUXION_INV_PI;
+
+    Vector2 dfg = textureLod(dfgTable, Vector2(NoV, roughness), 0.0).xy;
+    Vector3 f0 = ComputeF0(surface);
+
+    // Single scattering: what leaves after one bounce off the surface.
+    Vector3 singleScatter = f0 * dfg.x + Vector3(dfg.y, dfg.y, dfg.y);
+
+    // What one bounce failed to send out went back INTO the surface
+    // field, to come out after more bounces, tinted by the average
+    // reflectance each time. The 1/21 is the closed form of averaging
+    // Schlick over the hemisphere.
+    float energySeen = dfg.x + dfg.y;
+    float energyMissed = 1.0 - energySeen;
+    Vector3 averageFresnel = f0 + (Vector3(1.0, 1.0, 1.0) - f0) * (1.0 / 21.0);
+    Vector3 multiScatter = averageFresnel * (singleScatter * energyMissed)
+                         / (Vector3(1.0, 1.0, 1.0) - averageFresnel * energyMissed);
+
+    // Only what neither scattering path claimed reaches the diffuse
+    // interior -- this is where the halves stay honest with each other.
+    Vector3 diffuseShare = ComputeDiffuseColor(surface)
+                         * (Vector3(1.0, 1.0, 1.0) - singleScatter - multiScatter);
+
+    Vector3 environment = singleScatter * reflection
+                        + (multiScatter + diffuseShare) * skylight * surface.ambientOcclusion;
+    return environment * ambientColor.w;
 }
 
 // The whole of what a surface sends towards the eye, with the frame's own
@@ -187,6 +227,16 @@ Vector3 EvaluateLighting(SurfaceData surface, Vector3 N, Vector3 P)
 {
     Vector3 V = normalize(cameraPosition.xyz - P);
 
+    // The single-scattering loss, undone for every direct light at once:
+    // one over the surface's directional reflectance, shaped by f0. Read
+    // from the same table the environment uses, at the same angle, so
+    // the sun and the sky agree about what the surface keeps.
+    float NoV = max(abs(dot(N, V)), FLUXION_EPSILON);
+    Vector2 dfg = textureLod(dfgTable, Vector2(NoV, surface.perceptualRoughness), 0.0).xy;
+    float reflectedEnergy = max(dfg.x + dfg.y, FLUXION_EPSILON);
+    Vector3 energyCompensation = Vector3(1.0, 1.0, 1.0)
+                               + ComputeF0(surface) * (1.0 / reflectedEnergy - 1.0);
+
     Vector3 color = Vector3(0.0, 0.0, 0.0);
 
     // Every light in the frame's list. No cap here and none in the
@@ -195,7 +245,7 @@ Vector3 EvaluateLighting(SurfaceData surface, Vector3 N, Vector3 P)
     int lightCount = int(lightParams.x);
     for (int i = 0; i < lightCount; i = i + 1)
     {
-        color = color + EvaluateOneLight(surface, N, V, P, lights[i]);
+        color = color + EvaluateOneLight(surface, N, V, P, lights[i], energyCompensation);
     }
 
     // Two separate sources, not one written twice. The flat ambient is a
@@ -204,7 +254,7 @@ Vector3 EvaluateLighting(SurfaceData surface, Vector3 N, Vector3 P)
     // sets the first to zero -- and one that does not is exactly as it
     // was before any of this existed.
     color = color + EvaluateAmbient(surface, ambientColor.xyz);
-    color = color + EvaluateEnvironmentDiffuse(surface, N);
+    color = color + EvaluateEnvironment(surface, N, V);
 
     // Light the surface gives off, which no amount of shadow or occlusion
     // takes away -- that is what emitting means.

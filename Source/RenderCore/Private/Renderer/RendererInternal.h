@@ -90,6 +90,21 @@ extern "C" {
 // layout callers observe doesn't depend on which one is active.
 #define FLUXION_RENDERER_OBJECT_BUFFER_STRIDE 256
 
+// The prefiltered environment chain: face width at the sharpest mip, and
+// how many mips down to the fully rough one. THE MIP COUNT IS ALSO IN
+// Fluxion/Frame.jsl as FLUXION_PREFILTERED_MIP_COUNT -- the shader turns
+// a roughness into a mip level with it, and the two must agree or every
+// roughness reads a blur it did not mean. 128 for the size: reflections
+// blurrier than mirror-sharp stop showing texel detail almost at once,
+// and the sharp end is mip zero either way.
+#define FLUXION_RENDERER_PREFILTERED_SIZE 128
+#define FLUXION_RENDERER_PREFILTERED_MIPS 8
+
+// The split-sum table's width and height. The function it stores is
+// smooth in both directions, which is what lets a modest table and a
+// bilinear read answer for every surface.
+#define FLUXION_RENDERER_DFG_SIZE 128
+
 // One canonical, engine-owned bind-group-layout shape per FRAME/OBJECT
 // frequency, independent of any particular shader -- every RenderView
 // (FRAME) and the Renderer's own per-frame object buffer (OBJECT) build
@@ -119,24 +134,42 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeFrameLay
     desc.entries[2].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
     desc.entries[2].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
+    // The environment pre-blurred per roughness, and its pair.
+    desc.entries[3].binding = 3;
+    desc.entries[3].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    desc.entries[3].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entries[4].binding = 4;
+    desc.entries[4].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    desc.entries[4].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    // The split-sum table, and its pair.
+    desc.entries[5].binding = 5;
+    desc.entries[5].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    desc.entries[5].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entries[6].binding = 6;
+    desc.entries[6].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    desc.entries[6].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
     // A storage buffer rather than an array in the uniform block above.
     // An array would need a maximum written into the shader, and that
     // maximum would be a number somebody has to raise -- and raising it
     // costs every frame that does not use it, because a uniform block is
     // paid for whether it is full or not.
-    desc.entries[3].binding = 3;
-    desc.entries[3].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    desc.entries[3].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+    desc.entries[7].binding = 7;
+    desc.entries[7].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[7].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
     // The sky, as nine coefficients. A second storage buffer rather than
     // more fields in the block at binding 0, because a compute pass is
     // what fills it: a uniform buffer would have to be written from the
     // processor, and by then the numbers are already on the device.
-    desc.entries[4].binding = 4;
-    desc.entries[4].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    desc.entries[4].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+    desc.entries[8].binding = 8;
+    desc.entries[8].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[8].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
-    desc.entryCount = 5;
+    desc.entryCount = 9;
     desc.debugName = "Fluxion.Renderer.FrameBindGroupLayout";
     return desc;
 }
@@ -253,6 +286,32 @@ typedef struct FluxionRenderer
     FluxionRHIBindGroupLayoutHandle irradianceLayout;
     FluxionRHIBindGroupHandle irradianceBindGroup;
     bool irradianceFailed;
+
+    // Blurring the environment per roughness, and integrating the
+    // split-sum table. Owned here for the same reason as the irradiance
+    // pass above; the textures they fill belong to the view.
+    FluxionShaderProgramHandle prefilterProgram;
+    FluxionRHIPipelineHandle prefilterPipeline;
+    FluxionRHIBindGroupLayoutHandle prefilterLayout;
+    FluxionRHIBindGroupHandle prefilterBindGroups[FLUXION_RENDERER_PREFILTERED_MIPS];
+
+    FluxionShaderProgramHandle dfgProgram;
+    FluxionRHIPipelineHandle dfgPipeline;
+    FluxionRHIBindGroupLayoutHandle dfgLayout;
+    FluxionRHIBindGroupHandle dfgBindGroup;
+
+    // One slot per prefiltered mip and a last one for the table pass,
+    // written once: which mip a dispatch works on cannot come from a
+    // buffer updated between dispatches on one command list -- every
+    // dispatch would read the final value.
+    FluxionRHIBufferHandle environmentParamsBuffer;
+
+    // Where the compute passes write before the result is copied into a
+    // texture: a compute shader here writes buffers, textures are what
+    // draws read, and a recorded copy joins them.
+    FluxionRHIBufferHandle environmentScratchBuffer;
+
+    bool prefilterFailed;
     FluxionRHIFormat skyboxColorFormat;
     FluxionRHIFormat skyboxDepthFormat;
 
@@ -291,21 +350,42 @@ FluxionRHIPipelineHandle FluxionRendererInternal_ShaderProgram_CreateSkyboxPipel
 bool FluxionRendererInternal_Irradiance_EnsureResources(FluxionRenderer* renderer);
 
 // Records the dispatch that fills the view's coefficients from its
-// environment, if the environment changed since the last time.
-//
-// Once per environment rather than once per frame: what it produces
-// depends only on the sky, and a sky that did not move cannot have a
-// different answer.
+// environment. UpdateEnvironment decides WHEN -- it holds the dirty
+// flag, because more than one pass answers to it.
 void FluxionRendererInternal_Irradiance_Project(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList,
                                                 FluxionRenderViewHandle view);
 
 void FluxionRendererInternal_Irradiance_Destroy(FluxionRenderer* renderer);
 
-// What a view holds for this. The renderer owns the program; the buffer
-// it writes into belongs to whichever view is being drawn.
+// Records the dispatches and copies that fill the view's prefiltered
+// chain from its environment, one mip per roughness. Same contract as
+// the projection above: the caller says when.
+void FluxionRendererInternal_Prefilter_Project(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList,
+                                               FluxionRenderViewHandle view);
+
+// Fills the view's split-sum table the first time it is asked, and does
+// nothing after: the table depends on no sky, so it cannot go stale.
+void FluxionRendererInternal_Dfg_Compute(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList,
+                                         FluxionRenderViewHandle view);
+
+void FluxionRendererInternal_Prefilter_Destroy(FluxionRenderer* renderer);
+
+// What a view holds for this. The renderer owns the programs; what they
+// fill belongs to whichever view is being drawn.
 FluxionRHIBufferHandle FluxionRendererInternal_RenderView_GetIrradianceBuffer(FluxionRenderViewHandle view);
 FluxionRHITextureViewHandle FluxionRendererInternal_RenderView_GetEnvironmentView(FluxionRenderViewHandle view);
 FluxionRHISamplerHandle FluxionRendererInternal_RenderView_GetEnvironmentSampler(FluxionRenderViewHandle view);
+FluxionRHITextureHandle FluxionRendererInternal_RenderView_GetPrefilteredTexture(FluxionRenderViewHandle view);
+FluxionRHITextureHandle FluxionRendererInternal_RenderView_GetDfgTexture(FluxionRenderViewHandle view);
+
+// True exactly once per view. Asking marks the table as filled, so ask
+// only on the way to filling it.
+bool FluxionRendererInternal_RenderView_TakeDfgWanted(FluxionRenderViewHandle view);
+
+// Whether the prefiltered chain was already filled once, and marks it
+// filled either way -- ask only on the way to filling it. The refill's
+// barriers must name the texture's real previous state.
+bool FluxionRendererInternal_RenderView_MarkPrefilteredFilled(FluxionRenderViewHandle view);
 
 // True once, after the environment changed. Asking CLEARS it: the
 // projection is recorded in answer to this, and a flag left set would

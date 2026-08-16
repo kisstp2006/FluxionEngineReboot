@@ -132,7 +132,11 @@ void Fluxion_RHIOpenGL_DestroyBuffer(FluxionRHIBufferHandle buffer)
     {
         glUnmapNamedBuffer(bufferState->name);
     }
-    if (bufferState->name != 0) glDeleteBuffers(1, &bufferState->name);
+    if (bufferState->name != 0)
+    {
+        Fluxion_RHIOpenGL_BindingCacheForgetBuffer(bufferState->name);
+        glDeleteBuffers(1, &bufferState->name);
+    }
     *bufferState = FluxionRHIOpenGLBuffer{};
     Fluxion_RHIOpenGL_PoolFree(s_bufferSlots, FLUXION_RHI_OPENGL_MAX_BUFFERS, buffer.index, buffer.generation);
 }
@@ -250,7 +254,11 @@ void Fluxion_RHIOpenGL_DestroyTexture(FluxionRHITextureHandle texture)
         return;
     }
     FluxionRHIOpenGLTexture* textureState = &s_textures[texture.index];
-    if (textureState->name != 0 && !textureState->isDefaultFramebufferSentinel) glDeleteTextures(1, &textureState->name);
+    if (textureState->name != 0 && !textureState->isDefaultFramebufferSentinel)
+    {
+        Fluxion_RHIOpenGL_BindingCacheForgetTexture(textureState->name);
+        glDeleteTextures(1, &textureState->name);
+    }
     *textureState = FluxionRHIOpenGLTexture{};
     Fluxion_RHIOpenGL_PoolFree(s_textureSlots, FLUXION_RHI_OPENGL_MAX_TEXTURES, texture.index, texture.generation);
 }
@@ -352,7 +360,11 @@ void Fluxion_RHIOpenGL_DestroyTextureView(FluxionRHITextureViewHandle view)
         return;
     }
     FluxionRHIOpenGLTextureView* viewState = &s_textureViews[view.index];
-    if (viewState->ownsName && viewState->name != 0) glDeleteTextures(1, &viewState->name);
+    if (viewState->ownsName && viewState->name != 0)
+    {
+        Fluxion_RHIOpenGL_BindingCacheForgetTexture(viewState->name);
+        glDeleteTextures(1, &viewState->name);
+    }
     *viewState = FluxionRHIOpenGLTextureView{};
     Fluxion_RHIOpenGL_PoolFree(s_textureViewSlots, FLUXION_RHI_OPENGL_MAX_TEXTURE_VIEWS, view.index, view.generation);
 }
@@ -428,7 +440,11 @@ void Fluxion_RHIOpenGL_DestroySampler(FluxionRHISamplerHandle sampler)
         return;
     }
     FluxionRHIOpenGLSampler* samplerState = &s_samplers[sampler.index];
-    if (samplerState->name != 0) glDeleteSamplers(1, &samplerState->name);
+    if (samplerState->name != 0)
+    {
+        Fluxion_RHIOpenGL_BindingCacheForgetSampler(samplerState->name);
+        glDeleteSamplers(1, &samplerState->name);
+    }
     *samplerState = FluxionRHIOpenGLSampler{};
     Fluxion_RHIOpenGL_PoolFree(s_samplerSlots, FLUXION_RHI_OPENGL_MAX_SAMPLERS, sampler.index, sampler.generation);
 }

@@ -1,0 +1,126 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_IMPORTANCE_SAMPLING_INCLUDED
+#define FLUXION_IMPORTANCE_SAMPLING_INCLUDED
+
+#include "Fluxion/Math.jsl"
+
+// Choosing directions where they matter, for integrals walked once per
+// environment rather than once per frame. Maths from the published
+// descriptions; see SHADER_SOURCES.md.
+
+// How many bits of the sample index the sequence below mirrors. Sixteen
+// covers every sample count a pass here asks for, with room to raise
+// them without touching this.
+#define FLUXION_SAMPLING_INDEX_BITS 16
+
+// The van der Corput sequence: the sample index with its bits mirrored
+// around the point. Written as arithmetic because the language has no
+// bit operations -- each pass of the loop peels the lowest bit off the
+// index and sets it one place further down the fraction.
+float Fluxion_Sampling_ReversedBits(float index)
+{
+    float reversed = 0.0;
+    float placeValue = 0.5;
+    float remaining = index;
+
+    for (int bit = 0; bit < FLUXION_SAMPLING_INDEX_BITS; bit = bit + 1)
+    {
+        float halved = floor(remaining * 0.5);
+        float lowestBit = remaining - 2.0 * halved;
+        reversed = reversed + lowestBit * placeValue;
+        placeValue = placeValue * 0.5;
+        remaining = halved;
+    }
+
+    return reversed;
+}
+
+// The Hammersley point set: evenly spread over the unit square without
+// being a grid. The first coordinate walks the samples in order; the
+// second is the index bit-reversed, which lands each new sample as far
+// from the previous ones as it can get.
+Vector2 Fluxion_Sampling_Hammersley(int index, int sampleCount)
+{
+    return Vector2(float(index) / float(sampleCount), Fluxion_Sampling_ReversedBits(float(index)));
+}
+
+// A halfway vector drawn with the odds the GGX distribution assigns,
+// around the normal `N`.
+//
+// Sampling where the distribution is large instead of uniformly is what
+// makes a thousand samples enough: a smooth surface concentrates its
+// reflection in a narrow cone, and uniform directions would spend almost
+// all of themselves where the surface reflects nothing.
+//
+// alphaRoughness is the SQUARE of the perceptual roughness, the same
+// convention as every distribution function in BRDF.jsl.
+Vector3 Fluxion_Sampling_GGXHalfVector(Vector2 samplePoint, float alphaRoughness, Vector3 N)
+{
+    float a2 = Square(alphaRoughness);
+
+    // The distribution inverted: feed it a uniform value and out comes a
+    // cone angle with exactly the odds the distribution wanted. At zero
+    // roughness the fraction is one for every input -- every sample sits
+    // exactly on the normal, which is what a mirror is.
+    float phi = 2.0 * FLUXION_PI * samplePoint.x;
+    float cosTheta = sqrt((1.0 - samplePoint.y) / (1.0 + (a2 - 1.0) * samplePoint.y));
+    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+
+    // A frame around the normal. Any frame does -- the distribution is
+    // symmetric around N -- so the up vector only has to not be parallel.
+    Vector3 up = Vector3(0.0, 0.0, 1.0);
+    if (abs(N.z) > 0.999)
+    {
+        up = Vector3(1.0, 0.0, 0.0);
+    }
+
+    Vector3 tangentX = normalize(cross(up, N));
+    Vector3 tangentY = cross(N, tangentX);
+
+    Vector3 direction = tangentX * (sinTheta * cos(phi))
+                      + tangentY * (sinTheta * sin(phi))
+                      + N * cosTheta;
+    return normalize(direction);
+}
+
+#endif

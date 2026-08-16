@@ -219,11 +219,14 @@ private:
             "resource", "restrict", "sample", "shared", "short", "sizeof",
             "smooth", "subroutine", "superp", "template", "this", "typedef",
             "union", "unsigned", "using", "varying", "volatile", "writeonly",
-            // Reserved by HLSL.
+            // Reserved by HLSL. "point", "line" and "triangle" are the
+            // geometry-stage primitive modifiers, which DXC refuses as
+            // ordinary names anywhere.
             "cbuffer", "centroid", "column_major", "compile", "groupshared",
-            "linear", "matrix", "nointerpolation", "packoffset", "pass",
-            "precise", "register", "row_major", "snorm", "static", "technique",
-            "tbuffer", "unorm", "vector",
+            "line", "lineadj", "linear", "matrix", "nointerpolation",
+            "packoffset", "pass", "point", "precise", "register",
+            "row_major", "snorm", "static", "technique", "tbuffer",
+            "triangle", "triangleadj", "unorm", "vector",
         };
         return kReserved.count(name) != 0;
     }
