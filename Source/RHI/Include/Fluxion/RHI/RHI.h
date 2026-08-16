@@ -443,17 +443,9 @@ typedef struct FluxionRHIRasterState
     bool wireframe;
 } FluxionRHIRasterState;
 
-typedef enum FluxionRHICompareOp
-{
-    FLUXION_RHI_COMPARE_OP_NEVER = 0,
-    FLUXION_RHI_COMPARE_OP_LESS,
-    FLUXION_RHI_COMPARE_OP_EQUAL,
-    FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL,
-    FLUXION_RHI_COMPARE_OP_GREATER,
-    FLUXION_RHI_COMPARE_OP_NOT_EQUAL,
-    FLUXION_RHI_COMPARE_OP_GREATER_OR_EQUAL,
-    FLUXION_RHI_COMPARE_OP_ALWAYS,
-} FluxionRHICompareOp;
+// FluxionRHICompareOp is in ResourceDesc.h, which this file includes: a
+// shadow sampler asks the same question as the depth test below, and one
+// of the two headers had to hold the answer.
 
 typedef struct FluxionRHIDepthState
 {

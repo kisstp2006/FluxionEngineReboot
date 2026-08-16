@@ -143,6 +143,25 @@ typedef enum FluxionRHIAddressMode
     FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_BORDER,
 } FluxionRHIAddressMode;
 
+// Which way a comparison has to come out to pass.
+//
+// Declared HERE rather than beside the depth state that also uses it,
+// and for a mechanical reason: RHI.h includes this file, so a type
+// named in both has to be in the one that comes first. Two of them --
+// the depth test and a shadow sampler -- ask the same question, so
+// there is one enum for it.
+typedef enum FluxionRHICompareOp
+{
+    FLUXION_RHI_COMPARE_OP_NEVER = 0,
+    FLUXION_RHI_COMPARE_OP_LESS,
+    FLUXION_RHI_COMPARE_OP_EQUAL,
+    FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL,
+    FLUXION_RHI_COMPARE_OP_GREATER,
+    FLUXION_RHI_COMPARE_OP_NOT_EQUAL,
+    FLUXION_RHI_COMPARE_OP_GREATER_OR_EQUAL,
+    FLUXION_RHI_COMPARE_OP_ALWAYS,
+} FluxionRHICompareOp;
+
 typedef struct FluxionRHISamplerDesc
 {
     FluxionRHIFilter minFilter;
@@ -153,6 +172,18 @@ typedef struct FluxionRHISamplerDesc
     FluxionRHIAddressMode addressModeW;
     f32 maxAnisotropy; // 1.0 = disabled
     const char* debugName; // optional, may be NULL
+
+    // A shadow sampler: the hardware compares each texel against a
+    // reference the shader supplies and FILTERS THE ANSWERS, rather than
+    // returning the stored depths for the shader to compare afterwards.
+    // The difference is the whole point -- an average of two depths means
+    // nothing, while an average of two yes-or-no answers is a soft edge.
+    //
+    // Only meaningful for a sampler bound beside a Texture2DShadow. At
+    // the end, and off by default, so every positional initializer
+    // written before this existed still says what it said.
+    bool compareEnable;
+    FluxionRHICompareOp compareOp;
 } FluxionRHISamplerDesc;
 
 #ifdef __cplusplus

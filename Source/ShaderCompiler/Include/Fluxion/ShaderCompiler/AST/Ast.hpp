@@ -61,6 +61,13 @@ enum class TypeKind
     Void, Bool, Int, Uint, Float,
     Vec2, Vec3, Vec4, Mat3, Mat4,
     Sampler2D, SamplerCube,
+
+    // A depth texture read through a comparison, not a colour texture
+    // read and compared afterwards. Its own type because the two are
+    // different objects in both target languages, and because a shader
+    // that mixed them up would fail in generated text nobody wrote.
+    Sampler2DShadow,
+
     Unresolved, // a named (struct) type not yet looked up
 };
 

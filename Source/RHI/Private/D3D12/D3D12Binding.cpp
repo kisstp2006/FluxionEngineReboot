@@ -52,6 +52,24 @@
 
 #include "D3D12Common.h"
 
+// The same mapping the depth state uses, written out again here rather
+// than shared: the pipeline's copy lives in another translation unit,
+// and a shared helper would be one more header for eight cases.
+static D3D12_COMPARISON_FUNC Fluxion_RHID3D12_MapSamplerCompareOp(FluxionRHICompareOp op)
+{
+    switch (op)
+    {
+        case FLUXION_RHI_COMPARE_OP_NEVER: return D3D12_COMPARISON_FUNC_NEVER;
+        case FLUXION_RHI_COMPARE_OP_EQUAL: return D3D12_COMPARISON_FUNC_EQUAL;
+        case FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL: return D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        case FLUXION_RHI_COMPARE_OP_GREATER: return D3D12_COMPARISON_FUNC_GREATER;
+        case FLUXION_RHI_COMPARE_OP_NOT_EQUAL: return D3D12_COMPARISON_FUNC_NOT_EQUAL;
+        case FLUXION_RHI_COMPARE_OP_GREATER_OR_EQUAL: return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+        case FLUXION_RHI_COMPARE_OP_ALWAYS: return D3D12_COMPARISON_FUNC_ALWAYS;
+        default: return D3D12_COMPARISON_FUNC_LESS;
+    }
+}
+
 // --- Layout storage ------------------------------------------------------
 
 static FluxionRHID3D12Slot s_layoutSlots[FLUXION_RHI_D3D12_MAX_BIND_GROUP_LAYOUTS];
@@ -167,8 +185,20 @@ FluxionRHIBindGroupHandle Fluxion_RHID3D12_CreateBindGroup(FluxionRHIDeviceHandl
             const FluxionRHISamplerDesc* samplerDesc = Fluxion_RHID3D12_ResolveSamplerDesc(entry.sampler);
             if (samplerDesc == nullptr) { ++samplerCursor; continue; }
             D3D12_SAMPLER_DESC nativeSampler = {};
-            nativeSampler.Filter = (samplerDesc->minFilter == FLUXION_RHI_FILTER_LINEAR && samplerDesc->magFilter == FLUXION_RHI_FILTER_LINEAR)
-                ? D3D12_FILTER_MIN_MAG_MIP_LINEAR : D3D12_FILTER_MIN_MAG_MIP_POINT;
+            const bool linear = samplerDesc->minFilter == FLUXION_RHI_FILTER_LINEAR && samplerDesc->magFilter == FLUXION_RHI_FILTER_LINEAR;
+
+            // A comparing sampler is a different FILTER here, not a flag
+            // beside one: the comparison happens before the filtering,
+            // so it is part of what filtering means.
+            if (samplerDesc->compareEnable)
+            {
+                nativeSampler.Filter = linear ? D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
+                nativeSampler.ComparisonFunc = Fluxion_RHID3D12_MapSamplerCompareOp(samplerDesc->compareOp);
+            }
+            else
+            {
+                nativeSampler.Filter = linear ? D3D12_FILTER_MIN_MAG_MIP_LINEAR : D3D12_FILTER_MIN_MAG_MIP_POINT;
+            }
             auto mapAddress = [](FluxionRHIAddressMode mode) {
                 switch (mode)
                 {

@@ -60,7 +60,7 @@ enum class TokenKind
     // `mat4` alias.
     KwVoid, KwBool, KwInt, KwUint, KwFloat,
     KwVector2, KwVector3, KwVector4, KwMatrix3x3, KwMatrix4x4,
-    KwTexture2D, KwTextureCube,
+    KwTexture2D, KwTextureCube, KwTexture2DShadow,
 
     // Value/control-flow keywords.
     KwTrue, KwFalse,

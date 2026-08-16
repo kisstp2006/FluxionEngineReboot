@@ -49,7 +49,10 @@ namespace Fluxion::ShaderCompiler
 namespace
 {
 
-bool IsOpaqueResource(TypeKind kind) { return kind == TypeKind::Sampler2D || kind == TypeKind::SamplerCube; }
+bool IsOpaqueResource(TypeKind kind)
+{
+    return kind == TypeKind::Sampler2D || kind == TypeKind::SamplerCube || kind == TypeKind::Sampler2DShadow;
+}
 
 // Every uniform-buffer member starts on its own 16-byte boundary and
 // occupies as many of those as it needs. This wastes space compared to

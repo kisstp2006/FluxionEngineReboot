@@ -422,6 +422,25 @@ FluxionRHIVulkanTextureView* Fluxion_RHIVulkan_ResolveTextureView(FluxionRHIText
 // --- Samplers ---------------------------------------------------------------
 
 static VkFilter Fluxion_RHIVulkan_MapFilter(FluxionRHIFilter filter) { return filter == FLUXION_RHI_FILTER_LINEAR ? VK_FILTER_LINEAR : VK_FILTER_NEAREST; }
+// The same mapping the depth state uses, written out again here rather
+// than shared: the pipeline's copy lives in another translation unit,
+// and the two enums are the same enum -- a shared helper would be one
+// more header for eight cases.
+static VkCompareOp Fluxion_RHIVulkan_MapSamplerCompareOp(FluxionRHICompareOp op)
+{
+    switch (op)
+    {
+        case FLUXION_RHI_COMPARE_OP_NEVER: return VK_COMPARE_OP_NEVER;
+        case FLUXION_RHI_COMPARE_OP_EQUAL: return VK_COMPARE_OP_EQUAL;
+        case FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL: return VK_COMPARE_OP_LESS_OR_EQUAL;
+        case FLUXION_RHI_COMPARE_OP_GREATER: return VK_COMPARE_OP_GREATER;
+        case FLUXION_RHI_COMPARE_OP_NOT_EQUAL: return VK_COMPARE_OP_NOT_EQUAL;
+        case FLUXION_RHI_COMPARE_OP_GREATER_OR_EQUAL: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+        case FLUXION_RHI_COMPARE_OP_ALWAYS: return VK_COMPARE_OP_ALWAYS;
+        default: return VK_COMPARE_OP_LESS;
+    }
+}
+
 static VkSamplerAddressMode Fluxion_RHIVulkan_MapAddressMode(FluxionRHIAddressMode mode)
 {
     switch (mode)
@@ -453,6 +472,8 @@ FluxionRHISamplerHandle Fluxion_RHIVulkan_CreateSampler(FluxionRHIDeviceHandle d
     samplerInfo.anisotropyEnable = desc->maxAnisotropy > 1.0f ? VK_TRUE : VK_FALSE;
     samplerInfo.maxAnisotropy = desc->maxAnisotropy;
     samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+    samplerInfo.compareEnable = desc->compareEnable ? VK_TRUE : VK_FALSE;
+    samplerInfo.compareOp = Fluxion_RHIVulkan_MapSamplerCompareOp(desc->compareOp);
 
     if (vkCreateSampler(deviceState->device, &samplerInfo, nullptr, &s_samplers[index]) != VK_SUCCESS)
     {

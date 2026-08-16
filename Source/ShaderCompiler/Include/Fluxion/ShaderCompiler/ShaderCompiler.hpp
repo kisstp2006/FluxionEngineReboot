@@ -64,12 +64,15 @@ namespace Fluxion::ShaderCompiler
 // allowed to say changes; raise the compiler version when the same source
 // starts producing different output. Failing to raise either is not a
 // build error -- it is a stale artifact served silently, which is worse.
-inline constexpr u32 kShaderLanguageVersion = 1;
+// 2: Texture2DShadow and textureCompare -- a source may say something it
+// could not say before.
+inline constexpr u32 kShaderLanguageVersion = 2;
 
 // 2: a GLSL storage-buffer block is named after its buffer, not only its
 // group -- the same source now emits different text, which is exactly the
 // change the paragraph above says this number exists for.
-inline constexpr u32 kShaderCompilerVersion = 2;
+// 3: the comparison sample reaches both backends.
+inline constexpr u32 kShaderCompilerVersion = 3;
 
 struct CompileOptions
 {

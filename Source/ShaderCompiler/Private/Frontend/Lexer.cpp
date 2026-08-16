@@ -59,6 +59,7 @@ const std::unordered_map<std::string, TokenKind>& Keywords()
         { "Vector2", TokenKind::KwVector2 }, { "Vector3", TokenKind::KwVector3 }, { "Vector4", TokenKind::KwVector4 },
         { "Matrix3x3", TokenKind::KwMatrix3x3 }, { "Matrix4x4", TokenKind::KwMatrix4x4 },
         { "Texture2D", TokenKind::KwTexture2D }, { "TextureCube", TokenKind::KwTextureCube },
+        { "Texture2DShadow", TokenKind::KwTexture2DShadow },
         { "true", TokenKind::KwTrue }, { "false", TokenKind::KwFalse },
         { "if", TokenKind::KwIf }, { "else", TokenKind::KwElse },
         { "for", TokenKind::KwFor }, { "while", TokenKind::KwWhile },

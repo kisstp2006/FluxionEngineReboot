@@ -56,6 +56,7 @@ bool IsTypeToken(TokenKind kind)
         case TokenKind::KwVoid: case TokenKind::KwBool: case TokenKind::KwInt: case TokenKind::KwUint:
         case TokenKind::KwFloat: case TokenKind::KwVector2: case TokenKind::KwVector3: case TokenKind::KwVector4:
         case TokenKind::KwMatrix3x3: case TokenKind::KwMatrix4x4: case TokenKind::KwTexture2D: case TokenKind::KwTextureCube:
+        case TokenKind::KwTexture2DShadow:
             return true;
         default:
             return false;
@@ -87,6 +88,7 @@ ShaderType TypeFromToken(TokenKind kind)
         case TokenKind::KwMatrix4x4: return { TypeKind::Mat4 };
         case TokenKind::KwTexture2D: return { TypeKind::Sampler2D };
         case TokenKind::KwTextureCube: return { TypeKind::SamplerCube };
+        case TokenKind::KwTexture2DShadow: return { TypeKind::Sampler2DShadow };
         default: return { TypeKind::Void };
     }
 }

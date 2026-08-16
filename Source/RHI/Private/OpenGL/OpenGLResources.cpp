@@ -402,6 +402,24 @@ static GLint Fluxion_RHIOpenGL_MapAddressMode(FluxionRHIAddressMode mode)
     }
 }
 
+// The same mapping the depth state uses, written out again here rather
+// than shared: the pipeline's copy lives in another translation unit,
+// and a shared helper would be one more header for eight cases.
+static GLenum Fluxion_RHIOpenGL_MapSamplerCompareOp(FluxionRHICompareOp op)
+{
+    switch (op)
+    {
+        case FLUXION_RHI_COMPARE_OP_NEVER: return GL_NEVER;
+        case FLUXION_RHI_COMPARE_OP_EQUAL: return GL_EQUAL;
+        case FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL: return GL_LEQUAL;
+        case FLUXION_RHI_COMPARE_OP_GREATER: return GL_GREATER;
+        case FLUXION_RHI_COMPARE_OP_NOT_EQUAL: return GL_NOTEQUAL;
+        case FLUXION_RHI_COMPARE_OP_GREATER_OR_EQUAL: return GL_GEQUAL;
+        case FLUXION_RHI_COMPARE_OP_ALWAYS: return GL_ALWAYS;
+        default: return GL_LESS;
+    }
+}
+
 FluxionRHISamplerHandle Fluxion_RHIOpenGL_CreateSampler(FluxionRHIDeviceHandle device, const FluxionRHISamplerDesc* desc)
 {
     FluxionRHISamplerHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -422,6 +440,15 @@ FluxionRHISamplerHandle Fluxion_RHIOpenGL_CreateSampler(FluxionRHIDeviceHandle d
     if (desc->maxAnisotropy > 1.0f && deviceState->hasAnisotropicFiltering)
     {
         glSamplerParameterf(samplerState->name, GL_TEXTURE_MAX_ANISOTROPY, desc->maxAnisotropy);
+    }
+
+    // A comparing sampler returns how much of the filter kernel passed
+    // the test, not the depths themselves -- switched on here, and left
+    // alone otherwise so an ordinary sampler is exactly what it was.
+    if (desc->compareEnable)
+    {
+        glSamplerParameteri(samplerState->name, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+        glSamplerParameteri(samplerState->name, GL_TEXTURE_COMPARE_FUNC, Fluxion_RHIOpenGL_MapSamplerCompareOp(desc->compareOp));
     }
 
     Fluxion_RHIOpenGL_LabelObject(GL_SAMPLER, samplerState->name, desc->debugName);

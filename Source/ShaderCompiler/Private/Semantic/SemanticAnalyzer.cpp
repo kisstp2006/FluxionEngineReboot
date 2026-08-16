@@ -249,7 +249,7 @@ private:
             "radians", "reflect", "refract", "round", "sign", "sin", "sinh",
             "smoothstep", "sqrt", "step", "tan", "tanh", "transpose", "trunc",
             "dFdx", "dFdy",
-            "texture", "texture2D", "textureCube", "textureLod",
+            "texture", "texture2D", "textureCube", "textureLod", "textureCompare",
         };
         return kBuiltins.count(name) != 0;
     }
@@ -532,6 +532,28 @@ private:
 
     ShaderType ResolveCall(CallExpr& call)
     {
+        // The one sampling call whose arguments are really checked, and
+        // deliberately so: what comes back is not the depth stored in the
+        // map but the ANSWER to a comparison, and the hardware only does
+        // that for a texture bound as a shadow map with a comparing
+        // sampler. Handed an ordinary texture it is a mistake no target
+        // language reports in terms of this source -- which is exactly
+        // the failure mode a missing check produced once before.
+        if (call.callee == "textureCompare")
+        {
+            if (call.args.size() != 3)
+            {
+                Error(call.location, "textureCompare takes a shadow map, a coordinate, and the depth to compare against");
+            }
+            else if (call.args[0]->resolvedType.kind != TypeKind::Sampler2DShadow)
+            {
+                Error(call.args[0]->location, "textureCompare reads a Texture2DShadow; an ordinary texture holds "
+                                              "depths rather than the answer to a comparison, and comparing them "
+                                              "afterwards cannot be filtered");
+            }
+            return { TypeKind::Float };
+        }
+
         // Built-in functions get a small structural heuristic (result is
         // a vector if any argument is a vector, otherwise float/bool as
         // appropriate) rather than an exhaustive per-function signature

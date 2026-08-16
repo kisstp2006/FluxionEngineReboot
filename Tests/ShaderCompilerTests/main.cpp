@@ -59,6 +59,7 @@ void Test_BindingGroups_Run(TestContext& ctx);
 void Test_BindingGroups_DefaultIsMaterial_Run(TestContext& ctx);
 void Test_ComputeStorageBuffer_Run(TestContext& ctx);
 void Test_TextureSampleLevel_Run(TestContext& ctx);
+void Test_ComparisonSampling_Run(TestContext& ctx);
 
 int main()
 {
@@ -82,6 +83,7 @@ int main()
     Test_BindingGroups_DefaultIsMaterial_Run(ctx);
     Test_ComputeStorageBuffer_Run(ctx);
     Test_TextureSampleLevel_Run(ctx);
+    Test_ComparisonSampling_Run(ctx);
 
     if (ctx.failures == 0)
     {

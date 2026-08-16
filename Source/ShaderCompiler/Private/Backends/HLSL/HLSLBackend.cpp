@@ -67,6 +67,12 @@ std::string HLSLTypeName(const ShaderType& type)
         case TypeKind::Sampler2D: return "Texture2D";
         case TypeKind::SamplerCube: return "TextureCube";
 
+        // One channel, said outright: a depth texture has only the one,
+        // and a comparison sample against a four-channel declaration is
+        // refused here rather than quietly reading three channels that
+        // do not exist.
+        case TypeKind::Sampler2DShadow: return "Texture2D<float>";
+
         // A declared struct carries its own name and that is what is
         // emitted. Falling through to the default below would turn every
         // struct-typed thing into a float -- which compiles, and is
@@ -124,6 +130,14 @@ bool IsTextureSampleCall(const std::string& name) { return name == "texture2D" |
 // pixels to compare against in a dispatch, so the ordinary sample has
 // nothing to work a level out from.
 bool IsTextureSampleLevelCall(const std::string& name) { return name == "textureLod"; }
+
+// The comparison sample. Three arguments like the one above, but the
+// third is a depth to compare against rather than a mip level, and what
+// comes back is one float -- how much of the filter kernel passed the
+// comparison -- rather than a colour. `LevelZero` because a shadow map
+// has one level and a fragment shader must not work one out from
+// neighbours it may not have.
+bool IsTextureCompareCall(const std::string& name) { return name == "textureCompare"; }
 
 // The set index a BindingGroup maps to always equals the enum's integer
 // value -- this matches FLUXION_RHI_BIND_GROUP_GLOBAL/FRAME/MATERIAL/
@@ -228,7 +242,13 @@ private:
         {
             int set = GroupSetIndex(r.group);
             m_out << "[[vk::binding(" << r.binding << ", " << set << ")]] " << HLSLTypeName(r.type) << " " << r.name << " : register(t" << r.binding << ", space" << set << ");\n";
-            m_out << "[[vk::binding(" << r.samplerBinding << ", " << set << ")]] SamplerState " << r.name << "_sampler : register(s" << r.samplerBinding << ", space" << set << ");\n";
+
+            // A shadow map's sampler is a different object, not a flag on
+            // the ordinary one: it carries the comparison the hardware
+            // performs before filtering, which is the whole reason to
+            // sample this way rather than read and compare afterwards.
+            const char* samplerType = r.type.kind == TypeKind::Sampler2DShadow ? "SamplerComparisonState" : "SamplerState";
+            m_out << "[[vk::binding(" << r.samplerBinding << ", " << set << ")]] " << samplerType << " " << r.name << "_sampler : register(s" << r.samplerBinding << ", space" << set << ");\n";
         }
         if (!m_module.resources.empty()) m_out << "\n";
     }
@@ -526,6 +546,16 @@ private:
                 {
                     const std::string& texName = static_cast<const VarRefExpr&>(*e.args[0]).name;
                     m_out << texName << ".Sample(" << texName << "_sampler, "; EmitExpr(*e.args[1]); m_out << ")";
+                    break;
+                }
+                if (IsTextureCompareCall(e.callee) && e.args.size() == 3 && e.args[0]->kind == ExprKind::VarRef)
+                {
+                    const std::string& texName = static_cast<const VarRefExpr&>(*e.args[0]).name;
+                    m_out << texName << ".SampleCmpLevelZero(" << texName << "_sampler, ";
+                    EmitExpr(*e.args[1]);
+                    m_out << ", ";
+                    EmitExpr(*e.args[2]);
+                    m_out << ")";
                     break;
                 }
                 if (IsTextureSampleLevelCall(e.callee) && e.args.size() == 3 && e.args[0]->kind == ExprKind::VarRef)

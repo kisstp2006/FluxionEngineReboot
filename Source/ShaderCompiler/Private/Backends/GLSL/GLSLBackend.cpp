@@ -66,6 +66,11 @@ std::string GLSLTypeName(const ShaderType& type)
         case TypeKind::Sampler2D: return "sampler2D";
         case TypeKind::SamplerCube: return "samplerCube";
 
+        // Combined image and sampler, like the two above -- the
+        // comparison itself is state on the sampler object the RHI
+        // binds, not part of this name.
+        case TypeKind::Sampler2DShadow: return "sampler2DShadow";
+
         // Same reasoning as the other backend: a declared struct is
         // emitted under its own name, because silently becoming a float
         // compiles and is wrong.
@@ -417,6 +422,23 @@ private:
             }
             case ExprKind::Call: {
                 auto& e = static_cast<const CallExpr&>(expr);
+
+                // The comparison sample has no name of its own here: this
+                // language spells it as an ordinary sample whose
+                // coordinate carries the depth to compare against in its
+                // last component. Three arguments become two.
+                if (e.callee == "textureCompare" && e.args.size() == 3)
+                {
+                    m_out << "texture(";
+                    EmitExpr(*e.args[0]);
+                    m_out << ", vec3(";
+                    EmitExpr(*e.args[1]);
+                    m_out << ", ";
+                    EmitExpr(*e.args[2]);
+                    m_out << "))";
+                    break;
+                }
+
                 m_out << RemapCallName(e.callee) << "(";
                 for (size_t i = 0; i < e.args.size(); ++i) { if (i) m_out << ", "; EmitExpr(*e.args[i]); }
                 m_out << ")";

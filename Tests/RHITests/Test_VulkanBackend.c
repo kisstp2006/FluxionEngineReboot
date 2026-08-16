@@ -126,7 +126,8 @@ void Test_VulkanBackend_Run(TestContext* ctx)
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(textureView));
 
     FluxionRHISamplerDesc samplerDesc = { FLUXION_RHI_FILTER_LINEAR, FLUXION_RHI_FILTER_LINEAR, FLUXION_RHI_FILTER_LINEAR,
-        FLUXION_RHI_ADDRESS_MODE_REPEAT, FLUXION_RHI_ADDRESS_MODE_REPEAT, FLUXION_RHI_ADDRESS_MODE_REPEAT, 1.0f, "TestSampler" };
+        FLUXION_RHI_ADDRESS_MODE_REPEAT, FLUXION_RHI_ADDRESS_MODE_REPEAT, FLUXION_RHI_ADDRESS_MODE_REPEAT, 1.0f, "TestSampler",
+        false, FLUXION_RHI_COMPARE_OP_LESS };
     FluxionRHISamplerHandle sampler = Fluxion_RHI_CreateSampler(device, &samplerDesc);
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(sampler));
 

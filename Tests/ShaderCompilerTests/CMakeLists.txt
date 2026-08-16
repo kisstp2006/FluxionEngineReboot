@@ -56,6 +56,7 @@ engine_add_test(
         Test_ShaderCache.cpp
         Test_BindingGroups.cpp
         Test_ComputeStorageBuffer.cpp
+        Test_ComparisonSampling.cpp
     DEPENDENCIES
         Fluxion::ShaderCompiler
     NO_EXCEPTIONS

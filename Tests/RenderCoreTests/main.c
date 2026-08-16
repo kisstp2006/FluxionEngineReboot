@@ -53,6 +53,8 @@ void Test_Material_Run(TestContext* ctx);
 void Test_MeshBuffer_Run(TestContext* ctx);
 void Test_MemoryDomains_Run(TestContext* ctx);
 void Test_RenderView_Run(TestContext* ctx);
+void Test_ShadowAtlas_Run(TestContext* ctx);
+void Test_ComparisonSamplingGPU_Run(TestContext* ctx);
 void Test_RendererFrame_Run(TestContext* ctx);
 void Test_MeshAsset_Run(TestContext* ctx);
 void Test_ShaderLibrary_Run(TestContext* ctx);
@@ -80,6 +82,8 @@ int main(void)
     Test_MeshBuffer_Run(&ctx);
     Test_MemoryDomains_Run(&ctx);
     Test_RenderView_Run(&ctx);
+    Test_ShadowAtlas_Run(&ctx);
+    Test_ComparisonSamplingGPU_Run(&ctx);
     Test_RendererFrame_Run(&ctx);
     Test_MeshAsset_Run(&ctx);
     Test_ShaderLibrary_Run(&ctx);
