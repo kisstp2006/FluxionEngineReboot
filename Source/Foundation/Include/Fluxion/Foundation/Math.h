@@ -123,6 +123,87 @@ static inline FluxionMat4 Fluxion_Mat4_RigidInverse(FluxionMat4 m)
     return result;
 }
 
+// The determinant of the three-by-three left when one row and one column
+// are struck out. Only ever wanted by the general inverse below.
+static inline f32 Fluxion_Mat4_Minor(FluxionMat4 m, int skipRow, int skipCol)
+{
+    f32 sub[3][3];
+    int r = 0;
+
+    for (int row = 0; row < 4; ++row)
+    {
+        if (row == skipRow) continue;
+        int c = 0;
+        for (int col = 0; col < 4; ++col)
+        {
+            if (col == skipCol) continue;
+            sub[r][c] = m.m[row][col];
+            ++c;
+        }
+        ++r;
+    }
+
+    return sub[0][0] * (sub[1][1] * sub[2][2] - sub[1][2] * sub[2][1])
+         - sub[0][1] * (sub[1][0] * sub[2][2] - sub[1][2] * sub[2][0])
+         + sub[0][2] * (sub[1][0] * sub[2][1] - sub[1][1] * sub[2][0]);
+}
+
+// The inverse of any four-by-four matrix, including one with perspective
+// in it.
+//
+// The restricted one above covers a view matrix and is far cheaper, and
+// it stays the right answer wherever it applies. This exists for the
+// matrix it does NOT cover: a projection. Turning a point on the screen
+// back into a direction in the world -- which is the whole of drawing a
+// sky -- needs the inverse of the projection, and a projection is not a
+// rotation and a translation.
+//
+// Written as cofactors in a loop rather than as one unrolled expression.
+// The unrolled form is faster and is a wall of sign-carrying terms in
+// which a single wrong index produces a matrix that is subtly not an
+// inverse -- and "subtly not an inverse" is a sky that is slightly bent,
+// which nobody would think to blame on arithmetic. This runs once a
+// frame.
+//
+// A matrix with no inverse comes back as the identity rather than as
+// infinities: a degenerate camera should give a picture that is wrong in
+// an obvious way, not one full of values that poison everything they
+// touch.
+static inline FluxionMat4 Fluxion_Mat4_Inverse(FluxionMat4 m)
+{
+    f32 cofactors[4][4];
+    f32 determinant = 0.0f;
+
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            const f32 minor = Fluxion_Mat4_Minor(m, row, col);
+            cofactors[row][col] = ((row + col) % 2 == 0) ? minor : -minor;
+        }
+    }
+
+    for (int col = 0; col < 4; ++col) determinant += m.m[0][col] * cofactors[0][col];
+
+    if (determinant > -1e-12f && determinant < 1e-12f) return Fluxion_Mat4_Identity();
+
+    const f32 inverseDeterminant = 1.0f / determinant;
+
+    // Transposed on the way out: the adjugate is the transpose of the
+    // cofactor matrix, and doing it here rather than in a second pass is
+    // the whole of the difference between an inverse and its transpose.
+    FluxionMat4 result;
+    for (int row = 0; row < 4; ++row)
+    {
+        for (int col = 0; col < 4; ++col)
+        {
+            result.m[row][col] = cofactors[col][row] * inverseDeterminant;
+        }
+    }
+
+    return result;
+}
+
 static inline FluxionMat4 Fluxion_Mat4_Translation(FluxionVec3 t)
 {
     FluxionMat4 result = Fluxion_Mat4_Identity();

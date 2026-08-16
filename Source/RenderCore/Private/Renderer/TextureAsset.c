@@ -89,6 +89,25 @@ usize Fluxion_TextureAsset_GetTotalByteSize(FluxionRHIFormat format, u32 width, 
 // The format, both directions in one place.
 // ---------------------------------------------------------------------
 
+// Six square layers, or nothing that claims to be a cube.
+//
+// Said here as well as in the RHI, and that is not a duplicate rule: the
+// RHI refuses to CREATE such a texture, and this refuses to READ a file
+// that describes one. A file is the earlier of the two and the one that
+// can name itself, so catching it here means a message about a file
+// rather than about a device.
+static bool Fluxion_TextureAsset_ShapeIsPossible(FluxionRHITextureDimension dimension, u32 width, u32 height, u32 arrayLayers)
+{
+    // A number that is neither shape is refused rather than treated as
+    // "not a cube". Anything else means a damaged byte lands on the one
+    // value that is believed by default -- and this check was written
+    // exactly to stop a file being believed.
+    if (dimension == FLUXION_RHI_TEXTURE_DIMENSION_2D) return true;
+    if (dimension != FLUXION_RHI_TEXTURE_DIMENSION_CUBE) return false;
+
+    return arrayLayers == FLUXION_RHI_CUBE_FACE_COUNT && width == height;
+}
+
 static bool Fluxion_TextureAsset_DescribesSomethingReal(u32 width, u32 height, u32 mipCount, u32 arrayLayers, FluxionRHIFormat format)
 {
     if (width == 0 || height == 0 || arrayLayers == 0) return false;
@@ -109,6 +128,7 @@ bool Fluxion_TextureAsset_Write(FluxionStream* stream, const FluxionTextureAsset
 {
     if (!stream || !data || !Fluxion_Stream_IsWriting(stream)) return false;
     if (!Fluxion_TextureAsset_DescribesSomethingReal(data->width, data->height, data->mipCount, data->arrayLayers, data->format)) return false;
+    if (!Fluxion_TextureAsset_ShapeIsPossible(data->dimension, data->width, data->height, data->arrayLayers)) return false;
     if (data->pixels == NULL) return false;
 
     const usize expected = Fluxion_TextureAsset_GetTotalByteSize(data->format, data->width, data->height, data->mipCount, data->arrayLayers);
@@ -129,11 +149,16 @@ bool Fluxion_TextureAsset_Write(FluxionStream* stream, const FluxionTextureAsset
     u32 mipCount = data->mipCount;
     u32 arrayLayers = data->arrayLayers;
     u32 format = (u32)data->format;
+    u32 dimension = (u32)data->dimension;
     Fluxion_Stream_SerializeU32(stream, &width);
     Fluxion_Stream_SerializeU32(stream, &height);
     Fluxion_Stream_SerializeU32(stream, &mipCount);
     Fluxion_Stream_SerializeU32(stream, &arrayLayers);
     Fluxion_Stream_SerializeU32(stream, &format);
+
+    // At the end of the header, after everything a version-one file also
+    // had, so that where the older fields live does not move.
+    Fluxion_Stream_SerializeU32(stream, &dimension);
 
     // The byte count travels with the pixels rather than being worked out
     // again on the way in. A reader that recomputed it would agree with
@@ -174,12 +199,20 @@ bool Fluxion_TextureAsset_Read(const u8* bytes, usize size, FluxionTextureAsset*
     u32 mipCount = 0;
     u32 arrayLayers = 0;
     u32 format = 0;
+    u32 dimension = (u32)FLUXION_RHI_TEXTURE_DIMENSION_2D;
     u32 pixelBytes = 0;
     Fluxion_Stream_SerializeU32(&stream, &width);
     Fluxion_Stream_SerializeU32(&stream, &height);
     Fluxion_Stream_SerializeU32(&stream, &mipCount);
     Fluxion_Stream_SerializeU32(&stream, &arrayLayers);
     Fluxion_Stream_SerializeU32(&stream, &format);
+
+    // Only where there is one. A file written before the shape existed is
+    // a flat texture, which is what the value above already says -- and
+    // reading a field that is not there would take the first four bytes
+    // of the pixels and call them a shape.
+    if (formatVersion >= 2) Fluxion_Stream_SerializeU32(&stream, &dimension);
+
     Fluxion_Stream_SerializeU32(&stream, &pixelBytes);
 
     if (Fluxion_Stream_HasOverflowed(&stream)) return false;
@@ -187,6 +220,13 @@ bool Fluxion_TextureAsset_Read(const u8* bytes, usize size, FluxionTextureAsset*
     if (!Fluxion_TextureAsset_DescribesSomethingReal(width, height, mipCount, arrayLayers, (FluxionRHIFormat)format))
     {
         FLUXION_LOG_ERROR(FLUXION_TEXTURE_ASSET_LOG_CATEGORY, "a texture describes a shape or a format that cannot exist");
+        return false;
+    }
+
+    if (!Fluxion_TextureAsset_ShapeIsPossible((FluxionRHITextureDimension)dimension, width, height, arrayLayers))
+    {
+        FLUXION_LOG_ERROR(FLUXION_TEXTURE_ASSET_LOG_CATEGORY,
+                          "a texture claims to be a cube with %u layers at %ux%u", arrayLayers, width, height);
         return false;
     }
 
@@ -222,6 +262,7 @@ bool Fluxion_TextureAsset_Read(const u8* bytes, usize size, FluxionTextureAsset*
     block->asset.mipCount = mipCount;
     block->asset.arrayLayers = arrayLayers;
     block->asset.format = (FluxionRHIFormat)format;
+    block->asset.dimension = (FluxionRHITextureDimension)dimension;
     block->asset.pixels = pixels;
     block->asset.pixelBytes = pixelBytes;
 
@@ -321,6 +362,7 @@ static bool Fluxion_TextureAsset_Upload(FluxionTextureAsset* asset, const Fluxio
     textureDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_SAMPLED | FLUXION_RHI_TEXTURE_USAGE_TRANSFER_DST;
     textureDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
     textureDesc.debugName = "Fluxion.TextureAsset";
+    textureDesc.dimension = asset->dimension;
 
     FluxionRHITextureHandle texture = Fluxion_RHI_CreateTexture(context->device, &textureDesc);
     if (!FLUXION_HANDLE_IS_VALID(texture)) return false;
@@ -409,6 +451,11 @@ static bool Fluxion_TextureAsset_Upload(FluxionTextureAsset* asset, const Fluxio
     viewDesc.mipLevelCount = asset->mipCount;
     viewDesc.baseArrayLayer = 0;
     viewDesc.arrayLayerCount = asset->arrayLayers;
+
+    // Read the way it was stored. A cube uploaded and then viewed flat is
+    // six pictures nothing can sample by direction, which is not an error
+    // anywhere -- only a sky that never appears.
+    viewDesc.dimension = asset->dimension;
 
     FluxionRHITextureViewHandle view = Fluxion_RHI_CreateTextureView(context->device, &viewDesc);
     if (!FLUXION_HANDLE_IS_VALID(view))

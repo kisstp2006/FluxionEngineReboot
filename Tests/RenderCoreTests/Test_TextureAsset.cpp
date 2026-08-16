@@ -146,11 +146,22 @@ void RefusesWhatItShould(TestContext* ctx)
     TEST_CHECK(ctx, !Fluxion_TextureAsset_Read(bytes.data(), written - 1, &asset));
     TEST_CHECK(ctx, !Fluxion_TextureAsset_Read(bytes.data(), 8, &asset));
 
+    // Where each field of the header starts, in bytes. Written out
+    // because the checks below poke at raw bytes on purpose -- a file is
+    // a file, and damage does not arrive through the writer.
+    //
+    // These move whenever the header gains a field, and are MEANT to:
+    // the run that broke here when the shape was added is the run that
+    // proved the checks were still aimed at what they name.
+    constexpr usize kMipCountOffset = 16;
+    constexpr usize kDimensionOffset = 28;
+    constexpr usize kPixelBytesOffset = 32;
+
     // More levels than halving a four-pixel side can produce. A file
     // claiming them describes something that cannot exist, and believing
     // it would mean reading past what the file holds.
     std::vector<u8> tooManyMips = bytes;
-    tooManyMips[16] = 9;
+    tooManyMips[kMipCountOffset] = 9;
     TEST_CHECK(ctx, !Fluxion_TextureAsset_Read(tooManyMips.data(), written, &asset));
 
     // The file's own byte count disagreeing with what its size and format
@@ -158,8 +169,16 @@ void RefusesWhatItShould(TestContext* ctx)
     // believing either one alone is how a damaged file gets an allocation
     // sized from a number nothing verified.
     std::vector<u8> wrongCount = bytes;
-    wrongCount[28] = 0xFFu;
+    wrongCount[kPixelBytesOffset] = 0xFFu;
     TEST_CHECK(ctx, !Fluxion_TextureAsset_Read(wrongCount.data(), written, &asset));
+
+    // A shape that is neither of the two this engine has. Refused rather
+    // than read as "not a cube": treating an unrecognised number as the
+    // safe one means a single damaged byte lands on the value that is
+    // believed without question.
+    std::vector<u8> unknownShape = bytes;
+    unknownShape[kDimensionOffset] = 0xFFu;
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_Read(unknownShape.data(), written, &asset));
 
     // And the writer refuses the same disagreement rather than producing
     // a file nothing can read.
@@ -371,6 +390,124 @@ void TheDefaultsFollowTheUsage(TestContext* ctx)
     TEST_CHECK(ctx, desc.minFilter == FLUXION_RHI_FILTER_LINEAR);
 }
 
+void ACubeKeepsItsShapeThroughTheFile(TestContext* ctx)
+{
+    // Six square layers, written and read back. The shape has to survive
+    // the file, because nothing downstream can work it out again: six
+    // layers of a wall atlas are also six layers, and a reader that
+    // guessed would be right until the day somebody stored six of
+    // something.
+    constexpr u32 kFace = 4;
+    const std::vector<u8> pixels = MakePixels(FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, kFace, kFace, 1, 6);
+
+    FluxionTextureAssetData data = MakeData(pixels, FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, kFace, kFace, 1, 6);
+    data.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+
+    std::vector<u8> bytes(pixels.size() + 256);
+    FluxionStream writer;
+    Fluxion_MemoryStream_InitWriter(&writer, bytes.data(), bytes.size());
+    TEST_CHECK(ctx, Fluxion_TextureAsset_Write(&writer, &data));
+
+    FluxionTextureAsset* asset = nullptr;
+    TEST_CHECK(ctx, Fluxion_TextureAsset_Read(bytes.data(), bytes.size(), &asset));
+    if (asset != nullptr)
+    {
+        TEST_CHECK(ctx, asset->dimension == FLUXION_RHI_TEXTURE_DIMENSION_CUBE);
+        TEST_CHECK(ctx, asset->arrayLayers == 6);
+        TEST_CHECK(ctx, asset->width == kFace && asset->height == kFace);
+        Fluxion_TextureAsset_Destroy(asset);
+    }
+}
+
+void ACubeThatCannotExistIsRefused(TestContext* ctx)
+{
+    // Refused at the FILE, not only at the device. A file is the earlier
+    // of the two and the one that can be named in a message, so a shape
+    // that cannot exist is better caught here -- where the answer is
+    // "this file is wrong" rather than "this device said no".
+    constexpr u32 kFace = 4;
+
+    const std::vector<u8> fourLayers = MakePixels(FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, kFace, kFace, 1, 4);
+    FluxionTextureAssetData wrongCount = MakeData(fourLayers, FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, kFace, kFace, 1, 4);
+    wrongCount.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+
+    std::vector<u8> bytes(fourLayers.size() + 256);
+    FluxionStream writer;
+    Fluxion_MemoryStream_InitWriter(&writer, bytes.data(), bytes.size());
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_Write(&writer, &wrongCount));
+
+    // And not square, which is the other half of the same rule.
+    const std::vector<u8> oblong = MakePixels(FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, kFace, kFace * 2, 1, 6);
+    FluxionTextureAssetData notSquare = MakeData(oblong, FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, kFace, kFace * 2, 1, 6);
+    notSquare.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+
+    std::vector<u8> oblongBytes(oblong.size() + 256);
+    FluxionStream oblongWriter;
+    Fluxion_MemoryStream_InitWriter(&oblongWriter, oblongBytes.data(), oblongBytes.size());
+    TEST_CHECK(ctx, !Fluxion_TextureAsset_Write(&oblongWriter, &notSquare));
+
+    // Six square layers that do NOT claim to be a cube are perfectly
+    // fine, which is what makes the rule about the claim rather than
+    // about the number.
+    const std::vector<u8> sixLayers = MakePixels(FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, kFace, kFace, 1, 6);
+    FluxionTextureAssetData plainArray = MakeData(sixLayers, FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, kFace, kFace, 1, 6);
+    plainArray.dimension = FLUXION_RHI_TEXTURE_DIMENSION_2D;
+
+    std::vector<u8> arrayBytes(sixLayers.size() + 256);
+    FluxionStream arrayWriter;
+    Fluxion_MemoryStream_InitWriter(&arrayWriter, arrayBytes.data(), arrayBytes.size());
+    TEST_CHECK(ctx, Fluxion_TextureAsset_Write(&arrayWriter, &plainArray));
+}
+
+void AFileFromBeforeTheShapeExistedIsStillFlat(TestContext* ctx)
+{
+    // A version-one file has no shape field at all. Reading one has to
+    // give a flat texture rather than taking the first four bytes of the
+    // pixels and calling them a shape -- which would be a cube claim made
+    // out of colour data, and would then be refused for having the wrong
+    // layer count. Wrong twice, from one missing check.
+    constexpr u32 kSize = 4;
+    const std::vector<u8> pixels = MakePixels(FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, kSize, kSize, 1, 1);
+
+    // Written by hand in the version-one layout: no dimension between the
+    // format and the byte count.
+    std::vector<u8> bytes(pixels.size() + 64);
+    FluxionStream writer;
+    Fluxion_MemoryStream_InitWriter(&writer, bytes.data(), bytes.size());
+
+    u32 magic = FLUXION_TEXTURE_ASSET_MAGIC;
+    u32 version = 1;
+    u32 width = kSize;
+    u32 height = kSize;
+    u32 mips = 1;
+    u32 layers = 1;
+    u32 format = (u32)FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
+    u32 pixelBytes = (u32)pixels.size();
+    Fluxion_Stream_SerializeU32(&writer, &magic);
+    Fluxion_Stream_SerializeU32(&writer, &version);
+    Fluxion_Stream_SerializeU32(&writer, &width);
+    Fluxion_Stream_SerializeU32(&writer, &height);
+    Fluxion_Stream_SerializeU32(&writer, &mips);
+    Fluxion_Stream_SerializeU32(&writer, &layers);
+    Fluxion_Stream_SerializeU32(&writer, &format);
+    Fluxion_Stream_SerializeU32(&writer, &pixelBytes);
+    Fluxion_Stream_SerializeBytes(&writer, (void*)pixels.data(), pixelBytes);
+
+    FluxionTextureAsset* asset = nullptr;
+    TEST_CHECK(ctx, Fluxion_TextureAsset_Read(bytes.data(), bytes.size(), &asset));
+    if (asset != nullptr)
+    {
+        TEST_CHECK(ctx, asset->dimension == FLUXION_RHI_TEXTURE_DIMENSION_2D);
+        TEST_CHECK(ctx, asset->width == kSize && asset->arrayLayers == 1);
+
+        // And the pixels are the pixels -- if the shape had been read out
+        // of them, everything after would be shifted by four bytes.
+        TEST_CHECK(ctx, asset->pixelBytes == pixels.size());
+        TEST_CHECK(ctx, memcmp(asset->pixels, pixels.data(), pixels.size()) == 0);
+        Fluxion_TextureAsset_Destroy(asset);
+    }
+}
+
 } // namespace
 
 extern "C" void Test_TextureAsset_Run(TestContext* ctx)
@@ -384,4 +521,7 @@ extern "C" void Test_TextureAsset_Run(TestContext* ctx)
     OnlyColourIsStoredWithAnSrgbCurve(ctx);
     OlderSettingsAreFilledInAndNewerOnesAreRefused(ctx);
     TheDefaultsFollowTheUsage(ctx);
+    ACubeKeepsItsShapeThroughTheFile(ctx);
+    ACubeThatCannotExistIsRefused(ctx);
+    AFileFromBeforeTheShapeExistedIsStillFlat(ctx);
 }

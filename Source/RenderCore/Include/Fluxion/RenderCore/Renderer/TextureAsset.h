@@ -24,7 +24,10 @@ extern "C" {
 // or lighting that is subtly wrong -- neither of which is an error
 // message.
 
-#define FLUXION_TEXTURE_ASSET_FORMAT_VERSION 1
+// Two, not one: the shape now travels with the pixels. A file written
+// by version one is still readable -- it has no shape field and it is a
+// flat texture, which is what every file written before this was.
+#define FLUXION_TEXTURE_ASSET_FORMAT_VERSION 2
 #define FLUXION_TEXTURE_ASSET_MAGIC          0x464C5854u // "FLXT"
 
 // The name a build setting writes down to say what happens to textures.
@@ -47,6 +50,11 @@ typedef struct FluxionTextureAsset
     u32 arrayLayers;
     FluxionRHIFormat format;
 
+    // Flat or a cube. Not worked out from the layer count: six layers of
+    // a wall atlas are six layers, and a shape guessed from a number is
+    // a guess that is right until somebody stores six of something.
+    FluxionRHITextureDimension dimension;
+
     // Every level, tightly packed, largest first -- until the upload
     // takes them. NULL afterwards, for the same reason a mesh's vertices
     // are: once a device holds them there is no reason to keep a second
@@ -65,6 +73,7 @@ typedef struct FluxionTextureAssetData
     u32 mipCount;
     u32 arrayLayers;
     FluxionRHIFormat format;
+    FluxionRHITextureDimension dimension;
 
     // Every level of every layer, tightly packed: layer 0's mip 0 first,
     // then its mip 1, and so on. Tightly, because that is what a file
