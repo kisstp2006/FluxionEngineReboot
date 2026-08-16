@@ -35,14 +35,21 @@ static const u32 kBC6HWeights4[16] = { 0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 
 // exponent above what a half holds, so a value outside that has to become
 // something before it is converted at all.
 
+// The largest value a half can hold. Anything above it converts to
+// infinity, and an infinity read back as a quantized position is not a
+// colour at all.
+#define FLUXION_LARGEST_FINITE_HALF 65504.0f
+
 static u16 Fluxion_BC6H_FloatToHalfBits(f32 value)
 {
-    // Also catches NaN, which has no sensible block encoding -- and which
-    // the general conversion rightly preserves, so it has to be caught
-    // here rather than left to be turned into a half NaN and read back as
-    // an enormous quantized position.
+    // Written as "not greater than zero" so that it also catches
+    // not-a-number, which compares false against everything. A NaN has no
+    // sensible block encoding, and the general conversion rightly keeps
+    // one as a NaN -- so it has to be stopped here rather than turned
+    // into a half NaN and read back as an enormous quantized position.
     if (!(value > 0.0f)) return 0;
-    if (value > 65504.0f) value = 65504.0f;
+
+    if (value > FLUXION_LARGEST_FINITE_HALF) value = FLUXION_LARGEST_FINITE_HALF;
 
     return Fluxion_Half_FromFloat(value);
 }

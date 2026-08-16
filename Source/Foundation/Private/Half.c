@@ -1,128 +1,222 @@
 // Converting between the thirty-two-bit float the machine computes in and
 // the sixteen-bit one a texture stores.
 //
-// Written from the layout in IEEE 754-2008: sign, five exponent bits with
-// a bias of fifteen, ten mantissa bits. Three ranges have to be handled
-// separately, and only one of them is the ordinary case:
+// Both formats are the same three fields in different widths -- a sign, an
+// exponent, and a mantissa -- so everything below is written in terms of
+// those three and never in terms of bit patterns. The layout is named once
+// at the top; nothing further down repeats a number from it.
 //
-//   too small   the exponent cannot go low enough, so the number is
-//               stored SUBNORMAL -- the implicit leading one is written
-//               out and the mantissa shifted down, which is why this
-//               branch cannot reuse the arithmetic below
-//   ordinary    rebias the exponent, drop thirteen mantissa bits
-//   too large   infinity, and the exponent field is already all ones for
-//               a float's own infinities and NaNs
+// Three cases have to be handled separately, and only one is the ordinary
+// one:
 //
-// Rounding is nearest-ties-to-even throughout, and it is the same three
-// lines in both the subnormal and the ordinary path, which is what makes
-// the boundary between them safe: a value just under the smallest normal
-// that rounds UP lands exactly on the smallest normal, and it gets there
-// because the carry runs out of the mantissa and into the exponent on its
-// own.
+//   too small   the exponent cannot go low enough, so the number is stored
+//               SUBNORMAL: the leading one that is normally implied gets
+//               written out and the mantissa shifts down to make room
+//   ordinary    rebias the exponent, drop the mantissa bits that do not fit
+//   too large   infinity
+//
+// Rounding is nearest, ties to even, in one place used by both paths.
 
 #include <Fluxion/Foundation/Half.h>
 
 #include <string.h>
 
-FluxionHalf Fluxion_Half_FromFloat(f32 value)
+// --- What each format is made of ----------------------------------------
+
+#define FLUXION_FLOAT_MANTISSA_BITS 23
+#define FLUXION_FLOAT_EXPONENT_BITS 8
+#define FLUXION_FLOAT_EXPONENT_BIAS 127
+
+#define FLUXION_HALF_MANTISSA_BITS 10
+#define FLUXION_HALF_EXPONENT_BITS 5
+#define FLUXION_HALF_EXPONENT_BIAS 15
+
+// Everything below follows from the six numbers above.
+
+#define FLUXION_FLOAT_SIGN_SHIFT     (FLUXION_FLOAT_MANTISSA_BITS + FLUXION_FLOAT_EXPONENT_BITS)
+#define FLUXION_FLOAT_MANTISSA_MASK  ((1u << FLUXION_FLOAT_MANTISSA_BITS) - 1u)
+#define FLUXION_FLOAT_EXPONENT_MASK  ((1u << FLUXION_FLOAT_EXPONENT_BITS) - 1u)
+
+// The leading one a normal number does not store, because it is always
+// there. Writing it out is what the subnormal paths below are doing.
+#define FLUXION_FLOAT_IMPLICIT_ONE   (1u << FLUXION_FLOAT_MANTISSA_BITS)
+
+#define FLUXION_HALF_SIGN_SHIFT      (FLUXION_HALF_MANTISSA_BITS + FLUXION_HALF_EXPONENT_BITS)
+#define FLUXION_HALF_MANTISSA_MASK   ((1u << FLUXION_HALF_MANTISSA_BITS) - 1u)
+#define FLUXION_HALF_EXPONENT_MASK   ((1u << FLUXION_HALF_EXPONENT_BITS) - 1u)
+#define FLUXION_HALF_IMPLICIT_ONE    (1u << FLUXION_HALF_MANTISSA_BITS)
+
+// An exponent field of all ones is not an exponent. It is how both formats
+// say "infinity or not a number", and the mantissa says which.
+#define FLUXION_FLOAT_EXPONENT_INFINITE FLUXION_FLOAT_EXPONENT_MASK
+#define FLUXION_HALF_EXPONENT_INFINITE  FLUXION_HALF_EXPONENT_MASK
+
+// How many mantissa bits a half cannot keep.
+#define FLUXION_HALF_MANTISSA_BITS_LOST (FLUXION_FLOAT_MANTISSA_BITS - FLUXION_HALF_MANTISSA_BITS)
+
+// The exponent range a half can actually write down, once the two reserved
+// fields -- all zeros for subnormals, all ones for infinity -- are set
+// aside. Anything below the first is stored subnormal or rounds to zero;
+// anything above the second is infinity.
+#define FLUXION_HALF_SMALLEST_NORMAL_EXPONENT (1 - FLUXION_HALF_EXPONENT_BIAS)
+#define FLUXION_HALF_LARGEST_EXPONENT         ((i32)FLUXION_HALF_EXPONENT_MASK - 1 - FLUXION_HALF_EXPONENT_BIAS)
+
+// --- Taking the three fields apart and putting them back together -------
+
+static u32 Fluxion_Half_FloatToBits(f32 value)
 {
     u32 bits;
     memcpy(&bits, &value, sizeof(bits));
-
-    const u32 sign = (bits >> 16) & 0x8000u;
-    const i32 exponent = (i32)((bits >> 23) & 0xFFu);
-    const u32 mantissa = bits & 0x7FFFFFu;
-
-    // Infinity and NaN. A NaN must stay a NaN, and its payload has to
-    // keep at least one bit set: shifting a payload that lives entirely
-    // in the low bits would turn it into an infinity, which is a number.
-    if (exponent == 0xFF)
-    {
-        if (mantissa == 0) return (FluxionHalf)(sign | 0x7C00u);
-        return (FluxionHalf)(sign | 0x7C00u | (mantissa >> 13) | 1u);
-    }
-
-    const i32 unbiased = exponent - 127;
-
-    // Smaller than the smallest subnormal half, by more than half of it:
-    // zero, with its sign kept.
-    if (unbiased < -25) return (FluxionHalf)sign;
-
-    if (unbiased < -14)
-    {
-        // Subnormal. The implicit one comes back, and the whole thing
-        // shifts down by however far the exponent could not go.
-        const u32 shift = (u32)(-unbiased - 14);
-        const u32 full = mantissa | 0x800000u;
-
-        const u32 keep = 13u + shift;
-        const u32 result = full >> keep;
-        const u32 remainder = full & ((1u << keep) - 1u);
-        const u32 halfway = 1u << (keep - 1u);
-
-        // Ties to even: exactly halfway goes to whichever neighbour has a
-        // zero in its last bit.
-        if (remainder > halfway || (remainder == halfway && (result & 1u) != 0u))
-            return (FluxionHalf)(sign | (result + 1u));
-
-        return (FluxionHalf)(sign | result);
-    }
-
-    // Larger than a half can hold, before rounding is even considered.
-    if (unbiased > 15) return (FluxionHalf)(sign | 0x7C00u);
-
-    u32 result = ((u32)(unbiased + 15) << 10) | (mantissa >> 13);
-    const u32 remainder = mantissa & 0x1FFFu;
-
-    // The carry, if there is one, runs from the mantissa straight into
-    // the exponent because the two fields sit next to each other -- which
-    // is also how a value just below infinity becomes infinity rather
-    // than wrapping round to zero.
-    if (remainder > 0x1000u || (remainder == 0x1000u && (result & 1u) != 0u)) result += 1u;
-
-    return (FluxionHalf)(sign | result);
+    return bits;
 }
+
+static f32 Fluxion_Half_FloatFromBits(u32 bits)
+{
+    f32 value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static u32 Fluxion_Half_MakeFloatBits(u32 sign, u32 exponent, u32 mantissa)
+{
+    return (sign << FLUXION_FLOAT_SIGN_SHIFT) | (exponent << FLUXION_FLOAT_MANTISSA_BITS) | mantissa;
+}
+
+static FluxionHalf Fluxion_Half_Make(u32 sign, u32 exponent, u32 mantissa)
+{
+    return (FluxionHalf)((sign << FLUXION_HALF_SIGN_SHIFT) | (exponent << FLUXION_HALF_MANTISSA_BITS) | mantissa);
+}
+
+// Drops the lowest `bitsToDrop` bits, rounding to the nearest survivor.
+//
+// A value exactly between two survivors goes to whichever of them is even.
+// The alternative -- always rounding a tie upwards -- is easier to write
+// and drifts upwards over a long chain of conversions, because every tie
+// goes the same way. Ties to even is also the rule the machine's own float
+// arithmetic follows, so a conversion here matches one done anywhere else.
+static u32 Fluxion_Half_RoundToNearestEven(u32 value, u32 bitsToDrop)
+{
+    const u32 kept = value >> bitsToDrop;
+    const u32 dropped = value & ((1u << bitsToDrop) - 1u);
+    const u32 exactlyHalf = 1u << (bitsToDrop - 1u);
+
+    if (dropped > exactlyHalf) return kept + 1u;
+    if (dropped == exactlyHalf && (kept & 1u) != 0u) return kept + 1u;
+    return kept;
+}
+
+// --- Float to half ------------------------------------------------------
+
+FluxionHalf Fluxion_Half_FromFloat(f32 value)
+{
+    const u32 bits = Fluxion_Half_FloatToBits(value);
+
+    const u32 sign = (bits >> FLUXION_FLOAT_SIGN_SHIFT) & 1u;
+    const u32 rawExponent = (bits >> FLUXION_FLOAT_MANTISSA_BITS) & FLUXION_FLOAT_EXPONENT_MASK;
+    const u32 mantissa = bits & FLUXION_FLOAT_MANTISSA_MASK;
+
+    if (rawExponent == FLUXION_FLOAT_EXPONENT_INFINITE)
+    {
+        if (mantissa == 0) return Fluxion_Half_Make(sign, FLUXION_HALF_EXPONENT_INFINITE, 0);
+
+        // Not a number. Its mantissa is a payload, and at least one bit of
+        // it has to survive: a payload that lived only in the bits being
+        // dropped would leave an empty mantissa, and an empty mantissa
+        // with this exponent is INFINITY -- an ordinary number, which
+        // nothing downstream would ever report.
+        u32 payload = mantissa >> FLUXION_HALF_MANTISSA_BITS_LOST;
+        if (payload == 0) payload = 1;
+        return Fluxion_Half_Make(sign, FLUXION_HALF_EXPONENT_INFINITE, payload);
+    }
+
+    const i32 exponent = (i32)rawExponent - FLUXION_FLOAT_EXPONENT_BIAS;
+
+    if (exponent < FLUXION_HALF_SMALLEST_NORMAL_EXPONENT)
+    {
+        // Below the smallest normal half. It may still be representable
+        // subnormally: the leading one is written out and the whole
+        // significand shifts down by however far the exponent could not
+        // go.
+        const u32 shortfall = (u32)(FLUXION_HALF_SMALLEST_NORMAL_EXPONENT - exponent);
+
+        // Past this there is nothing left to round to, not even the
+        // smallest subnormal -- and the shift below would run off the end
+        // of the word.
+        if (shortfall > FLUXION_HALF_MANTISSA_BITS + 1u) return Fluxion_Half_Make(sign, 0, 0);
+
+        const u32 significand = mantissa | FLUXION_FLOAT_IMPLICIT_ONE;
+        const u32 rounded = Fluxion_Half_RoundToNearestEven(significand, FLUXION_HALF_MANTISSA_BITS_LOST + shortfall);
+
+        // Rounding up can carry a subnormal all the way to the smallest
+        // NORMAL number, which is a different exponent and an empty
+        // mantissa. Said out rather than left to the two fields being
+        // next to each other in the word.
+        if (rounded > FLUXION_HALF_MANTISSA_MASK) return Fluxion_Half_Make(sign, 1, 0);
+        return Fluxion_Half_Make(sign, 0, rounded);
+    }
+
+    // Too large for a half before rounding is even considered. Infinity
+    // rather than the largest finite half: a number that overflowed is not
+    // the same as one that happens to be big, and clamping is a decision
+    // for whoever knows what the number means.
+    if (exponent > FLUXION_HALF_LARGEST_EXPONENT) return Fluxion_Half_Make(sign, FLUXION_HALF_EXPONENT_INFINITE, 0);
+
+    u32 halfExponent = (u32)(exponent + FLUXION_HALF_EXPONENT_BIAS);
+    u32 halfMantissa = Fluxion_Half_RoundToNearestEven(mantissa, FLUXION_HALF_MANTISSA_BITS_LOST);
+
+    if (halfMantissa > FLUXION_HALF_MANTISSA_MASK)
+    {
+        // The rounding carried out of the top of the mantissa, which means
+        // the number doubled: empty mantissa, one higher exponent.
+        halfMantissa = 0;
+        halfExponent += 1u;
+
+        if (halfExponent >= FLUXION_HALF_EXPONENT_INFINITE)
+            return Fluxion_Half_Make(sign, FLUXION_HALF_EXPONENT_INFINITE, 0);
+    }
+
+    return Fluxion_Half_Make(sign, halfExponent, halfMantissa);
+}
+
+// --- Half to float ------------------------------------------------------
 
 f32 Fluxion_Half_ToFloat(FluxionHalf value)
 {
-    const u32 sign = ((u32)value & 0x8000u) << 16;
-    const u32 exponent = ((u32)value >> 10) & 0x1Fu;
-    const u32 mantissa = (u32)value & 0x3FFu;
+    const u32 sign = ((u32)value >> FLUXION_HALF_SIGN_SHIFT) & 1u;
+    const u32 exponent = ((u32)value >> FLUXION_HALF_MANTISSA_BITS) & FLUXION_HALF_EXPONENT_MASK;
+    const u32 mantissa = (u32)value & FLUXION_HALF_MANTISSA_MASK;
 
-    u32 bits;
+    if (exponent == FLUXION_HALF_EXPONENT_INFINITE)
+    {
+        // Infinity when the mantissa is empty, not a number when it is
+        // not -- and shifting the payload up keeps it non-empty either
+        // way, so the two need no separate treatment here.
+        return Fluxion_Half_FloatFromBits(Fluxion_Half_MakeFloatBits(
+            sign, FLUXION_FLOAT_EXPONENT_INFINITE, mantissa << FLUXION_HALF_MANTISSA_BITS_LOST));
+    }
 
     if (exponent == 0)
     {
-        if (mantissa == 0)
+        if (mantissa == 0) return Fluxion_Half_FloatFromBits(Fluxion_Half_MakeFloatBits(sign, 0, 0));
+
+        // Subnormal as a half, which a float has room to hold normally.
+        // Shift the leading one up to where the implied bit belongs, and
+        // lower the exponent by as far as it travelled.
+        u32 significand = mantissa;
+        i32 significandExponent = FLUXION_HALF_SMALLEST_NORMAL_EXPONENT;
+        while ((significand & FLUXION_HALF_IMPLICIT_ONE) == 0u)
         {
-            bits = sign; // zero, either sign of it
+            significand <<= 1;
+            --significandExponent;
         }
-        else
-        {
-            // Subnormal, which a float has room to hold normally. Shift
-            // the leading one up until it is where the implicit bit
-            // belongs, and lower the exponent by as far as it moved.
-            u32 shifted = mantissa;
-            i32 unbiased = -14;
-            while ((shifted & 0x400u) == 0u)
-            {
-                shifted <<= 1;
-                --unbiased;
-            }
-            shifted &= 0x3FFu;
-            bits = sign | ((u32)(unbiased + 127) << 23) | (shifted << 13);
-        }
-    }
-    else if (exponent == 0x1F)
-    {
-        bits = sign | 0x7F800000u | (mantissa << 13);
-    }
-    else
-    {
-        bits = sign | ((exponent - 15u + 127u) << 23) | (mantissa << 13);
+        significand &= FLUXION_HALF_MANTISSA_MASK;
+
+        return Fluxion_Half_FloatFromBits(Fluxion_Half_MakeFloatBits(
+            sign, (u32)(significandExponent + FLUXION_FLOAT_EXPONENT_BIAS),
+            significand << FLUXION_HALF_MANTISSA_BITS_LOST));
     }
 
-    f32 result;
-    memcpy(&result, &bits, sizeof(result));
-    return result;
+    const u32 floatExponent = exponent - FLUXION_HALF_EXPONENT_BIAS + FLUXION_FLOAT_EXPONENT_BIAS;
+    return Fluxion_Half_FloatFromBits(
+        Fluxion_Half_MakeFloatBits(sign, floatExponent, mantissa << FLUXION_HALF_MANTISSA_BITS_LOST));
 }
