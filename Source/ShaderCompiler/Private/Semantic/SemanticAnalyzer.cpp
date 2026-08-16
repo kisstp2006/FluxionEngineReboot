@@ -197,34 +197,15 @@ private:
 
     void Error(const SourceLocation& loc, const std::string& msg) { m_diagnostics.AddError(loc, msg); }
 
-    // The functions a shader may call without declaring them.
-    //
-    // Spelled the way this language spells them; the backends translate
-    // where a target uses a different name. A name only one target knows
-    // is deliberately absent -- writing it would compile on that target
-    // and fail on the other, which is the failure this list exists to
-    // turn into a message.
     // Names this language accepts and one of its target languages does
-    // not.
-    //
-    // A shader here is written once and compiled to two other languages,
-    // and those two do not agree about which words are taken. A variable
-    // called `packed` is perfectly good in this language and in HLSL, and
-    // is a reserved word in GLSL -- so a shader using it works on the
-    // backends that go through HLSL and fails on the one that does not,
-    // as a syntax error in generated text nobody wrote, at a line number
-    // that refers to nothing the author can see.
-    //
-    // That is worth refusing outright. The alternative is either a rule
-    // the author is expected to know about a language they are not
-    // writing in, or a renaming done quietly behind their back -- which
-    // then makes the generated text stop matching what they wrote, which
-    // is the one property that makes generated text debuggable at all.
-    //
-    // The list is the union of the two, and only of the words that are
-    // reserved WITHOUT being keywords here: a word this language already
-    // uses for something cannot reach this check, because it never parses
-    // as a name.
+    // not -- the union of both targets' reserved words that are not
+    // keywords here. A shader compiles to two languages that disagree
+    // about which words are taken (`packed` is fine in HLSL, reserved in
+    // GLSL), so such a name would fail on one backend only, as a syntax
+    // error in generated text at a line the author cannot see. Refused
+    // outright: the alternatives are a rule about a language the author
+    // is not writing in, or a silent rename that makes the generated
+    // text stop matching what they wrote.
     static bool IsReservedByATargetLanguage(const std::string& name)
     {
         static const std::unordered_set<std::string> kReserved = {

@@ -55,27 +55,18 @@ struct FluxionRenderLight;
 extern "C" {
 #endif
 
-// A light is something an object HAS, not something a view was told
-// about.
+// A light is something an object HAS: it can be moved, turned off,
+// copied, saved and read back -- none of which a field on a view can do.
 //
-// Before this, the one light in the engine was a field on the render
-// view, filled in by whoever opened the frame. That was enough for a
-// single light nobody moved. A light on an object can be moved, turned
-// off, copied, saved with the scene and read back with it -- and none of
-// those are things a field on a view can do.
+// WHERE THE LIGHT IS DOES NOT LIVE HERE: position and direction come
+// from the object's transform, never repeated in the component -- two
+// places saying where a light is can disagree, silently. A directional
+// light shines along the object's forward axis; a point sits at its
+// position; a spot does both.
 //
-// WHERE THE LIGHT IS DOES NOT LIVE HERE. The position and the direction
-// come from the object's transform, and are not repeated in the
-// component: two places saying where a light is can disagree, and the
-// disagreement is light arriving from somewhere nothing points at, with
-// nothing to report it. A directional light shines along the object's
-// forward axis; a point light sits at the object's position; a spot does
-// both.
-//
-// THE COLOUR IS THE INTENSITY. There is no separate brightness field
-// here, exactly as there is none anywhere else in this engine: a colour
-// twice as bright IS twice the light. That is what makes a real camera
-// exposure meaningful -- see Fluxion_Exposure_FromCamera.
+// THE COLOUR IS THE INTENSITY -- no separate brightness field, here or
+// anywhere else: twice as bright IS twice the light, which is what makes
+// a real camera exposure meaningful (Fluxion_Exposure_FromCamera).
 
 // Light that arrives from one direction, everywhere, with no falloff --
 // a sun. Distance to it is not a thing that exists.

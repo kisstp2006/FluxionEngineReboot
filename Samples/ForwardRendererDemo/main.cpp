@@ -39,39 +39,15 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// Manual test tool, not an automated test (same role as Samples/InputDemo):
-// opens a window, brings up the Vulkan/OpenGL/D3D12 RHI backend, and every
-// frame draws a rotating, textured, depth-tested 3D cube through the
-// RenderCore layer (ShaderProgram/Material/MeshBuffer/RenderPipeline/
-// RenderView/Renderer + a "ForwardOpaquePass" render graph node) rather
-// than hand-rolled RHI calls -- a visible, on-screen demonstration that the
-// whole layer actually works end to end on real hardware, across all
-// three real backends, that RHITests' offscreen checks can't show on
-// their own. The cube's material tint is animated every frame via
-// Fluxion_Material_SetVec3 + Fluxion_Material_FlushDirty -- reached from
-// Scripts/CubeRenderer.fls rather than from here, since what gets drawn
-// and what colour it is are decisions this file has handed over to the
-// scripts entirely. Vertex/index/
-// texture data still go CPU->staging buffer->GPU_ONLY resource via
-// Map/Unmap + CommandList Copy + a Barrier by hand (MeshBuffer only owns
-// vertex/index buffers, not arbitrary textures, and RenderTarget/RenderView
-// only wrap already-created views, they don't create textures) -- the same
-// staging pattern real game code would use.
+// Manual test tool, not an automated test: draws a rotating, lit cube
+// through the whole RenderCore layer on all three backends -- the
+// end-to-end run that RHITests' offscreen checks cannot show.
 //
-// The cube is SHADED BY THE ENGINE, not by this sample. Shaders/
-// cube.material.jsl says what the surface is -- one function returning a
-// SurfaceData -- and has no entry point, no render target and nothing
-// about lighting in it. The vertex stage and the lit fragment stage are
-// both put together by Fluxion_MaterialShader_Build*Source out of the
-// engine's own shader library, which is also where the reflectance model,
-// the exposure and the tone mapping live. The same material file,
-// appended with the depth pass instead, would be the depth shader.
-//
-// Everything the material is made of goes through the canonical parameter
-// names the engine understands, which is what lets a script set them by
-// name; and the five texture slots a standard surface samples are filled
-// from the engine's one-texel stand-ins where this sample has no map of
-// its own.
+// The cube is SHADED BY THE ENGINE, not by this sample:
+// Shaders/cube.material.jsl only says what the surface is, and the
+// scripts under Scripts/ decide what is drawn and what colour it is.
+// Texture and mesh data go CPU -> staging -> GPU_ONLY by hand, the same
+// pattern real game code would use.
 #include <Fluxion/Application/Events/EventQueue.h>
 #include <Fluxion/Assets/AssetDatabase.h>
 #include <Fluxion/Assets/AssetSystem.h>
@@ -187,22 +163,11 @@ std::string ReadDemoScripts()
 
 // --- Small local math helpers ------------------------------------------
 //
-// Foundation/Math.h explicitly keeps view/projection/rotation helpers out
-// of FluxionMat4's own module ("those belong with a future renderer/RHI
-// layer, not Foundation") -- these live here instead, as this demo's own
-// renderer-shaped code. Convention: FluxionMat4::m[row][col] holds the
-// standard mathematical entry M_ij (row-major *storage*, ordinary
-// matrix-multiply semantics via Fluxion_Mat4_Multiply), and a shader-side
-// `viewProjection * model[0] * Vector4(position, 1.0)` treats the vector
-// as a column vector (v' = M v). Both GLSL's default uniform-block matrix
-// layout and HLSL's default cbuffer/StructuredBuffer layout are
-// column-major, so TransposeForUpload converts a row-major-authored
-// matrix into that column-major byte layout right before it's handed to
-// RenderCore -- both Fluxion_RenderView_UpdateFrameConstants (the FRAME
-// viewProjection) and Fluxion_Renderer_DrawMesh (the OBJECT model matrix)
-// upload their inputs with a plain memcpy, no transpose step of their
-// own, so the caller must supply already-transposed matrices or the GPU
-// reconstructs the transpose of the matrix actually intended.
+// Foundation keeps view/projection/rotation helpers out of FluxionMat4 on
+// purpose, so these live here. FluxionMat4 is row-major, vectors are
+// columns; both shader languages lay uniform matrices out column-major,
+// and RenderCore uploads with a plain memcpy -- so TransposeForUpload
+// must run on every matrix handed over, or the GPU gets the transpose.
 
 // The rotation that turns an object's forward axis -- negative Z, the
 // same one a camera looks down -- to point along `target`.
@@ -339,13 +304,9 @@ int main(int argc, char** argv)
     // OpenGL, DXIL for D3D12, SPIR-V for Vulkan/Null), not this file.
     FluxionRHIBackendType backendType = FLUXION_RHI_BACKEND_VULKAN;
 
-    // --frames=N stops after N frames and exits the same way closing the
-    // window does, so an automated run reaches the shutdown path rather
-    // than being killed partway through it. Everything that only happens
-    // on the way out -- saving the pipeline cache, releasing GPU objects,
-    // draining the job system -- is only covered if a run can end by
-    // itself. 0 means run until asked to stop, which is what a person
-    // wants.
+    // --frames=N exits the same way closing the window does, so an
+    // automated run covers the shutdown path instead of being killed
+    // partway through it. 0 means run until asked to stop.
     u64 frameLimit = 0;
     for (int i = 1; i < argc; ++i)
     {
@@ -359,18 +320,11 @@ int main(int argc, char** argv)
     // system: modules below only offer statistics when this is on.
     Fluxion_MemoryTracker_Init();
 
-    // Teardown is attached to each thing as it is acquired, rather than
-    // written out once at the bottom.
-    //
-    // The bottom is only reached by the run that works. Every check below
-    // that finds this machine cannot run the sample returns from the
-    // middle -- and each of those returns used to walk out past
-    // everything it had already started. Nothing said so, because a
-    // process on its way out looks the same either way until something
-    // is watching for it.
-    //
-    // Guards also unwind in exactly the reverse of the order things were
-    // made, which is one fewer ordering to get right by hand.
+    // Teardown is attached to each thing as it is acquired, not written
+    // once at the bottom: the bottom is only reached by the run that
+    // works, and every early return used to walk out past everything
+    // already started. Guards also unwind in reverse creation order for
+    // free.
     FLUXION_SCOPE_EXIT(Fluxion_MemoryTracker_Shutdown());
 
     // The type registry, before anything makes a scene. Every object a
@@ -551,17 +505,11 @@ int main(int argc, char** argv)
         }
     }
 
-    // The full mip chain, built here on the CPU with a box filter. A
-    // single-level texture shimmers the moment the cube recedes: every
-    // screen pixel then samples one arbitrary texel out of many that
-    // should have contributed, and which one wins changes as the cube
-    // rotates. A box filter is exact for this checkerboard -- each mip
-    // texel is precisely the average of the four it replaces.
-    //
-    // Levels are laid out in one staging buffer following the layout the
-    // contract requires of CopyBufferToTexture: rows spaced to
-    // FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT, each level's start aligned
-    // to FLUXION_RHI_TEXTURE_DATA_PLACEMENT_ALIGNMENT.
+    // The full mip chain, built on the CPU with a box filter -- without
+    // mips the receding cube shimmers, and a box filter is exact for this
+    // checkerboard. Levels sit in one staging buffer in the layout
+    // CopyBufferToTexture's contract requires (row and placement
+    // alignment).
     u32 kMipLevels = 1;
     while ((kTextureSize >> kMipLevels) >= 1) ++kMipLevels;
 
@@ -652,17 +600,11 @@ int main(int argc, char** argv)
 
     // --- The sky, the long way round -------------------------------------
     //
-    // Cooked to a file, entered in the asset database, and then asked for
-    // BY ID -- rather than handed to the renderer as a texture this file
-    // happens to be holding. The long way is the point: it is the path a
-    // real project's sky takes, and going the short way would leave every
-    // part of it untried.
-    //
-    // What plays the importer's part here is this file. A real importer
-    // reads an image and lives in a plugin, so that a shipped game
-    // carries no reader for any image format; this one works the sky out
-    // from directions, which is the one kind of sky that needs no reader
-    // at all.
+    // Cooked to a file, entered in the database, asked for BY ID -- the
+    // path a real project's sky takes; the short way would leave it all
+    // untried. This file plays the importer (a real one lives in a
+    // plugin), computing the sky from directions so no image reader is
+    // needed.
 
     if (!Fluxion_AssetSystem_Init(nullptr))
     {
@@ -708,13 +650,8 @@ int main(int argc, char** argv)
     skySettings.flags = 0;
     skySettings.compression = (u32)FLUXION_TEXTURE_COMPRESSION_NONE;
 
-    // Asked for rather than chosen. The format follows from what the
-    // texture holds and from whether it is compressed, and a sample that
-    // picked one itself could pick a different one from the settings
-    // stored beside it -- which would come apart the first time anything
-    // read those settings back and cooked from them again.
-    //
-    // The block family is what the machine being cooked FOR can read. It
+    // Asked for rather than chosen: a sample that picked a format itself
+    // could disagree with the settings stored beside it. The block family
     // decides nothing here, because nothing is being compressed.
     const FluxionRHIFormat skyFormat = Fluxion_TextureAsset_GetCookedFormat(
         FLUXION_TEXTURE_USAGE_HDR, (FluxionTextureCompression)skySettings.compression,
@@ -1058,14 +995,10 @@ int main(int argc, char** argv)
         Fluxion_RHI_DestroyFence(frameFences[i]);
         Fluxion_RHI_DestroyCommandList(commandLists[i]);
     });
-    // No FluxionRHISemaphoreHandle is created for Acquire/Present: this
-    // backend's Acquire already CPU-blocks on an internal fence before
-    // returning (VulkanSwapchain.cpp), and Present is preceded by an
-    // explicit WaitForFence below -- an unused binary semaphore would
-    // just accumulate signals nothing ever consumes (Vulkan requires a
-    // semaphore be unsignaled before vkAcquireNextImageKHR signals it
-    // again, which a "pass it and never wait on it" semaphore violates
-    // on the second frame).
+    // No semaphore for Acquire/Present: Acquire already CPU-blocks on an
+    // internal fence, Present is preceded by WaitForFence below, and an
+    // unused binary semaphore accumulates signals nothing consumes --
+    // which Vulkan rejects on the second frame.
     FluxionRHISemaphoreHandle noSemaphore = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
     // --- The cube as a scene object driven by script components --------
@@ -1175,17 +1108,10 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // The sun, as an object.
-    //
-    // It could have been three numbers on the view, and was until now.
-    // Being an object means it can be moved, turned off, saved with the
-    // scene and read back -- and that a second one is a second object
-    // rather than a change to the renderer.
-    //
-    // Large numbers on purpose: sunlight IS enormous next to a screen,
-    // and the camera further up is what brings it back down. A light
-    // picked to look right without an exposure would have to be repicked
-    // the moment the exposure changed.
+    // The sun, as an object: it can be moved, turned off, saved and read
+    // back, and a second one is a second object rather than a renderer
+    // change. Large numbers on purpose -- sunlight IS enormous, and the
+    // camera's exposure is what brings it back down.
     FluxionGameObjectHandle sunObject = Fluxion_Scene_CreateGameObject(scene, "Sun");
     {
         FluxionDirectionalLight sun{};
@@ -1251,14 +1177,10 @@ int main(int argc, char** argv)
         Fluxion_GameObject_SetLocalRotation(scene, spotObject, AimedAlong(FluxionVec3{ 0.0f, 1.0f, 0.0f }));
     }
 
-    // The sky is named by the scene, not by this file.
-    //
-    // A component holding an ID, not a texture handle. Where it is does
-    // not matter and is never read -- an environment is what surrounds
-    // everything, so it has no position to have. What it gets from being
-    // an object is what every other object gets: it can be saved, it
-    // turns up in the list of assets a build has to carry, and something
-    // that is not this program can put it there.
+    // The sky is named by the scene, not by this file: a component
+    // holding an ID, not a texture handle. Its position is never read --
+    // an environment surrounds everything. Being an object means it can
+    // be saved, packaged, and set by something other than this program.
     {
         FluxionGameObjectHandle skyObject = Fluxion_Scene_CreateGameObject(scene, "Sky");
 
@@ -1364,15 +1286,10 @@ int main(int argc, char** argv)
         if (!running) break;
 
         // Edit a file in Scripts/, press R, and the cube goes on turning
-        // -- at whatever speed the file now says, from wherever it had got
-        // to. Nothing here stops the scene, and nothing here decides what
-        // survives: the components keep the values they were holding, and
-        // a component that had already been woken and started is not woken
-        // and started again.
-        //
-        // Source that does not compile changes nothing at all: the message
-        // names the file and the line, and the cube carries on running the
-        // code it was running.
+        // from wherever it had got to -- components keep their values,
+        // and one already started is not started again. Source that does
+        // not compile changes nothing: the message names file and line,
+        // and the old code keeps running.
         if (Fluxion_Input_WasKeyPressed(FLUXION_KEY_R))
         {
             Fluxion::Scene::ReloadRequest reload;
@@ -1409,17 +1326,11 @@ int main(int argc, char** argv)
             }
         }
 
-        // Edit a shader in Shaders/, press F, and the cube keeps drawing
-        // while it compiles -- the compiling happens on a worker, and only
-        // the swap waits for here, which is the one place the GPU is known
-        // to be finished with the last frame.
-        //
-        // Two things are refused rather than half-done: source that does
-        // not compile, and source whose material parameters changed. The
-        // second is not a limitation of the reloading but of what a
-        // material is -- it holds byte offsets from the shader it was
-        // built against, and there is no honest way to reinterpret its
-        // contents against a different set.
+        // Edit a shader in Shaders/, press F: compiling happens on a
+        // worker, only the swap waits here. Refused rather than half-done:
+        // source that does not compile, and source whose material
+        // parameters changed -- a material holds byte offsets from the
+        // shader it was built against.
         if (shaderReload == nullptr && Fluxion_Input_WasKeyPressed(FLUXION_KEY_F))
         {
             // Only the material file is read. The two stages are put
@@ -1667,28 +1578,16 @@ int main(int argc, char** argv)
         // frame after the first.
         Fluxion_Renderer_UpdateEnvironment(renderer, frameView, cmd);
 
-        // The backbuffer is always imported as UNDEFINED, not "UNDEFINED
-        // on frame 0, PRESENT afterward": a single demo-wide "first frame"
-        // flag is wrong the moment there is more than one swapchain image
-        // (FLUXION_DEMO_FRAMES_IN_FLIGHT == 2 here) -- image B's own very
-        // first use is still genuinely UNDEFINED even on the demo's second
-        // iteration of this loop, when only image A has actually been
-        // through a real PRESENT transition so far. VK_IMAGE_LAYOUT_UNDEFINED
-        // as a barrier's old layout is always valid regardless of the
-        // resource's real current layout (it means "discard whatever was
-        // there"), which is exactly what's wanted anyway since
-        // "ForwardOpaquePass" clears both attachments every frame.
+        // The backbuffer is ALWAYS imported as UNDEFINED: with two images
+        // in flight, a "first frame" flag lies about image B, and
+        // UNDEFINED ("discard what was there") is always a valid before-
+        // state -- fine here, since the pass clears both attachments.
         //
-        // The depth texture has none of that ambiguity: at any moment
-        // there is exactly one of it, and its real state is always known.
-        // DEPTH_WRITE for an ordinary frame -- set by the upload command
-        // list before this loop starts and left there by every Execute --
-        // and UNDEFINED for the one frame after a resize replaced it,
-        // because a texture that was created moments ago has never been
-        // anything else. D3D12's barrier validation (unlike Vulkan's
-        // UNDEFINED-is-always-valid layout) requires the declared "before"
-        // state to actually match, so this is not a distinction that could
-        // be skipped by always claiming one or the other.
+        // The depth texture is the opposite: there is exactly one, its
+        // state is always known (DEPTH_WRITE normally, UNDEFINED the one
+        // frame after a resize), and D3D12 validates that the declared
+        // before-state really matches -- so the distinction cannot be
+        // skipped.
         FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(device);
         Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Color0", backbuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
         Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Depth", depthTexture,
@@ -1729,15 +1628,10 @@ int main(int argc, char** argv)
 
         Fluxion_RHI_Queue_Submit(graphicsQueue, &cmd, 1, frameFences[frameIndex]);
 
-        // WaitForFence can time out (backend-defined bound, not infinite)
-        // instead of observing the GPU submission actually finish -- e.g.
-        // a wedged driver/validation-layer thread rather than a real GPU
-        // hang (see VulkanSync.cpp). When that happens, this frame's
-        // resources cannot safely be reclaimed or presented, and
-        // continuing to run risks cascading into further, harder to
-        // diagnose failures. Exiting immediately keeps that failure a
-        // single clear log line instead of an unresponsive window or a
-        // crash during device destruction.
+        // WaitForFence can time out (bounded, not infinite -- e.g. a
+        // wedged driver thread). Then this frame's resources cannot be
+        // safely reclaimed or presented, so exiting at once keeps the
+        // failure one clear log line instead of a cascade.
         if (!Fluxion_RHI_WaitForFence(frameFences[frameIndex]))
         {
             FLUXION_LOG_ERROR("ForwardRendererDemo", "GPU submission did not complete in time -- exiting rather than risk using unfinished GPU resources.");
@@ -1767,13 +1661,10 @@ int main(int argc, char** argv)
         frameIndex = (frameIndex + 1) % FLUXION_DEMO_FRAMES_IN_FLIGHT;
     }
 
-    // No extra fence-drain loop needed here: this demo's frame loop is
-    // already fully synchronous (every iteration's WaitForFence above
-    // blocks until that iteration's own submission finishes before moving
-    // on), so nothing is ever left in flight by the time the loop exits --
-    // each frameFences[i] is already back in its unsignaled, no-pending-
-    // work state, and waiting on it again here would just block until the
-    // bounded timeout for work that was never submitted.
+    // No fence-drain loop: the frame loop is fully synchronous, so
+    // nothing is in flight when it exits -- and waiting again on an
+    // already-reset fence blocks until the timeout for work that was
+    // never submitted.
     FLUXION_LOG_INFO("ForwardRendererDemo", "Closing.");
 
     // Before anything built this run is destroyed. A backend whose cache

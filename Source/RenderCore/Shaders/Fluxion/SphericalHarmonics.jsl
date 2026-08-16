@@ -47,26 +47,15 @@
 
 // Describing a whole sky with nine numbers per colour channel.
 //
-// The light arriving at a diffuse surface from every direction at once is
-// a function over the sphere, and keeping that function as a picture means
-// reading a picture for every pixel. But a DIFFUSE surface cannot see any
-// of the detail in it: what it responds to is the arriving light weighted
-// by the cosine of the angle from its normal, and that weighting is so
-// broad that everything sharp in the sky is smoothed away before it has
-// any effect at all.
+// A diffuse surface sees the sky through a cosine lobe so broad that all
+// sharp detail is smoothed away before it has any effect -- so the sky is
+// kept as the first three spherical-harmonic bands, and evaluation costs
+// nine multiply-adds instead of a texture read. What is lost is detail
+// the surface was never going to show.
 //
-// So the sky is kept as a sum of nine smooth functions over the sphere --
-// the first three bands of the spherical harmonics -- and evaluating it
-// costs nine multiply-adds instead of a texture read. What is lost is
-// detail the surface was never going to show.
-//
-// Written from the published description of the method rather than from
-// anyone's code; see SHADER_SOURCES.md.
-//
-// The nine terms are written out one after another rather than looped
-// over. This language has no arrays, and the loop would have to be
-// unrolled by the compiler anyway -- so what is written is what runs, and
-// each line can be read against the basis function it stands for.
+// Written from the published description, not from anyone's code; see
+// SHADER_SOURCES.md. The nine terms are written out (this language has
+// no arrays), one line per basis function.
 
 #define FLUXION_SH_COEFFICIENT_COUNT 9
 

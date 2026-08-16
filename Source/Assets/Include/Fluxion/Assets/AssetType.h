@@ -50,30 +50,19 @@
 extern "C" {
 #endif
 
-// What a kind of asset is, and -- the part that decides what a shipped
-// game carries -- which of its two halves is which.
-//
 // AN ASSET TYPE HAS TWO HALVES, AND THEY DO NOT LIVE IN THE SAME PLACE:
 //
-//   the import half   a source file -> cooked bytes
-//   the load half     cooked bytes  -> something the game can use
+//   the import half   a source file -> cooked bytes   (in a plugin)
+//   the load half     cooked bytes  -> usable object  (here)
 //
-// The import half is the expensive one. Reading a widely-used interchange
-// format means carrying a library that can read it, and a running game
-// has no use for that: it never sees a source file. So the import half
-// belongs to a plugin, and a built game loads no such plugin. That is
-// what actually keeps the reader out of the shipped program -- not a
-// setting, which could only ever leave out the DATA while the code went
-// along anyway.
+// A built game loads no importer plugin, which is what actually keeps
+// interchange-format readers out of the shipped program -- a setting
+// could only ever leave out the data while the code went along anyway.
+// (FluxionAssetShipPolicy below is the honest, data-only setting.)
 //
-// The setting still exists, and it is honest, because it is about data:
-// see FluxionAssetShipPolicy below.
-//
-// The other half of that promise is that at runtime NOTHING ASKS FOR A
-// SOURCE FILE. A reference is an id; the id resolves to cooked bytes; the
-// source path exists only in the editor's database. A game shipped
-// without sources is not missing something it might reach for -- there is
-// no code path that reaches.
+// At runtime NOTHING ASKS FOR A SOURCE FILE: a reference is an id, the id
+// resolves to cooked bytes, and the source path exists only in the
+// editor's database.
 
 #define FLUXION_ASSET_MAX_TYPES              64
 #define FLUXION_ASSET_MAX_TYPE_NAME_LENGTH   63

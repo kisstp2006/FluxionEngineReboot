@@ -49,30 +49,15 @@
 namespace Fluxion::Script
 {
 
-// The complete set of value types the language has. Every expression
-// resolves to exactly one of these; `Unknown` is a compiler-internal
-// marker for an expression whose type could not be determined (an error
-// was already reported for it) and never reaches a compiled module.
-//
-// `Object` covers every reference: an instance of a declared class and a
-// value seen through an interface are both references, and the class the
-// compiler statically knows about travels beside the type rather than
-// inside it. `Null` is the type of the `null` literal alone -- it is
-// assignable to any reference but no variable is ever declared with it.
-//
-// `Handle` names something the engine owns rather than something the
-// script heap does. It is a value, not a reference: it is never followed
-// by a collection, never compared with `null`, and the object it names
-// goes away when the engine says so and not when the script stops
-// mentioning it.
-//
-// `Struct` is the one type whose values are not confined to a single
-// slot: a declared value type occupies as many slots as its fields need,
-// and which declaration is meant travels beside the type exactly as it
-// does for a reference. `Enum` is a named set of whole numbers, one slot
-// wide, and likewise carries the declaration it belongs to -- which is
-// what keeps two differently named sets from being mistaken for each
-// other or for a plain `int`.
+// The complete set of value types; every expression resolves to exactly
+// one. `Unknown` is a compiler-internal marker that never reaches a
+// compiled module. `Object` covers every reference (the known class
+// travels beside the type); `Null` is the type of the literal alone.
+// `Handle` names something the engine owns: a value, never collected,
+// never compared with `null`, gone when the engine says so. `Struct`
+// occupies as many slots as its fields need; `Enum` is one slot and
+// carries its declaration, which keeps two named sets from being
+// mistaken for each other or for a plain `int`.
 enum class ValueType
 {
     Void,

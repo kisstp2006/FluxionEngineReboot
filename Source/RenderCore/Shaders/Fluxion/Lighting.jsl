@@ -81,31 +81,14 @@ Vector3 EvaluateDirectionalLight(SurfaceData surface, Vector3 N, Vector3 V, Vect
     return BRDF_Direct(surface, N, V, L) * lightColor * NoL;
 }
 
-// Everything that is not one of the lights above.
-//
-// A flat amount from every direction, which is the crudest thing that is
-// still better than nothing: without it, whatever the sun does not reach
-// is pure black, and a scene lit by one sun looks like a scene in space.
-//
-// It is applied to the diffuse colour alone and scaled by how enclosed
-// the point is. A specular ambient needs to know what the surroundings
-// look like from this point in each direction, which is what an
-// environment probe is for and what this deliberately is not.
 // How much of a light reaches something this far away.
 //
-// Inverse square, because that is what light does -- and then multiplied
-// by a window that arrives at exactly zero at the light's range.
-//
-// The window is not tidiness. A light has to be ignorable past some
-// distance or every light must be considered for every pixel, which is
-// what makes many lights unaffordable. But a light dropped while it was
-// still contributing leaves a visible edge exactly where it was dropped,
-// and that edge moves with the camera. So the falloff is shaped to reach
-// zero on its own, and dropping it there costs nothing.
-//
-// The square-of-a-square shape is the one from the published treatments:
-// it is smooth at the far end, it is cheap, and it barely disturbs the
-// inverse square anywhere but near the boundary.
+// Inverse square, times a window that reaches exactly zero at the range.
+// The window is what makes many lights affordable: a light dropped while
+// still contributing leaves a moving edge, so the falloff is shaped to
+// reach zero on its own and dropping it there costs nothing. The
+// square-of-a-square shape is the published one -- smooth at the far
+// end, cheap, and it barely disturbs the inverse square elsewhere.
 float DistanceAttenuation(float distanceSquared, float range)
 {
     float attenuation = 1.0 / max(distanceSquared, FLUXION_EPSILON);

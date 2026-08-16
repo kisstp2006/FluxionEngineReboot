@@ -189,27 +189,15 @@ static inline f32 Fluxion_Mat4_Minor(FluxionMat4 m, int skipRow, int skipCol)
          + sub[0][2] * (sub[1][0] * sub[2][1] - sub[1][1] * sub[2][0]);
 }
 
-// The inverse of any four-by-four matrix, including one with perspective
-// in it.
+// The inverse of ANY four-by-four matrix -- the cheaper restricted one
+// above cannot invert a projection, and undoing the projection is the
+// whole of drawing a sky.
 //
-// The restricted one above covers a view matrix and is far cheaper, and
-// it stays the right answer wherever it applies. This exists for the
-// matrix it does NOT cover: a projection. Turning a point on the screen
-// back into a direction in the world -- which is the whole of drawing a
-// sky -- needs the inverse of the projection, and a projection is not a
-// rotation and a translation.
-//
-// Written as cofactors in a loop rather than as one unrolled expression.
-// The unrolled form is faster and is a wall of sign-carrying terms in
-// which a single wrong index produces a matrix that is subtly not an
-// inverse -- and "subtly not an inverse" is a sky that is slightly bent,
-// which nobody would think to blame on arithmetic. This runs once a
-// frame.
-//
-// A matrix with no inverse comes back as the identity rather than as
-// infinities: a degenerate camera should give a picture that is wrong in
-// an obvious way, not one full of values that poison everything they
-// touch.
+// Cofactors in a loop rather than one unrolled expression: the unrolled
+// form is a wall of signed terms where one wrong index gives a subtly
+// bent sky nobody would blame on arithmetic, and this runs once a frame.
+// A singular matrix comes back as identity, not infinities -- obviously
+// wrong beats quietly poisonous.
 static inline FluxionMat4 Fluxion_Mat4_Inverse(FluxionMat4 m)
 {
     f32 cofactors[4][4];

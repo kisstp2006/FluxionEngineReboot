@@ -41,27 +41,16 @@
 
 #pragma once
 
-// Module-private, OpenGL-backend-private: shared between every
-// Private/OpenGL/*.cpp translation unit, never included from Include/ or
-// from the Null/Vulkan backends. Compiled as C++ (mirrors the Vulkan
-// backend's precedent -- the Null backend is C, Vulkan/OpenGL are C++).
+// OpenGL-backend-private, shared between the Private/OpenGL/*.cpp units
+// only. Compiled as C++, like the Vulkan backend.
 //
-// Design note (read this before anything else in this backend): OpenGL has
-// exactly one implicit context per thread, not an explicit per-device
-// object the way Vulkan has VkDevice -- so, like VulkanCommon.h's
-// s_activeDevice, this backend only ever has one active device/context at
-// a time. A second wrinkle specific to this backend: WGL/GLX context
-// creation needs a real native window to get an HDC/Drawable from, but
-// Fluxion_RHI_CreateDevice's signature only takes an adapter (no window).
-// The resolution: Fluxion_RHI_OpenGL_CreateInstance creates a small hidden
-// bootstrap window purely to host the real GL context from device-creation
-// time onward; Fluxion_RHI_CreateSwapchain's real, user-visible window
-// later just makes the SAME context current against ITS drawable instead
-// (wglMakeCurrent/glXMakeCurrent both allow retargeting an existing
-// context onto a different, pixel-format-compatible drawable) -- there is
-// still only ever one GL context for the process, matching this
-// backend's immediate/synchronous CommandList execution on the
-// context's owning thread).
+// Design note: OpenGL has one implicit context per thread, so this
+// backend has one active device/context at a time. WGL/GLX context
+// creation needs a real window, but CreateDevice only takes an adapter --
+// so CreateInstance makes a small hidden bootstrap window to host the
+// context, and CreateSwapchain later retargets the SAME context onto the
+// user-visible window's drawable. One GL context for the process,
+// matching the backend's synchronous command-list execution.
 
 #include "../RHIBackendVTable.h"
 

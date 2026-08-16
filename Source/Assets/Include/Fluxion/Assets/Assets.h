@@ -123,26 +123,15 @@ void Fluxion_Assets_Update(void);
 
 // --- Assets that change while the game is running ------------------------
 //
-// A cooked file that is rewritten while something is holding it gets read
-// again, and what the holder has changes underneath it. NOTHING HAS TO ASK
-// FOR THIS AND NOTHING HAS TO BE WRITTEN PER TYPE: the handle stays the
-// same, so every reference already pointing at the asset goes on pointing
-// at it, and the new object is built by the type's own load and finalize
-// -- the same two functions that built the first one.
+// A rewritten cooked file is read again behind the SAME handle, by the
+// type's own load and finalize -- nothing asks for this and nothing is
+// written per type. Holders must not keep the GetObject pointer across
+// frames; something that must cache can watch GetReloadCount below.
 //
-// What a holder must not do is keep the pointer from Fluxion_Assets_GetObject
-// across frames. Asking again each time is one call and always right;
-// something that really must cache can watch Fluxion_Assets_GetReloadCount
-// below.
-//
-// Which files are watched is not a setting. It follows from where they
-// come from: a directory can change and is looked at, a package cannot and
-// is not. A built game mounts packages, so it looks at nothing at all.
-//
-// The old object is unloaded only AFTER the new one is finished, so there
-// is no moment when the asset is neither -- and a reload that fails leaves
-// the old one exactly where it was, with a message saying so, rather than
-// a hole.
+// What is watched follows from the source: a directory is looked at, a
+// package cannot change and is not -- so a built game looks at nothing.
+// The old object goes only AFTER the new one is finished, and a failed
+// reload keeps the old one, with a message, rather than a hole.
 
 // How often the files behind loaded assets are looked at, in
 // milliseconds. Zero switches it off entirely.

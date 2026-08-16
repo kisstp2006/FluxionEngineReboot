@@ -252,38 +252,20 @@ FluxionMat4 Fluxion_GameObject_GetPreviousWorldMatrix(FluxionSceneHandle scene, 
 
 // --- Data components ----------------------------------------------------
 
-// A data component is a plain struct attached to a game object: no
-// behaviour, no lifecycle, nothing called on it. It is named by the id of
-// its registered reflected type, and that registration is where its size
-// comes from -- there is no second place to state it, and a type that was
-// never registered cannot be attached.
+// A data component is a plain struct attached to a game object, named by
+// its registered reflected type -- the registration is where its size
+// comes from. Objects are stored grouped by WHICH components they carry,
+// side by side in blocks; a new component type needs nothing here beyond
+// registering the type.
 //
-// Objects are stored by WHICH components they carry: every object with the
-// same set of component types sits together, its components side by side
-// in blocks. That grouping is not something anyone writes down -- it is
-// the answer to "what does this object carry", and it comes into being on
-// its own when the first object carries that set. Introducing a new
-// component type therefore takes no work here at all beyond registering
-// the type for reflection.
+// THE ONE THING TO REMEMBER: every call below hands back a pointer into
+// storage that MOVES. Any add, remove or destroy anywhere in the scene
+// can relocate components, so a pointer is good only until the next
+// structural change -- hold the handle and ask again, or record changes
+// into an entity command buffer (EntityCommandBuffer.h) while walking.
 //
-// WHAT THIS COSTS THE CALLER, and it is the one thing to remember: every
-// call below hands back a pointer into that storage, and the storage
-// MOVES. Giving an object any component, or taking any away, physically
-// relocates all of that object's components -- including the ones the
-// call did not name, because the object now belongs with a different set
-// of objects. Destroying any object can move another object's components
-// too.
-//
-// So a pointer from here is good only until the next structural change
-// anywhere in this scene. Hold the object handle across such a change and
-// ask again; never hold the pointer. Code that has to change things while
-// walking over them records the change into an entity command buffer (see
-// EntityCommandBuffer.h) and lets it land afterwards.
-//
-// A component type's alignment must be no stricter than
-// FLUXION_DEFAULT_ALIGNMENT, which is what the storage aligns its columns
-// to. The C++ layer checks this when the type is named; C callers are
-// asked to honour it.
+// Component alignment must be no stricter than FLUXION_DEFAULT_ALIGNMENT;
+// the C++ layer checks it, C callers are asked to honour it.
 
 // Attaches a component of `type` and hands back the storage for it. With
 // `initialValue` null the component starts as all zero bytes; otherwise

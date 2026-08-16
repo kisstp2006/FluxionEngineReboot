@@ -104,27 +104,18 @@ typedef struct FluxionVfsSourceVTable
 
     void (*destroy)(FluxionVfsSource* self);
 
-    // A number that CHANGES WHEN THE FILE DOES, and means nothing else.
+    // A number that CHANGES WHEN THE FILE DOES, and means nothing else --
+    // only comparable with an earlier answer for the same path; how a
+    // source works it out is its own business.
     //
-    // Not a time, not a size, not a hash -- whoever asks it may only
-    // compare it with an earlier answer for the same path. That is
-    // deliberate: a source works it out however it can, and no caller
-    // gets to depend on how.
+    // NULL on a source whose files cannot change (a shipped package),
+    // which is what makes watching free in a built game. Zero means "no
+    // answer just now" (missing, or mid-write) and is never compared as
+    // a value.
     //
-    // NULL on a source whose files cannot change while it is mounted,
-    // which is the ordinary case for a shipped package. That is not a
-    // limitation to work around: it is what makes watching cost nothing
-    // in a built game, with no setting for anybody to remember.
-    //
-    // Zero from a source that HAS this function means "no answer just
-    // now" -- the file is missing, or cannot be asked about this instant.
-    // Zero is never compared as a value, so a file caught mid-write is
-    // not mistaken for a file that changed.
-    //
-    // LAST in this table on purpose. Every vtable below is written out as
-    // a positional list, so an entry added anywhere else would quietly
-    // shift the ones after it into the wrong slots -- and one left out of
-    // an older list lands here as NULL, which is the safe answer.
+    // LAST in this table on purpose: vtables are positional lists, so an
+    // entry added elsewhere shifts the rest -- and one left out of an
+    // older list lands here as NULL, the safe answer.
     u64 (*getRevision)(FluxionVfsSource* self, const char* path);
 } FluxionVfsSourceVTable;
 

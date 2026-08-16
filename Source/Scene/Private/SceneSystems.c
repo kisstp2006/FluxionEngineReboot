@@ -41,26 +41,16 @@
 
 // Running a scene's systems: in what order, and how many at once.
 //
-// Three separate questions, answered by three separate declarations, and
-// the whole design rests on not letting any of them stand in for another.
+//   the phase       coarse order
+//   before/after    fine order
+//   reads/writes    only whether two unordered systems may OVERLAP
 //
-//   the phase       decides the coarse order
-//   before/after    decides the fine order
-//   reads/writes    decides only whether two systems that are free to go
-//                   in either order may go at the SAME TIME
-//
-// Access cannot settle order. If one system writes what another reads,
-// that says they must not overlap; it says nothing about which the author
-// meant to run first, and picking one silently would be picking for them.
-//
-// Order cannot settle access either. Two systems with no stated order
-// might still touch the same thing, and then the order they happen to get
-// changes the answer -- which is why the pairs in that position are
-// reported rather than quietly resolved.
-//
-// Ordering is by NAME rather than by handle because systems can come from
-// plugins, and a plugin is loaded when it is loaded. An order that fell
-// out of who registered first would be an order nobody chose.
+// None may stand in for another: access cannot settle order (writing
+// what another reads says nothing about who was meant first), and order
+// cannot settle access (unordered systems touching the same thing are
+// reported, not quietly resolved). Ordering is by NAME, because plugins
+// load when they load, and an order that fell out of registration order
+// would be an order nobody chose.
 
 #include "SceneInternal.h"
 

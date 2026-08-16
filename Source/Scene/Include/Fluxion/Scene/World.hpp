@@ -258,29 +258,19 @@ public:
     // --- Reading many entities at once ----------------------------------
 
     // Every entity carrying all of these component types, a block at a
-    // time. The callable is handed the entities of one block and, for each
-    // named type, that block's values for exactly those entities -- laid
-    // out one after another with nothing in between:
+    // time, values laid out contiguously:
     //
     //   world.EachChunk<Position, Velocity>(
     //       [](std::span<const FluxionEntityHandle> entities,
     //          std::span<Position> positions,
     //          std::span<Velocity> velocities) { ... });
     //
-    // All the spans of one call have the same length, and entry i of each
-    // belongs to entry i of the entities. An entity carrying more than the
-    // named types still matches: a query says what it needs, not what an
-    // entity is allowed to be.
+    // All spans of one call have the same length; entry i of each belongs
+    // to entity i. Entities carrying MORE than the named types still
+    // match. The shape to reach for when per-entity work is small.
     //
-    // This is the shape worth reaching for when the work per entity is
-    // small, because it is where the storage's whole purpose shows up --
-    // the values are already next to each other and the loop is a straight
-    // run over them.
-    //
-    // NOTHING STRUCTURAL MAY HAPPEN INSIDE THE CALLABLE. Adding a
-    // component, removing one, or destroying an entity moves the very
-    // values being read. Record such changes into Commands() and let them
-    // land after the walk.
+    // NOTHING STRUCTURAL MAY HAPPEN INSIDE THE CALLABLE -- it moves the
+    // very values being read. Record changes into Commands() instead.
     template<ComponentType... Ts, typename Fn>
     void EachChunk(Fn&& fn) const
     {

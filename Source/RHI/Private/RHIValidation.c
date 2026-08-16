@@ -39,36 +39,17 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// The validation layer: a vtable that checks and then forwards.
+// The validation layer: a vtable that checks and then forwards. With
+// validation off it is absent, not disabled.
 //
-// Installed by Fluxion_RHI_CreateInstance when the caller asked for
-// validation -- the real backend's vtable is copied wholesale and the
-// entries worth checking are overwritten with wrappers, so an operation
-// with nothing to validate costs exactly what it cost before, and with
-// validation off the layer is not merely disabled but absent.
+// Two rules: (1) it REPORTS, never asserts -- tests drive broken calls in
+// and assert on the count. (2) An INVALID call is not forwarded (the
+// backend would crash on it), but a merely SUSPICIOUS one is: the caller
+// may know something the tracker does not, and behavior must not differ
+// with validation on.
 //
-// Two rules shape everything here:
-//
-// 1. It REPORTS, never asserts. A backend's own internal assert stops the
-//    process at the first mistake; this layer counts and logs, so a test
-//    can drive deliberately broken calls into it and assert on the count,
-//    and a developer sees every mistake in a frame rather than the first.
-//
-// 2. A call that is invalid is NOT forwarded. The backends' own destroy
-//    paths assert on stale handles -- forwarding a call this layer just
-//    diagnosed as invalid would turn the report into a crash and take
-//    rule 1 with it. A call that is merely *suspicious* (a barrier whose
-//    declared before-state disagrees with what this layer tracked) IS
-//    forwarded: the caller may know something the tracker does not, and
-//    swallowing real work on a heuristic would make behavior differ with
-//    validation on, which is the one thing a validation layer must never
-//    do.
-//
-// The shadow state mirrors what the backends know but do not share:
-// which handles are alive (by index+generation, the same scheme every
-// backend pool uses), what state each buffer/texture was last declared
-// to be in, and where each command list is in its begin/render/end
-// lifecycle.
+// The shadow state tracks live handles, last-declared resource states,
+// and each command list's begin/render/end lifecycle.
 
 #include "RHIBackendVTable.h"
 

@@ -86,33 +86,18 @@ FluxionRHIBufferHandle Fluxion_RHIOpenGL_CreateBuffer(FluxionRHIDeviceHandle dev
         case FLUXION_RHI_MEMORY_CLASS_GPU_ONLY:
         case FLUXION_RHI_MEMORY_CLASS_TRANSIENT:
         default:
-            // No flags at all: storage the device owns outright.
-            //
-            // GL_DYNAMIC_STORAGE_BIT would say the client may write into
-            // this buffer directly, and it is the one thing that must not
-            // be said here. Nothing does -- everything reaching a buffer
-            // of this class arrives through a server-side copy from a
-            // staging buffer, and the call that would need the flag is
-            // never made anywhere in this backend. Saying it anyway is
-            // not free: a driver told a vertex or index buffer might be
-            // written from the client keeps it where the client can be
-            // served quickly, which means host memory, which means every
-            // draw reads its geometry across the bus.
+            // No flags at all: storage the device owns outright. In
+            // particular no GL_DYNAMIC_STORAGE_BIT -- everything reaches
+            // this class through server-side copies, and a driver told
+            // the client might write keeps the buffer in host memory,
+            // read across the bus on every draw.
             //
             // A driver may still emit a one-time "moved from VIDEO to
-            // HOST" performance note about small buffers of this class,
-            // between the first submitted frame and the second, during
-            // its own residency pass. That decision was probed from
-            // every side this backend controls -- these storage flags,
-            // re-attaching versus caching the VAO attachment, whether
-            // the copy source was mapped during the transfer, client-
-            // storage on the staging side, and the buffer's size -- and
-            // none of them changes it; measured GPU frame time matches
-            // the other backends throughout. The note is the driver
-            // narrating a placement choice it owns, not something this
-            // code causes, and it is deliberately left visible rather
-            // than filtered: a log rule that hides one vendor's noise
-            // eventually hides another vendor's real complaint.
+            // HOST" note about small buffers of this class. That was
+            // probed from every side this backend controls and none of it
+            // changes the decision; measured frame time matches the other
+            // backends. Left visible rather than filtered -- a rule that
+            // hides one vendor's noise hides another's real complaint.
             storageFlags = 0;
             bufferState->cpuVisible = false;
             break;

@@ -103,30 +103,18 @@ struct ReloadRequest
     Script::CompileCacheOptions cache;
 };
 
-// What a reload did, and what it could not do.
+// What a reload carries over, and what it does not:
 //
-// WHAT A RELOAD CARRIES OVER, AND WHAT IT DOES NOT:
+//   * A component's own fields come across, matched by name and type;
+//     a field gone, renamed or retyped starts at the new class's default
+//     and is counted in `fieldsDropped`.
+//   * A reference field does NOT come across -- the object it names
+//     lives in the machine being stood down. It starts null, counted as
+//     dropped.
+//   * Statics, module-level state and locals are gone with the machine.
 //
-//   * The values a component holds in its own fields come with it, matched
-//     by name and by type. A field that is gone, renamed, or declared with
-//     a different type in the new source is left at whatever the new
-//     class starts it at, and counted in `fieldsDropped`.
-//
-//   * A field holding a reference does not come across. The object it
-//     names lives in the machine being stood down, and nothing in the
-//     machine taking over is that object -- carrying it would mean
-//     rebuilding the whole graph reachable from it against a different set
-//     of classes, which is a far larger job than this and is not attempted
-//     here. Such a field starts out null and is counted as dropped.
-//
-//   * Nothing that is not a component's own field survives at all. A
-//     static field, anything a class holds on behalf of the whole module,
-//     and anything a component reached only through a local variable are
-//     all gone with the machine that held them.
-//
-// This is a real boundary rather than an unfinished one: a component's own
-// state is what a reload is for, and everything else is state the new code
-// is entitled to start afresh with.
+// A real boundary, not an unfinished one: a component's own state is
+// what a reload is for.
 struct ReloadReport
 {
     bool reloaded = false;

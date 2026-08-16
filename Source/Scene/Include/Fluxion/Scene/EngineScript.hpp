@@ -77,15 +77,10 @@ namespace Fluxion::Scene
 //   Renderer        putting one mesh on the screen this frame
 //   DebugDraw       lines and outlines, in numbers
 //
-// Call it after BuildBindingTable and with the same scene: Renderer takes
-// the object whose place a mesh is drawn at, and objects belong to a
-// scene. Which scene that is, is remembered process-wide, for the same
-// reason everything under the next heading is -- so with two scenes
-// built against, the one built against last is the one an object handed
-// to Renderer.DrawMesh is looked for in.
-//
-// The last three answer through the renderer set by SetScriptRenderer,
-// and Assets answers out of the table the Register calls below fill.
+// Call after BuildBindingTable, with the same scene -- the scene is
+// remembered process-wide, so with two scenes the last one built against
+// wins. The last three answer through the renderer set by
+// SetScriptRenderer; Assets answers from the Register calls below.
 bool BuildEngineBindings(FluxionSceneHandle scene, Script::BindingTable& table, Script::DiagnosticList& outDiagnostics);
 
 // The declarations that only make sense once those types are visible: the

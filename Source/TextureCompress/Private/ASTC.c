@@ -41,35 +41,17 @@
 
 // ASTC, four texels by four, low dynamic range.
 //
-// ASTC is not one layout but a family. A block names its own weight-grid
-// size, its own weight precision and its own way of describing colour,
-// and the number of bits left for the endpoints is whatever the first two
-// did not use. That flexibility is the format's whole point and also why
-// an encoder has to choose a corner of it and stay there.
+// ASTC is a family of layouts; an encoder must pick a corner and stay
+// there. This one writes a 4x4 weight grid (one weight per texel, no
+// interpolation), two bits a weight, one region, colour endpoint mode 12
+// with full RGBA endpoints. Larger block sizes carry a grid SMALLER than
+// the block, and that interpolation cannot be checked on this machine --
+// so 6x6 and 8x8 are refused rather than approximated.
 //
-// This one writes: a four-by-four weight grid (one weight per texel, so
-// nothing is interpolated between grid points), two bits a weight, one
-// region, and colour endpoint mode 12 -- red, green, blue and alpha, each
-// endpoint written out in full. Sixteen weights at two bits is
-// thirty-two, the configuration fields are seventeen, and the seventy-nine
-// bits that remain are more than the sixty-four eight-bit endpoint values
-// need.
-//
-// Only the four-by-four block size is encoded here. The larger ones
-// cannot give every texel its own weight -- a six-by-six block would need
-// thirty-six weights and an eight-by-eight sixty-four -- so they carry a
-// SMALLER grid than the block and the decoder interpolates between grid
-// points to reach each texel. That interpolation is a piece of the format
-// in its own right, and writing it blind, with no hardware here able to
-// check the result, would be guessing. Those sizes are refused rather
-// than approximated.
-//
-// WHAT HAS NOT BEEN CHECKED: no device on the machine this was written on
-// supports ASTC at all -- not the discrete GPU, not the software
-// rasteriser. The BC formats beside this one are compared against two
-// real drivers and agree with them exactly; this one has only its own
-// decoder to agree with, which is a much weaker thing. The comparison
-// runs automatically on the first device that does support ASTC.
+// NOT CHECKED AGAINST HARDWARE: no device here supports ASTC at all. The
+// BC encoders agree with two real drivers exactly; this one has only its
+// own decoder to agree with. The comparison runs automatically on the
+// first device that can.
 
 #include "BlockCompressInternal.h"
 

@@ -49,23 +49,15 @@
 //     ]
 //   }
 //
-// The format deliberately does NOT encode edges between nodes -- a pass's
-// own (C/C++) Setup callback is what declares which resource *names* it
-// reads/writes/creates, and Fluxion_RenderGraph_Compile derives the actual
-// dependency edges from those declarations. So the JSON only ever decides
-// WHICH registered pass-type instances exist and what they are named; how
-// their pins wire together is inherent to each pass type's own Setup
-// logic, not something an artist rewires at the JSON level.
+// The format deliberately does NOT encode edges: each pass type's Setup
+// callback declares the resource names it touches, and Compile derives
+// the edges. The JSON only decides which pass instances exist and what
+// they are named.
 //
-// "imports" is accepted and validated for shape (each entry needs a
-// "name" and a "kind" of "texture" or "buffer") but is otherwise
-// informational here -- Fluxion_RenderGraph_ImportTexture/ImportBuffer
-// need a real, already-created FluxionRHITextureHandle/
-// FluxionRHIBufferHandle, which cannot come from a text file; a caller
-// still imports the actual resource via those C calls (using the same
-// resource name a JSON-described pass's Setup callback will later Read/
-// Write), this section just documents which names the file's author
-// expects to be supplied that way.
+// "imports" is validated for shape but otherwise informational -- a real
+// handle cannot come from a text file, so the caller still imports the
+// resource through the C calls under the same name. The section records
+// which names the file's author expects to be supplied that way.
 
 #include "RenderGraphInternal.h"
 

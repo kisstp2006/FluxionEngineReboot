@@ -133,40 +133,20 @@ static bool Fluxion_RHID3D12_BuildRootSignature(FluxionRHID3D12Device* deviceSta
 
         FluxionRHID3D12LayoutCounts counts = Fluxion_RHID3D12_CountLayoutEntries(layout);
 
-        // One descriptor range PER ENTRY, not one coalesced range per
-        // type -- a coalesced range starting at BaseShaderRegister=0
-        // only matches a shader whose registers for that type happen to
-        // start at 0 within this group, which isn't true in general
-        // (e.g. a Material group with a uniform buffer at CBV b0 and an
-        // opaque texture+sampler pair numbered from the *next* free
-        // binding, per ShaderIR.cpp's BuildIR, lands its texture SRV at
-        // t1/t2 not t0). BaseShaderRegister is set to the entry's own
-        // `binding` here so it always matches whatever register number
-        // the ShaderCompiler's HLSL backend actually emitted for that
-        // same entry. D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND packs each
-        // range's descriptor-table slot right after the previous one in
-        // the SAME table, so ranges must be emitted in CBV-block, then
-        // SRV-block, then UAV-block order (grouped by type, entries
-        // within a type in their original entries[] order) to land at
-        // the exact same table offsets Fluxion_RHID3D12_CreateBindGroup
-        // (D3D12Binding.cpp) already writes descriptors to
-        // (cbvBase+cbvCursor / srvBase+srvCursor / uavBase+uavCursor,
-        // incremented in that same entries[]-order).
-        // DATA_VOLATILE (not the D3D12_DESCRIPTOR_RANGE_FLAG_NONE default,
-        // which resolves to DATA_STATIC_WHILE_SET_AT_EXECUTE for these
-        // range types) on every range: a storage buffer's SRV and UAV
-        // range both exist on the SAME root-signature table regardless
-        // of which single one a given pipeline's shader actually reads,
-        // and this engine legitimately transitions such a buffer between
-        // UAV (compute write) and SRV (fragment read) states across a
-        // frame -- DATA_STATIC_WHILE_SET_AT_EXECUTE requires the
-        // resource already be in the range's expected state at the
-        // SetComputeRootDescriptorTable/SetGraphicsRootDescriptorTable
-        // call itself (not just by actual GPU execution time), which a
-        // compute dispatch's UAV-state bind trips for the same table's
-        // now-inconsistent SRV range. DATA_VOLATILE defers that check to
-        // real execution time instead, matching how this backend's
-        // resource states actually change over a command list's life.
+        // One descriptor range PER ENTRY, with BaseShaderRegister set to
+        // the entry's own `binding`: a coalesced range starting at 0 only
+        // matches shaders whose registers happen to start at 0, which the
+        // compiler's numbering does not guarantee. Ranges are emitted
+        // CBV-, then SRV-, then UAV-block (entries[] order within each),
+        // because OFFSET_APPEND must land on the same table offsets
+        // D3D12Binding.cpp writes descriptors to.
+        //
+        // DATA_VOLATILE on every range: a storage buffer's SRV and UAV
+        // ranges share one table, and the buffer legitimately moves
+        // between UAV and SRV states within a frame. The default
+        // (STATIC_WHILE_SET_AT_EXECUTE) validates state at the
+        // SetRootDescriptorTable call; VOLATILE defers it to execution,
+        // which is when the state is actually right.
         if (counts.cbvCount + counts.srvCount + counts.uavCount > 0)
         {
             allRanges.emplace_back();
