@@ -51,10 +51,48 @@ static FluxionTextureAsset* Fluxion_TextureDefaults_Make(FluxionRHIDeviceHandle 
     data.mipCount = 1;
     data.arrayLayers = 1;
     data.format = format;
+    data.dimension = FLUXION_RHI_TEXTURE_DIMENSION_2D;
     data.pixels = rgba;
     data.pixelBytes = 4;
 
     u8 cooked[128];
+    FluxionStream writer;
+    Fluxion_MemoryStream_InitWriter(&writer, cooked, sizeof(cooked));
+    if (!Fluxion_TextureAsset_Write(&writer, &data)) return NULL;
+
+    FluxionTextureAsset* asset = NULL;
+    if (!Fluxion_TextureAsset_Read(cooked, Fluxion_Stream_GetPosition(&writer), &asset)) return NULL;
+
+    if (!FluxionRendererInternal_TextureAsset_Upload(asset, device, queue))
+    {
+        Fluxion_TextureAsset_Destroy(asset);
+        return NULL;
+    }
+
+    return asset;
+}
+
+// The same journey for a cube: one texel a face, six faces.
+//
+// Written and read back through the ordinary path for the same reason as
+// the flat ones -- a separate way of making a texture would be tested
+// only by whether the picture looked right, and this one exists precisely
+// for the case where there is no picture to look at.
+static FluxionTextureAsset* Fluxion_TextureDefaults_MakeCube(FluxionRHIDeviceHandle device, FluxionRHIQueueHandle queue,
+                                                             FluxionRHIFormat format, const u8* facePixels, usize faceBytes)
+{
+    FluxionTextureAssetData data;
+    memset(&data, 0, sizeof(data));
+    data.width = 1;
+    data.height = 1;
+    data.mipCount = 1;
+    data.arrayLayers = FLUXION_RHI_CUBE_FACE_COUNT;
+    data.format = format;
+    data.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+    data.pixels = facePixels;
+    data.pixelBytes = faceBytes * FLUXION_RHI_CUBE_FACE_COUNT;
+
+    u8 cooked[256];
     FluxionStream writer;
     Fluxion_MemoryStream_InitWriter(&writer, cooked, sizeof(cooked));
     if (!Fluxion_TextureAsset_Write(&writer, &data)) return NULL;
@@ -89,6 +127,15 @@ bool Fluxion_TextureDefaults_Init(FluxionRHIDeviceHandle device, FluxionRHIQueue
         Fluxion_TextureDefaults_Make(device, queue, FLUXION_RHI_FORMAT_R8G8B8A8_SRGB, kBlack);
     s_defaults[FLUXION_DEFAULT_TEXTURE_FLAT_NORMAL].asset =
         Fluxion_TextureDefaults_Make(device, queue, FLUXION_RHI_FORMAT_R8G8B8A8_UNORM, kFlatNormal);
+
+    // Half precision, because that is the format an environment is
+    // stored in and this stands in for one: a default in a different
+    // format would be a texture the shader reads differently from the
+    // thing it replaces.
+    static const u16 kBlackCube[FLUXION_RHI_CUBE_FACE_COUNT * 4] = { 0 };
+    s_defaults[FLUXION_DEFAULT_TEXTURE_BLACK_CUBE].asset =
+        Fluxion_TextureDefaults_MakeCube(device, queue, FLUXION_RHI_FORMAT_R16G16B16A16_FLOAT,
+                                         (const u8*)kBlackCube, sizeof(u16) * 4);
 
     for (u32 i = 0; i < FLUXION_DEFAULT_TEXTURE_COUNT; ++i)
     {

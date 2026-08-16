@@ -211,15 +211,15 @@ void CreateDebugDrawPipelineObject(FluxionRenderer& renderer)
     // the depth around would start hiding the very thing it is pointing
     // at. Without a stated depth target there is nothing to test against,
     // and it all draws over the top.
-    const bool testAgainstDepth = renderer.debugDepthFormat != FLUXION_RHI_FORMAT_UNKNOWN;
+    const bool testAgainstDepth = renderer.attachmentDepthFormat != FLUXION_RHI_FORMAT_UNKNOWN;
     pipelineDesc.depthState.testEnable = testAgainstDepth;
     pipelineDesc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL;
     pipelineDesc.depthState.writeEnable = false;
     pipelineDesc.blendState.blendEnable = true;
     pipelineDesc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_LINE_LIST; // triangles are appended as their own 3 vertices too -- see DebugDraw.c
-    pipelineDesc.colorFormats[0] = renderer.debugColorFormat;
+    pipelineDesc.colorFormats[0] = renderer.attachmentColorFormat;
     pipelineDesc.colorFormatCount = 1;
-    pipelineDesc.depthFormat = renderer.debugDepthFormat;
+    pipelineDesc.depthFormat = renderer.attachmentDepthFormat;
     pipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_FRAME] = renderer.debugFrameBindGroupLayout;
     pipelineDesc.bindGroupLayoutCount = FLUXION_RHI_BIND_GROUP_FRAME + 1;
     pipelineDesc.debugName = "Fluxion.Renderer.DebugDraw.Pipeline";
@@ -337,11 +337,23 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     renderer->debugPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->debugFrameBindGroupLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
 
+    // The sky's three, for exactly the reason above -- and this one was
+    // not hypothetical. Left zeroed, the program handle read as valid, so
+    // the sky was never built; the pipeline handle then read as valid
+    // too, and pointed at whatever pipeline happened to hold slot zero.
+    // The sky was drawn with somebody else's pipeline, and what said so
+    // was a validation message about a descriptor set nothing here had
+    // asked for.
+    renderer->skyboxProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->skyboxVertexBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->skyboxPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->skyboxFrameLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+
     // What a caller that never says otherwise gets. It is a guess, and it
     // is why saying so exists: a frame drawn into a colour attachment of
     // any other format needs the pipeline rebuilt against that one.
-    renderer->debugColorFormat = FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
-    renderer->debugDepthFormat = FLUXION_RHI_FORMAT_UNKNOWN;
+    renderer->attachmentColorFormat = FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
+    renderer->attachmentDepthFormat = FLUXION_RHI_FORMAT_UNKNOWN;
 
     FluxionRHIBindGroupLayoutDesc objectLayoutDesc = FluxionRendererInternal_MakeObjectLayoutDesc();
     renderer->objectBindGroupLayout = Fluxion_RHI_CreateBindGroupLayout(device, &objectLayoutDesc);
@@ -369,6 +381,9 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
         FLUXION_ASSERT_MSG(false, "Fluxion_Renderer_Destroy called with an invalid or already-destroyed handle");
         return;
     }
+
+    // The sky goes with the renderer that built it.
+    FluxionRendererInternal_Skybox_Destroy(renderer);
 
     Fluxion_RenderGraphPassRegistry_Unregister("ForwardOpaquePass");
 
@@ -531,7 +546,7 @@ extern "C" void Fluxion_Renderer_EndFrame(FluxionRendererHandle rendererHandle, 
             // bonus.
             FluxionRHIRenderingAttachment depthAttachment{};
             const bool testAgainstDepth =
-                renderer->debugDepthFormat != FLUXION_RHI_FORMAT_UNKNOWN && FLUXION_HANDLE_IS_VALID(depthView);
+                renderer->attachmentDepthFormat != FLUXION_RHI_FORMAT_UNKNOWN && FLUXION_HANDLE_IS_VALID(depthView);
             if (testAgainstDepth)
             {
                 depthAttachment.view = depthView;
@@ -562,11 +577,11 @@ extern "C" void Fluxion_Renderer_EndFrame(FluxionRendererHandle rendererHandle, 
 extern "C" void Fluxion_Renderer_SetDebugDrawColorFormat(FluxionRendererHandle rendererHandle, FluxionRHIFormat format)
 {
     FluxionRenderer* renderer = Resolve(rendererHandle);
-    if (renderer == nullptr || format == renderer->debugColorFormat) return;
+    if (renderer == nullptr || format == renderer->attachmentColorFormat) return;
 
     FLUXION_ASSERT_MSG(!renderer->inFrame, "Renderer: the debug-draw colour format cannot change in the middle of a frame");
 
-    renderer->debugColorFormat = format;
+    renderer->attachmentColorFormat = format;
 
     // Anything already built was built against the format that has just
     // been replaced, so it is thrown away; the next debug draw builds one
@@ -580,11 +595,11 @@ extern "C" void Fluxion_Renderer_SetDebugDrawColorFormat(FluxionRendererHandle r
 extern "C" void Fluxion_Renderer_SetDebugDrawDepthFormat(FluxionRendererHandle rendererHandle, FluxionRHIFormat format)
 {
     FluxionRenderer* renderer = Resolve(rendererHandle);
-    if (renderer == nullptr || format == renderer->debugDepthFormat) return;
+    if (renderer == nullptr || format == renderer->attachmentDepthFormat) return;
 
     FLUXION_ASSERT_MSG(!renderer->inFrame, "Renderer: the debug-draw depth format cannot change in the middle of a frame");
 
-    renderer->debugDepthFormat = format;
+    renderer->attachmentDepthFormat = format;
 
     // Same reasoning as the colour format above: what was built was built
     // against the old answer, so it goes, and the next debug draw builds

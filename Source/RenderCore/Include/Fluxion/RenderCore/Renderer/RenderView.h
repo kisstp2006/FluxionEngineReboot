@@ -92,6 +92,10 @@ typedef struct FluxionFrameConstants
     // Where the eye is, in world space. w is unused.
     FluxionVec4 cameraPosition;
 
+    // The inverse of viewProjection above, worked out on this side once a
+    // frame rather than in every pixel that needs it.
+    FluxionMat4 inverseViewProjection;
+
     // A flat amount of light arriving from everywhere, standing in for
     // the sky until there is one. rgb; w is unused.
     //
@@ -205,6 +209,18 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view);
 // with no lights is a scene lit by nothing but its ambient, which is a
 // picture rather than a fault.
 void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRenderLight* lights, u32 count);
+
+// What the world looks like in every direction: a cube map, and the
+// sampler to read it with.
+//
+// An invalid view puts back the small black cube the engine keeps, which
+// is what a view starts with. That is not a way of saying "no
+// environment" politely -- it is the only way a shader can be written at
+// all, since a shader cannot ask whether a texture is bound and a backend
+// handed an empty slot refuses the whole group rather than the one
+// binding.
+void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHITextureViewHandle cubeView,
+                                       FluxionRHISamplerHandle sampler);
 
 // Records the copy that puts those lights where the GPU can read them.
 //

@@ -34,6 +34,15 @@ typedef enum FluxionDefaultTexture
     // colour: read as sRGB it would bend every surface it touched.
     FLUXION_DEFAULT_TEXTURE_FLAT_NORMAL,
 
+    // Six black faces, in the format an environment is stored in.
+    //
+    // Bound wherever a view has been given no environment of its own, and
+    // that is not politeness: a shader cannot ask whether a texture is
+    // there, and a backend handed an empty slot refuses the whole bind
+    // group rather than the one binding. Black adds nothing, so a scene
+    // with no sky looks like a scene with no sky.
+    FLUXION_DEFAULT_TEXTURE_BLACK_CUBE,
+
     FLUXION_DEFAULT_TEXTURE_COUNT,
 } FluxionDefaultTexture;
 

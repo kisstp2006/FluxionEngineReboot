@@ -182,9 +182,15 @@ extern "C" void Test_RendererFrame_Run(TestContext* ctx)
     Fluxion_RHI_CommandList_End(fixture.commandList);
 
     // The pass's Execute callback genuinely ran (not culled -- it writes
-    // the imported "ForwardOpaquePass.Color0" resource) and issued
-    // exactly one draw call for the one DrawPacket submitted above.
-    TEST_CHECK(ctx, Fluxion_Renderer_GetLastDrawCallCount(renderer) == 1);
+    // the imported "ForwardOpaquePass.Color0" resource) and issued two
+    // draw calls: the one DrawPacket submitted above, and the sky behind
+    // it.
+    //
+    // Two rather than one because a frame now has a sky in it. That is
+    // not a number to relax -- it is the statement that the sky is drawn
+    // exactly once per frame, and it would catch a sky drawn per packet
+    // just as surely as it caught the change that put it here.
+    TEST_CHECK(ctx, Fluxion_Renderer_GetLastDrawCallCount(renderer) == 2);
 
     Fluxion_Renderer_EndFrame(renderer, fixture.commandList);
 

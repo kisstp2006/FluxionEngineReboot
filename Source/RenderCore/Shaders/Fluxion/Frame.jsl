@@ -25,6 +25,11 @@
 // xyz: where the eye is, in world space.
 [Uniform(Frame)] Vector4 cameraPosition;
 
+// Undoes the one above. Turning a point on the screen back into a
+// direction in the world is the whole of drawing a sky, and there is no
+// way to get there from the forward matrix alone.
+[Uniform(Frame)] Matrix4x4 inverseViewProjection;
+
 // rgb: a flat amount arriving from every direction, standing in for the
 // sky until there is one.
 [Uniform(Frame)] Vector4 ambientColor;
@@ -72,6 +77,18 @@ struct FluxionLight
     // x: the cosine of the outer cone angle. yzw spare.
     Vector4 cone;
 };
+
+// What the world looks like in every direction.
+//
+// One texture at frame frequency rather than one per material: every
+// surface in a frame is surrounded by the same world, and a copy per
+// material would be the same texture bound many times over.
+//
+// A view that was given no environment still has one -- a small black
+// cube the engine keeps -- so this is never an empty binding. A shader
+// cannot ask whether a texture is there, and a backend that was handed
+// nothing would refuse the whole bind group rather than the one slot.
+[Texture(Frame)] TextureCube environmentMap;
 
 // The lights this frame is lit by.
 //

@@ -53,6 +53,7 @@
 #include <Fluxion/RenderCore/Renderer/RenderPipeline.h>
 #include <Fluxion/RenderCore/Renderer/RenderTarget.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
+#include <Fluxion/RenderCore/Renderer/TextureAsset.h>
 #include <Fluxion/RenderCore/Renderer/Renderer.h>
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
 #include <Fluxion/RenderCore/Renderer/TextureDefaults.h>
@@ -182,6 +183,69 @@ FluxionQuat AimedAlong(FluxionVec3 target)
     q.z = axis.z / s;
     q.w = s * 0.5f;
     return q;
+}
+
+// Which way a texel of a cube map faces.
+//
+// The face order is +X, -X, +Y, -Y, +Z, -Z, and within a face the two
+// coordinates run the way every one of these backends agrees they do.
+// This mapping is the thing the sky actually TESTS: get a sign wrong and
+// the sky is not broken, it is turned round -- which looks like the sky
+// was authored wrong rather than like the engine sampled it wrong.
+FluxionVec3 CubeFaceDirection(u32 face, f32 u, f32 v)
+{
+    switch (face)
+    {
+        case 0: return FluxionVec3{ 1.0f, -v, -u };  // +X
+        case 1: return FluxionVec3{ -1.0f, -v, u };  // -X
+        case 2: return FluxionVec3{ u, 1.0f, v };    // +Y, straight up
+        case 3: return FluxionVec3{ u, -1.0f, -v };  // -Y, straight down
+        case 4: return FluxionVec3{ u, -v, 1.0f };   // +Z
+        default: return FluxionVec3{ -u, -v, -1.0f }; // -Z
+    }
+}
+
+// What the sky looks like in a given direction, in the same real units
+// as every light in the scene -- which is why the numbers are large. The
+// camera brings them down, exactly as it does for the sun.
+FluxionVec3 SkyColor(FluxionVec3 direction, FluxionVec3 toSun)
+{
+    const FluxionVec3 d = Fluxion_Vec3_Normalize(direction);
+    const f32 up = d.y;
+
+    // Above the horizon: deep blue overhead easing to a pale warm band at
+    // the horizon, which is what makes an unlit face read as sky-lit
+    // rather than as grey.
+    const f32 t = std::max(up, 0.0f);
+    FluxionVec3 sky;
+    sky.x = 14.0f + (2.0f - 14.0f) * t;
+    sky.y = 18.0f + (6.0f - 18.0f) * t;
+    sky.z = 26.0f + (20.0f - 26.0f) * t;
+
+    // The sun itself, as a bright tight spot in the direction the
+    // directional light comes FROM. The two agree because both are
+    // written from the same vector -- a sky whose sun sat somewhere other
+    // than the light would look like a shadow bug.
+    const f32 alignment = d.x * toSun.x + d.y * toSun.y + d.z * toSun.z;
+    if (alignment > 0.0f)
+    {
+        const f32 glow = std::pow(alignment, 350.0f) * 900.0f + std::pow(alignment, 12.0f) * 6.0f;
+        sky.x += glow * 1.00f;
+        sky.y += glow * 0.95f;
+        sky.z += glow * 0.80f;
+    }
+
+    // Below the horizon: dim ground, so the underside of things is not
+    // lit by a sky that does not exist down there.
+    if (up < 0.0f)
+    {
+        const f32 ground = std::min(-up * 4.0f, 1.0f);
+        sky.x = sky.x + (3.0f - sky.x) * ground;
+        sky.y = sky.y + (2.6f - sky.y) * ground;
+        sky.z = sky.z + (2.2f - sky.z) * ground;
+    }
+
+    return sky;
 }
 
 FluxionMat4 MakePerspective(f32 fovYRadians, f32 aspect, f32 nearZ, f32 farZ)
@@ -514,6 +578,8 @@ int main(int argc, char** argv)
     FluxionRHITextureViewHandle albedoView = Fluxion_RHI_CreateTextureView(device, &albedoViewDesc);
     FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTextureView(albedoView));
 
+
+
     FluxionRHISamplerDesc albedoSamplerDesc;
     memset(&albedoSamplerDesc, 0, sizeof(albedoSamplerDesc));
     albedoSamplerDesc.minFilter = FLUXION_RHI_FILTER_LINEAR;
@@ -526,6 +592,133 @@ int main(int argc, char** argv)
     albedoSamplerDesc.debugName = "DemoAlbedoSampler";
     FluxionRHISamplerHandle albedoSampler = Fluxion_RHI_CreateSampler(device, &albedoSamplerDesc);
     FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroySampler(albedoSampler));
+
+    // --- The sky ---------------------------------------------------------
+    //
+    // Six faces, filled in by direction. The same vector that aims the
+    // sun aims the bright spot in the sky, so the two cannot drift apart
+    // -- a sun sitting somewhere other than the light would read as a
+    // shadow bug.
+    //
+    // Thirty-two texels a face is small, and deliberately: this is a
+    // gradient, and what is being shown is that a cube map is sampled by
+    // direction at all, not how much detail one can hold.
+    constexpr u32 kSkyFaceSize = 32;
+    const FluxionVec3 toSun = Fluxion_Vec3_Normalize(FluxionVec3{ -0.4f, 0.7f, 0.6f });
+
+    FluxionRHITextureDesc skyDesc;
+    memset(&skyDesc, 0, sizeof(skyDesc));
+    skyDesc.width = kSkyFaceSize;
+    skyDesc.height = kSkyFaceSize;
+    skyDesc.depth = 1;
+    skyDesc.mipLevels = 1;
+    skyDesc.arrayLayers = FLUXION_RHI_CUBE_FACE_COUNT;
+    skyDesc.sampleCount = 1;
+
+    // Full floats rather than halves: this sample has no half conversion
+    // of its own, and an environment is stored in whatever holds values
+    // above one. A real one would be halves or a block format; a
+    // thirty-two-texel gradient can afford not to be.
+    skyDesc.format = FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT;
+    skyDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_SAMPLED | FLUXION_RHI_TEXTURE_USAGE_TRANSFER_DST;
+    skyDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
+    skyDesc.debugName = "ForwardRendererDemo.Sky";
+    skyDesc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+
+    FluxionRHITextureHandle skyTexture = Fluxion_RHI_CreateTexture(device, &skyDesc);
+    if (!FLUXION_HANDLE_IS_VALID(skyTexture))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not make the sky's cube map.");
+        return 1;
+    }
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTexture(skyTexture));
+
+    // The staging layout comes from the engine rather than being worked
+    // out here: rows padded, each face starting on its own boundary.
+    FluxionTextureLevelPlacement skyPlacements[FLUXION_RHI_CUBE_FACE_COUNT];
+    u32 skyPlacementCount = 0;
+    const usize skyStagingSize = Fluxion_TextureAsset_PlanUpload(
+        skyDesc.format, kSkyFaceSize, kSkyFaceSize, 1, FLUXION_RHI_CUBE_FACE_COUNT,
+        skyPlacements, FLUXION_RHI_CUBE_FACE_COUNT, &skyPlacementCount);
+
+    FluxionRHIBufferDesc skyStagingDesc = { skyStagingSize, FLUXION_RHI_BUFFER_USAGE_TRANSFER_SRC,
+                                            FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU, "ForwardRendererDemo.SkyStaging" };
+    FluxionRHIBufferHandle skyStaging = Fluxion_RHI_CreateBuffer(device, &skyStagingDesc);
+
+    {
+        u8* mapped = (u8*)Fluxion_RHI_MapBuffer(skyStaging);
+        memset(mapped, 0, skyStagingSize);
+
+        for (u32 face = 0; face < FLUXION_RHI_CUBE_FACE_COUNT; ++face)
+        {
+            for (u32 y = 0; y < kSkyFaceSize; ++y)
+            {
+                f32* row = (f32*)(mapped + skyPlacements[face].stagingOffset + (usize)y * skyPlacements[face].stagingRowBytes);
+                for (u32 x = 0; x < kSkyFaceSize; ++x)
+                {
+                    // The centre of the texel, not its corner: sampling
+                    // the corner shifts the whole sky by half a texel,
+                    // which at this size is visible along the seams.
+                    const f32 u = ((f32)x + 0.5f) / (f32)kSkyFaceSize * 2.0f - 1.0f;
+                    const f32 v = ((f32)y + 0.5f) / (f32)kSkyFaceSize * 2.0f - 1.0f;
+
+                    const FluxionVec3 color = SkyColor(CubeFaceDirection(face, u, v), toSun);
+                    row[x * 4 + 0] = color.x;
+                    row[x * 4 + 1] = color.y;
+                    row[x * 4 + 2] = color.z;
+                    row[x * 4 + 3] = 1.0f;
+                }
+            }
+        }
+
+        Fluxion_RHI_UnmapBuffer(skyStaging);
+    }
+
+    {
+        FluxionRHICommandListHandle skyUpload = Fluxion_RHI_CreateCommandList(device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
+        Fluxion_RHI_CommandList_Begin(skyUpload);
+
+        FluxionRHIBufferHandle noSkyBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+        FluxionRHIBarrier skyToCopy = { skyTexture, noSkyBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED,
+                                        FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
+        Fluxion_RHI_CommandList_Barrier(skyUpload, &skyToCopy, 1);
+
+        for (u32 face = 0; face < FLUXION_RHI_CUBE_FACE_COUNT; ++face)
+        {
+            Fluxion_RHI_CommandList_CopyBufferToTexture(skyUpload, skyStaging, skyPlacements[face].stagingOffset, skyTexture, 0, face);
+        }
+
+        FluxionRHIBarrier skyToRead = skyToCopy;
+        skyToRead.before = FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION;
+        skyToRead.after = FLUXION_RHI_RESOURCE_STATE_SHADER_READ;
+        Fluxion_RHI_CommandList_Barrier(skyUpload, &skyToRead, 1);
+        Fluxion_RHI_CommandList_End(skyUpload);
+
+        FluxionRHIFenceHandle skyFence = Fluxion_RHI_CreateFence(device, false);
+        Fluxion_RHI_Queue_Submit(graphicsQueue, &skyUpload, 1, skyFence);
+        Fluxion_RHI_WaitForFence(skyFence);
+
+        Fluxion_RHI_DestroyFence(skyFence);
+        Fluxion_RHI_DestroyCommandList(skyUpload);
+        Fluxion_RHI_DestroyBuffer(skyStaging);
+        Fluxion_RHI_Device_CollectGarbage(device);
+    }
+
+    // Read as a cube, which is what makes it samplable by direction --
+    // the same six layers viewed flat would be six pictures nothing can
+    // reach.
+    FluxionRHITextureViewDesc skyViewDesc;
+    memset(&skyViewDesc, 0, sizeof(skyViewDesc));
+    skyViewDesc.texture = skyTexture;
+    skyViewDesc.format = skyDesc.format;
+    skyViewDesc.mipLevelCount = 1;
+    skyViewDesc.arrayLayerCount = FLUXION_RHI_CUBE_FACE_COUNT;
+    skyViewDesc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_CUBE;
+    FluxionRHITextureViewHandle skyView = Fluxion_RHI_CreateTextureView(device, &skyViewDesc);
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroyTextureView(skyView));
+
+    FluxionRHISamplerHandle skySampler = Fluxion_RHI_CreateSampler(device, &albedoSamplerDesc);
+    FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroySampler(skySampler));
 
     // --- Depth buffer: sized once at startup to the initial window
     // extent -- this demo doesn't otherwise handle swapchain-resize edge
@@ -1276,6 +1469,11 @@ int main(int argc, char** argv)
             reportedTooManyLights = true;
         }
         Fluxion_RenderView_SetLights(frameView, sceneLights, lightsUsed);
+
+        // What the world looks like in every direction. The sky behind
+        // the cube and the reflections on it will read the same texture,
+        // which is the point of it being one.
+        Fluxion_RenderView_SetEnvironment(frameView, skyView, skySampler);
 
         Fluxion_RenderView_UpdateFrameConstants(frameView);
 

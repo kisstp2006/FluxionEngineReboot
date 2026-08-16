@@ -87,7 +87,12 @@ static void Fluxion_ForwardOpaquePassInternal_SortPacketIndices(const FluxionRen
 void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, void* userData)
 {
     FluxionRenderer* renderer = (FluxionRenderer*)userData;
-    if (renderer == NULL || renderer->packetCount == 0) return;
+
+    // No early return on an empty frame any more. A scene with nothing in
+    // it still has a sky behind it, and leaving without drawing would
+    // also leave the target uncleared -- so an empty scene would show
+    // whatever the last frame left.
+    if (renderer == NULL) return;
 
     FluxionRenderTargetHandle renderTarget = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     FluxionRHIBindGroupHandle frameBindGroup = { FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -191,6 +196,22 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
 
         Fluxion_RHI_DestroyBindGroup(objectBindGroup);
     }
+
+    // Last, not first. The sky sits exactly on the far plane and keeps
+    // only what is equal or nearer, so drawing it after everything else
+    // fills precisely the pixels nothing covered -- and every pixel that
+    // WAS covered is rejected by the depth test before its shader runs.
+    // Drawing it first would shade every one of them and then throw the
+    // work away.
+    //
+    // The formats come from what the caller said it draws into. Nothing
+    // reachable from here can answer that -- a texture view carries no
+    // queryable format any more than it carries an extent -- so these are
+    // the two the renderer was told, and they are the frame's attachment
+    // formats rather than anything specific to the debug lines that first
+    // needed them.
+    FluxionRendererInternal_Skybox_Draw(renderer, commandList, frameBindGroup,
+        renderer->attachmentColorFormat, renderer->attachmentDepthFormat, FLUXION_HANDLE_IS_VALID(depthView));
 
     Fluxion_RHI_CommandList_EndRendering(commandList);
 }

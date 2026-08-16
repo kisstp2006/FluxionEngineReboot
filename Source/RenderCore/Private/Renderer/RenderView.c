@@ -2,6 +2,9 @@
 
 #include "RendererInternal.h"
 
+#include <Fluxion/RenderCore/Renderer/TextureDefaults.h>
+
+
 #include <Fluxion/Foundation/Assert.h>
 
 #include <string.h>
@@ -24,6 +27,16 @@ typedef struct FluxionRenderViewRecord
     f32 exposure;
     f32 tonemapWhitePoint;
     bool encodeOutputToSRGB;
+
+    // What the world looks like in every direction. Never nothing: a
+    // view starts with the small black cube the engine keeps.
+    FluxionRHITextureViewHandle environmentView;
+    FluxionRHISamplerHandle environmentSampler;
+
+    // The one this view made for itself, kept apart from the one it is
+    // currently using: a caller may set an environment with its own
+    // sampler, and this still has to be given back.
+    FluxionRHISamplerHandle ownedEnvironmentSampler;
 
     // The lights, in the packed shape the shader reads, plus the two
     // buffers that get them there: one the CPU writes, one the GPU reads.
@@ -100,34 +113,55 @@ static bool Fluxion_RenderViewInternal_MakeLightStorage(FluxionRHIDeviceHandle d
 static FluxionRHIBindGroupHandle Fluxion_RenderViewInternal_MakeFrameBindGroup(FluxionRHIDeviceHandle device,
                                                                                FluxionRHIBindGroupLayoutHandle layout,
                                                                                FluxionRHIBufferHandle constants,
+                                                                               FluxionRHITextureViewHandle environmentView,
+                                                                               FluxionRHISamplerHandle environmentSampler,
                                                                                FluxionRHIBufferHandle lights, u32 lightCapacity)
 {
-    FluxionRHIBindGroupEntry entries[2];
+    const FluxionRHITextureViewHandle noView = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    const FluxionRHISamplerHandle noSampler = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    const FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    FluxionRHIBindGroupEntry entries[4];
     memset(entries, 0, sizeof(entries));
 
     entries[0].binding = 0;
     entries[0].type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
     entries[0].buffer = constants;
     entries[0].bufferSize = sizeof(FluxionFrameConstants);
-    entries[0].textureView = (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
-    entries[0].sampler = (FluxionRHISamplerHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    entries[0].textureView = noView;
+    entries[0].sampler = noSampler;
 
+    // The numbers here are the shader compiler's, not this file's: a
+    // group's uniform buffer is binding 0, then every texture takes a
+    // pair, and storage buffers come last. See MakeFrameLayoutDesc.
     entries[1].binding = 1;
-    entries[1].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    entries[1].buffer = lights;
-    entries[1].bufferSize = (usize)lightCapacity * sizeof(FluxionRenderLightGPU);
-    entries[1].textureView = (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
-    entries[1].sampler = (FluxionRHISamplerHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    entries[1].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    entries[1].buffer = noBuffer;
+    entries[1].textureView = environmentView;
+    entries[1].sampler = noSampler;
+
+    entries[2].binding = 2;
+    entries[2].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    entries[2].buffer = noBuffer;
+    entries[2].textureView = noView;
+    entries[2].sampler = environmentSampler;
+
+    entries[3].binding = 3;
+    entries[3].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    entries[3].buffer = lights;
+    entries[3].bufferSize = (usize)lightCapacity * sizeof(FluxionRenderLightGPU);
+    entries[3].textureView = noView;
+    entries[3].sampler = noSampler;
 
     // How big one light is, said rather than assumed. A backend that
     // describes a buffer by element cannot work it out, and a wrong guess
     // reads the right memory in the wrong pieces.
-    entries[1].bufferElementStride = (u32)sizeof(FluxionRenderLightGPU);
+    entries[3].bufferElementStride = (u32)sizeof(FluxionRenderLightGPU);
 
     FluxionRHIBindGroupDesc desc;
     desc.layout = layout;
     desc.entries = entries;
-    desc.entryCount = 2;
+    desc.entryCount = 4;
     return Fluxion_RHI_CreateBindGroup(device, &desc);
 }
 
@@ -175,8 +209,32 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
         return invalid;
     }
 
+    // The black cube the engine keeps, until somebody says otherwise. A
+    // binding with nothing in it is refused as a whole group, so there is
+    // no such thing as a view with no environment.
+    const FluxionRHITextureViewHandle defaultEnvironment = Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_BLACK_CUBE);
+
+    FluxionRHISamplerDesc environmentSamplerDesc;
+    memset(&environmentSamplerDesc, 0, sizeof(environmentSamplerDesc));
+    environmentSamplerDesc.minFilter = FLUXION_RHI_FILTER_LINEAR;
+    environmentSamplerDesc.magFilter = FLUXION_RHI_FILTER_LINEAR;
+    environmentSamplerDesc.mipFilter = FLUXION_RHI_FILTER_LINEAR;
+    environmentSamplerDesc.addressModeU = FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+    environmentSamplerDesc.addressModeV = FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+    environmentSamplerDesc.addressModeW = FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+    environmentSamplerDesc.maxAnisotropy = 1.0f;
+    environmentSamplerDesc.debugName = "Fluxion.RenderView.EnvironmentSampler";
+    // Made here and destroyed with the view, rather than taken from the
+    // shared sampler cache. The cache is a separate facility with a
+    // lifetime of its own, and quietly putting an entry in it would mean
+    // that making a view obliged the caller to shut something else down
+    // -- a dependency nothing about creating a view announces. One
+    // sampler per view is a handful of objects.
+    const FluxionRHISamplerHandle defaultSampler = Fluxion_RHI_CreateSampler(device, &environmentSamplerDesc);
+
     FluxionRHIBindGroupHandle frameBindGroup = Fluxion_RenderViewInternal_MakeFrameBindGroup(
-        device, frameBindGroupLayout, frameConstantBuffer, lightStorage, FLUXION_RENDER_VIEW_INITIAL_LIGHTS);
+        device, frameBindGroupLayout, frameConstantBuffer, defaultEnvironment, defaultSampler,
+        lightStorage, FLUXION_RENDER_VIEW_INITIAL_LIGHTS);
 
     FluxionRenderViewRecord* record = &s_renderViews[index];
     u32 generation = record->generation;
@@ -202,6 +260,9 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     record->frameConstantBuffer = frameConstantBuffer;
     record->frameBindGroupLayout = frameBindGroupLayout;
     record->frameBindGroup = frameBindGroup;
+    record->environmentView = defaultEnvironment;
+    record->environmentSampler = defaultSampler;
+    record->ownedEnvironmentSampler = defaultSampler;
     record->lightStaging = lightStaging;
     record->lightStorage = lightStorage;
     record->lightCapacity = FLUXION_RENDER_VIEW_INITIAL_LIGHTS;
@@ -220,6 +281,7 @@ void Fluxion_RenderView_Destroy(FluxionRenderViewHandle view)
         return;
     }
 
+    if (FLUXION_HANDLE_IS_VALID(record->ownedEnvironmentSampler)) Fluxion_RHI_DestroySampler(record->ownedEnvironmentSampler);
     if (FLUXION_HANDLE_IS_VALID(record->lightStorage)) Fluxion_RHI_DestroyBuffer(record->lightStorage);
     if (FLUXION_HANDLE_IS_VALID(record->lightStaging)) Fluxion_RHI_DestroyBuffer(record->lightStaging);
     if (FLUXION_HANDLE_IS_VALID(record->frameBindGroup)) Fluxion_RHI_DestroyBindGroup(record->frameBindGroup);
@@ -259,6 +321,11 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
     constants.toneMapping.y = record->tonemapWhitePoint;
     constants.toneMapping.z = record->encodeOutputToSRGB ? 1.0f : 0.0f;
 
+    // Worked out once a frame here rather than in every pixel that wants
+    // it. Turning a point on the screen back into a direction in the
+    // world is the whole of drawing a sky.
+    constants.inverseViewProjection = Fluxion_Mat4_Inverse(constants.viewProjection);
+
     constants.lightParams.x = (f32)record->lightCount;
 
     void* mapped = Fluxion_RHI_MapBuffer(record->frameConstantBuffer);
@@ -289,7 +356,8 @@ void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRen
         if (!Fluxion_RenderViewInternal_MakeLightStorage(record->device, capacity, &staging, &storage)) return;
 
         FluxionRHIBindGroupHandle group = Fluxion_RenderViewInternal_MakeFrameBindGroup(
-            record->device, record->frameBindGroupLayout, record->frameConstantBuffer, storage, capacity);
+            record->device, record->frameBindGroupLayout, record->frameConstantBuffer,
+            record->environmentView, record->environmentSampler, storage, capacity);
         if (!FLUXION_HANDLE_IS_VALID(group))
         {
             Fluxion_RHI_DestroyBuffer(storage);
@@ -348,6 +416,42 @@ void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRen
     }
 
     Fluxion_RHI_UnmapBuffer(record->lightStaging);
+}
+
+void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHITextureViewHandle cubeView,
+                                      FluxionRHISamplerHandle sampler)
+{
+    FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return;
+
+    // An invalid one puts the black cube back rather than leaving the
+    // binding empty. There is no state in which this view has no
+    // environment -- see the header.
+    FluxionRHITextureViewHandle wanted = cubeView;
+    FluxionRHISamplerHandle wantedSampler = sampler;
+    if (!FLUXION_HANDLE_IS_VALID(wanted)) wanted = Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_BLACK_CUBE);
+    if (!FLUXION_HANDLE_IS_VALID(wantedSampler)) wantedSampler = record->environmentSampler;
+
+    // The group names the view, so changing the view means a new group.
+    // Asked first whether anything actually changed: a caller that sets
+    // the same environment every frame would otherwise rebuild a bind
+    // group every frame, and the old ones would pile up until the next
+    // collection.
+    if (wanted.index == record->environmentView.index && wanted.generation == record->environmentView.generation &&
+        wantedSampler.index == record->environmentSampler.index && wantedSampler.generation == record->environmentSampler.generation)
+    {
+        return;
+    }
+
+    FluxionRHIBindGroupHandle group = Fluxion_RenderViewInternal_MakeFrameBindGroup(
+        record->device, record->frameBindGroupLayout, record->frameConstantBuffer,
+        wanted, wantedSampler, record->lightStorage, record->lightCapacity);
+    if (!FLUXION_HANDLE_IS_VALID(group)) return;
+
+    Fluxion_RHI_DestroyBindGroup(record->frameBindGroup);
+    record->frameBindGroup = group;
+    record->environmentView = wanted;
+    record->environmentSampler = wantedSampler;
 }
 
 void Fluxion_RenderView_UploadLights(FluxionRenderViewHandle view, FluxionRHICommandListHandle commandList)

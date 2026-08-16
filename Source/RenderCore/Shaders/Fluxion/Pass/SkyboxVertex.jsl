@@ -1,0 +1,40 @@
+#ifndef FLUXION_PASS_SKYBOX_VERTEX_INCLUDED
+#define FLUXION_PASS_SKYBOX_VERTEX_INCLUDED
+
+#include "Fluxion/Frame.jsl"
+
+// The vertex half of the sky.
+//
+// Three vertices, given in clip space already, covering the whole screen.
+// Nothing is transformed: the sky has no position, and a mesh that had
+// one would move when the camera did -- which is the one thing a sky must
+// not do.
+//
+// The depth is the far plane. Combined with a depth test that keeps what
+// is equal or nearer and a depth buffer that writes nothing, this draws
+// exactly where nothing else did.
+
+[Input] Vector2 position;
+
+[Output] Vector3 vDirection;
+[Output] Vector4 Position;
+
+void main() {
+  // The far plane, in the convention every backend here shares: zero is
+  // near, one is far.
+  Vector4 clip = Vector4(position, 1.0, 1.0);
+
+  // Back out to the world.
+  //
+  // The point this lands on is somewhere on the far plane, and the
+  // direction to it from the eye is what the sky is sampled by. The
+  // division by w is what turns the four numbers back into a place: skip
+  // it and the sky bends towards the corners of the screen, which reads
+  // as a lens rather than as a mistake.
+  Vector4 world = inverseViewProjection * clip;
+  vDirection = world.xyz / world.w - cameraPosition.xyz;
+
+  Position = clip;
+}
+
+#endif

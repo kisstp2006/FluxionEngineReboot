@@ -222,3 +222,54 @@ extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resol
     variant.objectLayout = objectLayout;
     return rhiPipeline;
 }
+
+// The pipeline the sky wants.
+//
+// Not a variant of the one above and not reachable through a
+// FluxionRenderPipeline: a sky is not a material, has no category, and
+// wants a depth state no surface does. Writing it as a category would
+// mean every material could ask to be drawn as sky.
+//
+// The three differences from a surface, and each of them load-bearing:
+// it never WRITES depth, so it leaves the buffer for whatever comes
+// after; it keeps what is equal or nearer, so a triangle sitting exactly
+// on the far plane fills only where nothing else drew; and it culls
+// nothing, because a triangle covering the screen has no facing worth
+// respecting.
+extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_ShaderProgram_CreateSkyboxPipeline(
+    FluxionRHIDeviceHandle device, FluxionShaderProgramHandle program, const FluxionRHIVertexLayout* vertexLayout,
+    FluxionRHIFormat colorFormat, FluxionRHIFormat depthFormat, FluxionRHIBindGroupLayoutHandle* outFrameLayout)
+{
+    FluxionRHIBindGroupLayoutDesc frameLayoutDesc = FluxionRendererInternal_MakeFrameLayoutDesc();
+    FluxionRHIBindGroupLayoutHandle frameLayout = Fluxion_RHI_CreateBindGroupLayout(device, &frameLayoutDesc);
+
+    // Handed back rather than dropped here: the pipeline is built from it
+    // and the caller has to give it back when the pipeline goes. Letting
+    // it fall out of scope leaks one object per rebuild, which a device
+    // reports at shutdown and nothing reports before that.
+    *outFrameLayout = frameLayout;
+
+    FluxionRHIGraphicsPipelineDesc desc{};
+    desc.vertexShader = FluxionRendererInternal_ShaderProgram_GetVertexShader(program);
+    desc.fragmentShader = FluxionRendererInternal_ShaderProgram_GetFragmentShader(program);
+    desc.vertexLayout = *vertexLayout;
+    desc.rasterState.cullMode = FLUXION_RHI_CULL_MODE_NONE;
+    desc.rasterState.frontFaceCounterClockwise = false;
+    desc.rasterState.wireframe = false;
+    desc.depthState.testEnable = true;
+    desc.depthState.writeEnable = false;
+    desc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL;
+    desc.blendState.blendEnable = false;
+    desc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    desc.colorFormats[0] = colorFormat;
+    desc.colorFormatCount = 1;
+    desc.depthFormat = depthFormat;
+    desc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_GLOBAL] = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    desc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_FRAME] = frameLayout;
+    desc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_MATERIAL] = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    desc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_OBJECT] = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    desc.bindGroupLayoutCount = FLUXION_RHI_BIND_GROUP_FRAME + 1;
+    desc.debugName = "Fluxion.Renderer.Skybox.Pipeline";
+
+    return Fluxion_RHI_CreateGraphicsPipeline(device, &desc);
+}

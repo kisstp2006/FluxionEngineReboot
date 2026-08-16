@@ -19,6 +19,8 @@ engine_embed_shader_library(
         Fluxion/Pass/Vertex.jsl
         Fluxion/Pass/Forward.jsl
         Fluxion/Pass/DepthOnly.jsl
+        Fluxion/Pass/SkyboxVertex.jsl
+        Fluxion/Pass/Skybox.jsl
 )
 
 engine_add_module(

@@ -408,7 +408,12 @@ void Fluxion_RHIOpenGL_CommandListCopyBufferToTexture(FluxionRHICommandListHandl
             const u32 rowHeight = (yOffset + formatInfo.blockHeight <= height) ? formatInfo.blockHeight : (height - yOffset);
             const usize rowOffset = srcOffset + (usize)blockRow * alignedRowBytes;
 
-            if (dstState->target == GL_TEXTURE_2D_ARRAY)
+            // A cube map goes through the three-dimensional call as well,
+            // with the face where a layer would be. Its target is not
+            // GL_TEXTURE_2D_ARRAY, and asking only about that one sends a
+            // cube down the flat path -- which this driver refuses
+            // outright, six times, once per face.
+            if (dstState->target == GL_TEXTURE_2D_ARRAY || dstState->target == GL_TEXTURE_CUBE_MAP)
             {
                 glCompressedTextureSubImage3D(dstState->name, (GLint)mipLevel, 0, (GLint)yOffset, (GLint)arrayLayer,
                                               (GLsizei)width, (GLsizei)rowHeight, 1,
@@ -440,7 +445,10 @@ void Fluxion_RHIOpenGL_CommandListCopyBufferToTexture(FluxionRHICommandListHandl
     // reset afterwards so no later unpack inherits it.
     if (formatInfo.blockBytes != 0) glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(alignedRowBytes / formatInfo.blockBytes));
 
-    if (dstState->target == GL_TEXTURE_2D_ARRAY)
+    // Same again for the uncompressed path: a cube map is uploaded a face
+    // at a time through the three-dimensional call, with the face index
+    // where a layer would be.
+    if (dstState->target == GL_TEXTURE_2D_ARRAY || dstState->target == GL_TEXTURE_CUBE_MAP)
     {
         glTextureSubImage3D(dstState->name, (GLint)mipLevel, 0, 0, (GLint)arrayLayer, (GLsizei)width, (GLsizei)height, 1, pixelFormat, pixelType, (const void*)srcOffset);
     }

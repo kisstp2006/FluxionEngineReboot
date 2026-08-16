@@ -1,0 +1,47 @@
+#ifndef FLUXION_PASS_SKYBOX_INCLUDED
+#define FLUXION_PASS_SKYBOX_INCLUDED
+
+#include "Fluxion/Frame.jsl"
+#include "Fluxion/Tonemap.jsl"
+
+// What is behind everything else.
+//
+// Not a material and not a surface: no material declares it, nothing
+// lights it, and it has no place in the world. It is the environment map
+// read in the direction the eye is looking, which is what an environment
+// map IS -- the same texture the lighting will read for its reflections,
+// shown directly.
+//
+// That shared texture is the whole point of drawing it. A sky drawn from
+// one source and reflections taken from another agree only by accident,
+// and the disagreement reads as a reflection bug rather than as two
+// different pictures.
+
+[Input] Vector3 vDirection;
+
+[Target(0)] Vector4 fragColor;
+
+void main() {
+  // Normalized here rather than in the vertex half: what is interpolated
+  // between three corners of the screen is a direction whose length
+  // varies across it, and using it unnormalized would sample a cube map
+  // in the right direction with the wrong weight between faces.
+  Vector3 direction = normalize(vDirection);
+
+  Vector3 color = texture(environmentMap, direction).xyz;
+
+  // The same camera as everything else, and that is not a detail. The
+  // scene's lights are in real units and are brought down by this
+  // exposure; a sky that skipped it would be either blinding or black
+  // beside them, however correct its own values were.
+  color = ApplyExposure(color, toneMapping.x);
+  color = TonemapReinhard(color, toneMapping.y);
+  if (toneMapping.z > 0.5)
+  {
+    color = LinearToSRGB(color);
+  }
+
+  return Vector4(color, 1.0);
+}
+
+#endif

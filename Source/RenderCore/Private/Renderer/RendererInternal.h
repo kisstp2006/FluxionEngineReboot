@@ -63,21 +63,31 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeFrameLay
     desc.entries[0].type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
     desc.entries[0].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_VERTEX | FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
-    // Binding 1 is the light list. The number is not free to choose: the
-    // shader compiler gives a group's uniform buffer binding 0 and hands
-    // out the rest in declaration order, so this has to match what
-    // Fluxion/Frame.jsl declares.
-    //
+    // The rest of the numbers are NOT free to choose. The shader compiler
+    // gives a group's uniform buffer binding 0, then hands out a pair to
+    // every texture -- the texture and its sampler -- and only then the
+    // storage buffers. So the order here is the compiler's order, not the
+    // order Fluxion/Frame.jsl happens to declare things in, and a texture
+    // added to that file shifts the light list along whether or not it is
+    // written above it.
+    desc.entries[1].binding = 1;
+    desc.entries[1].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    desc.entries[1].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entries[2].binding = 2;
+    desc.entries[2].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    desc.entries[2].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
     // A storage buffer rather than an array in the uniform block above.
     // An array would need a maximum written into the shader, and that
     // maximum would be a number somebody has to raise -- and raising it
     // costs every frame that does not use it, because a uniform block is
     // paid for whether it is full or not.
-    desc.entries[1].binding = 1;
-    desc.entries[1].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    desc.entries[1].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+    desc.entries[3].binding = 3;
+    desc.entries[3].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[3].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
-    desc.entryCount = 2;
+    desc.entryCount = 4;
     desc.debugName = "Fluxion.Renderer.FrameBindGroupLayout";
     return desc;
 }
@@ -162,13 +172,60 @@ typedef struct FluxionRenderer
     // carries no queryable format any more than it carries an extent --
     // so the caller says it (Fluxion_Renderer_SetDebugDrawColorFormat) and
     // this is what it last said.
-    FluxionRHIFormat debugColorFormat;
+    FluxionRHIFormat attachmentColorFormat;
 
     // The depth target the debug geometry is tested against. Unknown means
     // no depth attachment and no test, so it all draws over the top --
     // which is what a caller that never says otherwise gets.
-    FluxionRHIFormat debugDepthFormat;
+    FluxionRHIFormat attachmentDepthFormat;
+
+    // --- The sky ---------------------------------------------------------
+    //
+    // Built on first use rather than at startup: a renderer that never
+    // draws a frame should not compile a shader, and the formats the
+    // pipeline needs are not known until a pass says what it is drawing
+    // into.
+    FluxionShaderProgramHandle skyboxProgram;
+    FluxionRHIBufferHandle skyboxVertexBuffer;
+    FluxionRHIPipelineHandle skyboxPipeline;
+
+    // Kept alongside the pipeline, and destroyed with it. The pipeline is
+    // built from this layout, and a layout dropped the moment the
+    // pipeline exists is an object nothing gives back -- which a device
+    // says out loud at shutdown and nowhere earlier.
+    FluxionRHIBindGroupLayoutHandle skyboxFrameLayout;
+    FluxionRHIFormat skyboxColorFormat;
+    FluxionRHIFormat skyboxDepthFormat;
+
+    // Remembered so the attempt is made once. A shader that failed to
+    // build will fail again, and saying so once a frame buries whatever
+    // said it first.
+    bool skyboxFailed;
+
+    // Said once, not once a frame, when the renderer has not been told
+    // what it draws into.
+    bool skyboxFormatsReported;
 } FluxionRenderer;
+
+// --- The sky ---------------------------------------------------------------
+
+bool FluxionRendererInternal_Skybox_EnsureResources(FluxionRenderer* renderer);
+
+// Draws it, building the pipeline if the formats have changed. Called
+// from inside a pass that has already begun rendering.
+void FluxionRendererInternal_Skybox_Draw(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList,
+                                         FluxionRHIBindGroupHandle frameBindGroup,
+                                         FluxionRHIFormat colorFormat, FluxionRHIFormat depthFormat, bool hasDepthAttachment);
+
+void FluxionRendererInternal_Skybox_Destroy(FluxionRenderer* renderer);
+
+// The pipeline a sky wants, which is not the one a surface wants: it
+// never writes depth, it keeps what is equal or nearer -- so it fills
+// exactly where nothing else drew -- and it culls nothing, because a
+// triangle covering the screen has no meaningful facing.
+FluxionRHIPipelineHandle FluxionRendererInternal_ShaderProgram_CreateSkyboxPipeline(
+    FluxionRHIDeviceHandle device, FluxionShaderProgramHandle program, const FluxionRHIVertexLayout* vertexLayout,
+    FluxionRHIFormat colorFormat, FluxionRHIFormat depthFormat, FluxionRHIBindGroupLayoutHandle* outFrameLayout);
 
 // --- Cross-file internal accessors ------------------------------------------
 //
