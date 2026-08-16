@@ -42,6 +42,7 @@
 #include "TestFramework.h"
 
 #include <cstdio>
+#include <cstring>
 
 void Test_Lexer_Run(TestContext& ctx);
 void Test_Parser_Run(TestContext& ctx);
@@ -61,29 +62,67 @@ void Test_Binding_Run(TestContext& ctx);
 void Test_StackTrace_Run(TestContext& ctx);
 void Test_Serialization_Run(TestContext& ctx);
 
-int main()
+// The suites, named -- so that CTest can run this binary several times
+// with different arguments, each run taking a slice, and the slices go
+// in parallel. This suite dominates the whole test wall-clock, and the
+// suites inside it are independent; running them in one process in a
+// row was an accident of history, not a requirement.
+//
+// With no arguments everything runs, so `ScriptTests` by hand behaves
+// exactly as it always has.
+struct Suite
+{
+    const char* name;
+    void (*run)(TestContext&);
+};
+
+static const Suite kSuites[] = {
+    { "Lexer", Test_Lexer_Run },
+    { "Parser", Test_Parser_Run },
+    { "Semantic", Test_Semantic_Run },
+    { "Bytecode", Test_Bytecode_Run },
+    { "VmExecution", Test_VmExecution_Run },
+    { "VmFixture", Test_VmExecution_Fixture_Run },
+    { "Objects", Test_Objects_Run },
+    { "Structs", Test_Structs_Run },
+    { "Casts", Test_Casts_Run },
+    { "Enums", Test_Enums_Run },
+    { "Mathf", Test_Mathf_Run },
+    { "Generics", Test_Generics_Run },
+    { "Arrays", Test_Arrays_Run },
+    { "Gc", Test_Gc_Run },
+    { "Binding", Test_Binding_Run },
+    { "StackTrace", Test_StackTrace_Run },
+    { "Serialization", Test_Serialization_Run },
+};
+
+int main(int argc, char** argv)
 {
     TestContext ctx;
 
     std::fprintf(stderr, "Running ScriptTests...\n");
 
-    Test_Lexer_Run(ctx);
-    Test_Parser_Run(ctx);
-    Test_Semantic_Run(ctx);
-    Test_Bytecode_Run(ctx);
-    Test_VmExecution_Run(ctx);
-    Test_VmExecution_Fixture_Run(ctx);
-    Test_Objects_Run(ctx);
-    Test_Structs_Run(ctx);
-    Test_Casts_Run(ctx);
-    Test_Enums_Run(ctx);
-    Test_Mathf_Run(ctx);
-    Test_Generics_Run(ctx);
-    Test_Arrays_Run(ctx);
-    Test_Gc_Run(ctx);
-    Test_Binding_Run(ctx);
-    Test_StackTrace_Run(ctx);
-    Test_Serialization_Run(ctx);
+    int ran = 0;
+    for (const Suite& suite : kSuites)
+    {
+        bool wanted = argc <= 1;
+        for (int i = 1; i < argc && !wanted; ++i)
+        {
+            wanted = std::strcmp(argv[i], suite.name) == 0;
+        }
+        if (!wanted) continue;
+
+        suite.run(ctx);
+        ++ran;
+    }
+
+    // An argument that names no suite is a misspelling in a CTest entry,
+    // and silently running nothing would report it as a pass.
+    if (ran == 0)
+    {
+        std::fprintf(stderr, "No suite matches the given name(s).\n");
+        return 1;
+    }
 
     if (ctx.failures == 0)
     {

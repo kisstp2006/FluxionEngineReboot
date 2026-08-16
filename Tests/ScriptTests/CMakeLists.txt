@@ -63,11 +63,23 @@ engine_add_test(
         Fluxion::Script
     NO_EXCEPTIONS
     NO_RTTI
+    NO_TEST_REGISTRATION
 )
 
 target_compile_definitions(ScriptTests PRIVATE
     FLUXION_TEST_SCRIPT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Fixtures"
 )
+
+# One binary, four CTest entries, each running a named slice of the
+# suites (main.cpp maps the names). This suite dominated the whole test
+# run's wall clock, and its suites are independent -- sliced, they run in
+# parallel under `ctest -j` instead of in one 20-second row.
+if(NOT CMAKE_CROSSCOMPILING)
+    add_test(NAME ScriptTestsCompiler COMMAND ScriptTests Lexer Parser Semantic Bytecode)
+    add_test(NAME ScriptTestsVm COMMAND ScriptTests VmExecution VmFixture)
+    add_test(NAME ScriptTestsTypes COMMAND ScriptTests Objects Structs Casts Enums Mathf Generics)
+    add_test(NAME ScriptTestsRuntime COMMAND ScriptTests Arrays Gc Binding StackTrace Serialization)
+endif()
 
 engine_add_header_selfcontained_test(
     MODULE Script

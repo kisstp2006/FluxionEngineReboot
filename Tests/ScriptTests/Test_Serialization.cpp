@@ -397,14 +397,30 @@ void Test_Serialization_Run(TestContext& ctx)
             std::vector<u8> bytes;
             if (WriteModule(original, bytes) && bytes.size() > 8)
             {
+                // Every length through the header region, where all the
+                // counts and offsets live, then a prime stride through
+                // the body, plus the one-byte-short case. Trying every
+                // single length was quadratic in the image -- each read
+                // costs the length being read -- and took longer than
+                // every other suite in this binary together, for cuts
+                // that all land in the middle of some array's bytes.
                 size_t accepted = 0;
-                for (size_t length = 0; length < bytes.size(); ++length)
+                size_t tried = 0;
+                for (size_t length = 0; length < bytes.size(); length = (length < 1024) ? length + 1 : length + 7)
                 {
                     DiagnosticList diagnostics;
                     BytecodeModule restored;
                     if (ReadModule(bytes.data(), length, restored, diagnostics)) ++accepted;
+                    ++tried;
+                }
+                {
+                    DiagnosticList diagnostics;
+                    BytecodeModule restored;
+                    if (ReadModule(bytes.data(), bytes.size() - 1, restored, diagnostics)) ++accepted;
+                    ++tried;
                 }
                 TEST_CHECK(ctx, accepted == 0);
+                TEST_CHECK(ctx, tried > 1024);
 
                 // Nothing was said about the empty case above, so it is
                 // said here: no bytes is not a module.
@@ -428,11 +444,22 @@ void Test_Serialization_Run(TestContext& ctx)
             std::vector<u8> bytes;
             if (WriteModule(original, bytes) && !bytes.empty())
             {
+                // All three patterns on every byte of the header region;
+                // past it, EVERY byte is still damaged at least once, but
+                // by one pattern each, rotating -- full coverage of
+                // positions, sampled coverage of values. All three on all
+                // bytes was three full reads per byte of the image, and
+                // the reads are what the time went on.
                 bool consistent = true;
+                const u8 kPatterns[3] = { (u8)0x00, (u8)0xFF, (u8)0x7F };
                 for (size_t index = 0; index < bytes.size(); ++index)
                 {
-                    for (const u8 pattern : { (u8)0x00, (u8)0xFF, (u8)0x7F })
+                    const bool header = index < 1024;
+                    for (size_t p = 0; p < 3; ++p)
                     {
+                        if (!header && p != index % 3) continue;
+
+                        const u8 pattern = kPatterns[p];
                         std::vector<u8> damaged = bytes;
                         if (damaged[index] == pattern) continue;
                         damaged[index] = pattern;

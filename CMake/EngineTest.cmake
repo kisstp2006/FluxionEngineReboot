@@ -53,7 +53,7 @@ include_guard(GLOBAL)
 # Builds a plain executable and registers it with CTest. No external test
 # framework — the executable itself decides pass/fail via its exit code.
 function(engine_add_test)
-    set(options NO_EXCEPTIONS NO_RTTI)
+    set(options NO_EXCEPTIONS NO_RTTI NO_TEST_REGISTRATION)
     set(oneValueArgs NAME)
     set(multiValueArgs SOURCES DEPENDENCIES PCH)
     cmake_parse_arguments(ENGINE_TEST "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
@@ -105,7 +105,11 @@ function(engine_add_test)
     # registered with CTest when the result can actually be started here.
     # A cross build produces binaries for another machine, and running
     # them would fail for a reason that has nothing to do with the code.
-    if(NOT CMAKE_CROSSCOMPILING)
+    #
+    # NO_TEST_REGISTRATION builds the binary without the CTest entry, for
+    # a suite the caller registers itself in slices -- see ScriptTests,
+    # whose one entry dominated the whole suite's wall clock.
+    if(NOT CMAKE_CROSSCOMPILING AND NOT ENGINE_TEST_NO_TEST_REGISTRATION)
         add_test(NAME ${ENGINE_TEST_NAME} COMMAND ${ENGINE_TEST_NAME})
     endif()
 endfunction()

@@ -81,6 +81,21 @@ another machine cannot be started on this one. Compiling them is still worth
 doing on its own: it is what checks that the engine's headers and that
 toolchain agree.
 
+### The fast way: `Tools/`
+
+- `Tools\windows.ps1 setup | build | test | vs | demo` — Ninja + cl +
+  ccache trees at `~\.fluxion\` (a no-op build in a fifth of a second, a
+  warm clean rebuild in ~10 seconds; the Visual Studio solution stays for
+  the IDE, via `vs`).
+- `Tools/linux.sh setup | build | test | gate | watch` — on WSL the
+  sources are mirrored onto the Linux disk first, because the `/mnt/c`
+  translation layer makes even a do-nothing build cost a minute; the
+  whole cycle runs in seconds, `gate` covers all three Linux
+  configurations, `watch` re-tests on every change.
+
+`setup` installs what building needs on either side. Run tests with
+`ctest -j 8`; the suite is sharded to make that worthwhile.
+
 ## Third party
 
 Full text of every license below is in [`LICENSES/`](LICENSES/), one file per
