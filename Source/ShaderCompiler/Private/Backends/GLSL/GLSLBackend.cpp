@@ -378,8 +378,18 @@ private:
                 const std::string& name = static_cast<const VarRefExpr&>(expr).name;
                 bool isVertexPosition = m_module.stage == ShaderStage::Vertex && name == "Position";
                 bool isThreadID = m_module.stage == ShaderStage::Compute && name == "ThreadID";
+
+                // gl_InstanceID, not gl_InstanceIndex: this backend emits
+                // core-profile GLSL for OpenGL, where the built-in counts
+                // from zero within the draw. (The Vulkan-flavoured
+                // gl_InstanceIndex, which adds the base instance, is a
+                // different number -- and the engine never sets a base
+                // instance precisely so the two cannot disagree.)
+                bool isInstanceIndex = m_module.stage == ShaderStage::Vertex && name == "InstanceIndex";
+
                 if (isVertexPosition) m_out << "gl_Position";
                 else if (isThreadID) m_out << "gl_GlobalInvocationID.x";
+                else if (isInstanceIndex) m_out << "gl_InstanceID";
                 else m_out << name;
                 break;
             }

@@ -1,0 +1,11 @@
+{
+  "name": "DefaultForward",
+  "graph": "DefaultForward",
+  "lighting": "forward",
+  "shadowQuality": "high",
+  "taa": false,
+  "ssao": false,
+  "ssr": false,
+  "bloom": false,
+  "msaa": 1
+}

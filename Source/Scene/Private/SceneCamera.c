@@ -43,6 +43,7 @@
 
 #include "SceneInternal.h"
 
+#include <Fluxion/Assets/AssetRef.h>
 #include <Fluxion/Core/Reflection/MethodInfo.h>
 #include <Fluxion/Core/Reflection/PropertyInfo.h>
 #include <Fluxion/Core/Reflection/Registry.h>
@@ -54,7 +55,7 @@
 #include <math.h>
 #include <string.h>
 
-#define FLUXION_SCENE_CAMERA_PROPERTY_COUNT 3
+#define FLUXION_SCENE_CAMERA_PROPERTY_COUNT 4
 
 static FluxionPropertyInfo s_cameraProperties[FLUXION_SCENE_CAMERA_PROPERTY_COUNT];
 static FluxionTypeInfo s_cameraType;
@@ -71,6 +72,7 @@ bool Fluxion_SceneCamera_EnsureRegistered(void)
         FLUXION_REFLECT_PROPERTY(FluxionCamera, fovYRadians, FLUXION_TYPE_ID_OF(f32), FLUXION_PROPERTY_FLAG_NONE),
         FLUXION_REFLECT_PROPERTY(FluxionCamera, nearPlane, FLUXION_TYPE_ID_OF(f32), FLUXION_PROPERTY_FLAG_NONE),
         FLUXION_REFLECT_PROPERTY(FluxionCamera, farPlane, FLUXION_TYPE_ID_OF(f32), FLUXION_PROPERTY_FLAG_NONE),
+        FLUXION_REFLECT_PROPERTY(FluxionCamera, renderPipeline, Fluxion_AssetRef_TypeId(), FLUXION_PROPERTY_FLAG_NONE),
     };
     memcpy(s_cameraProperties, properties, sizeof(properties));
 
@@ -78,7 +80,7 @@ bool Fluxion_SceneCamera_EnsureRegistered(void)
     s_cameraType.id = Fluxion_Camera_TypeId();
     s_cameraType.kind = FLUXION_TYPE_KIND_STRUCT;
     s_cameraType.size = (u32)sizeof(FluxionCamera);
-    s_cameraType.version = 1;
+    s_cameraType.version = 2;
     s_cameraType.members = Fluxion_Span_Make(s_cameraProperties, FLUXION_SCENE_CAMERA_PROPERTY_COUNT, sizeof(FluxionPropertyInfo));
     s_cameraType.methods = Fluxion_Span_Make(NULL, 0, sizeof(FluxionMethodInfo));
 
@@ -160,4 +162,38 @@ bool Fluxion_Scene_GatherCamera(FluxionSceneHandle scene, f32 aspect, FluxionMat
     }
 
     return found;
+}
+
+bool Fluxion_Scene_GatherCameraRenderPipeline(FluxionSceneHandle scene, FluxionAssetRef* outPipeline)
+{
+    if (outPipeline == NULL) return false;
+
+    // The same two components the matrices are gathered with, though
+    // only one of them is read here: asking a different question of a
+    // different set could find a different camera, and then a frame
+    // would be drawn through one camera's pipeline from another
+    // camera's position.
+    const FluxionTypeId required[2] = { Fluxion_Camera_TypeId(), Fluxion_Transform_TypeId() };
+
+    FluxionEntityQueryDesc desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.required = required;
+    desc.requiredCount = 2;
+
+    FluxionEntityQuery query = Fluxion_Scene_Query(scene, &desc);
+    FluxionEntityChunkView chunk;
+
+    while (Fluxion_EntityQuery_Next(&query, &chunk))
+    {
+        const FluxionCamera* cameras = (const FluxionCamera*)Fluxion_EntityChunk_Column(&chunk, Fluxion_Camera_TypeId());
+        if (cameras == NULL || chunk.count == 0) continue;
+
+        // No second warning about there being more than one camera --
+        // the caller that asked for the matrices has already had it, and
+        // saying it twice a frame would make it read as two problems.
+        *outPipeline = cameras[0].renderPipeline;
+        return true;
+    }
+
+    return false;
 }

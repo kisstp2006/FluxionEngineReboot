@@ -51,6 +51,7 @@ engine_add_test(
         Test_UniformLayout.cpp
         Test_GLSLBackend.cpp
         Test_Discard.cpp
+        Test_InstanceIndex.cpp
         Test_DXCAdapter.cpp
         Test_Compatibility.cpp
         Test_ShaderCache.cpp

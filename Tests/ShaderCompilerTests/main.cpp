@@ -52,6 +52,7 @@ void Test_UniformLayout_Run(TestContext& ctx);
 void Test_HLSLBackend_EntryReturn_Run(TestContext& ctx);
 void Test_GLSLBackend_Run(TestContext& ctx);
 void Test_Discard_Run(TestContext& ctx);
+void Test_InstanceIndex_Run(TestContext& ctx);
 void Test_DXCAdapter_Run(TestContext& ctx);
 void Test_Compatibility_Run(TestContext& ctx);
 void Test_ShaderCache_Run(TestContext& ctx);
@@ -76,6 +77,7 @@ int main()
     Test_HLSLBackend_EntryReturn_Run(ctx);
     Test_GLSLBackend_Run(ctx);
     Test_Discard_Run(ctx);
+    Test_InstanceIndex_Run(ctx);
     Test_DXCAdapter_Run(ctx);
     Test_Compatibility_Run(ctx);
     Test_ShaderCache_Run(ctx);

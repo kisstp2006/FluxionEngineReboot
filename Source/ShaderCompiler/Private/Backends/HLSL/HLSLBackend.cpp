@@ -317,6 +317,11 @@ private:
 
     void EmitStaticMirrors()
     {
+        // The instance built-in is a mirror like the rest, but its value
+        // comes from a system value on the entry point rather than from
+        // the stage-input struct -- see EmitWrapperMain.
+        if (m_module.stage == ShaderStage::Vertex) m_out << "static int InstanceIndex;\n";
+
         for (const IRStageIOField& f : m_module.inputs)
             m_out << "static " << HLSLTypeName(f.type) << " " << f.name << ";\n";
         for (const IRStageIOField& f : m_module.outputs)
@@ -382,7 +387,17 @@ private:
     void EmitWrapperMain()
     {
         bool isVertex = m_module.stage == ShaderStage::Vertex;
-        m_out << "StageOutput main(StageInput input)\n{\n";
+
+        // SV_InstanceID COUNTS FROM ZERO within the draw: it does not
+        // include the start instance, which is the opposite of what
+        // Vulkan's gl_InstanceIndex does. The engine never sets a start
+        // instance, so the two never get the chance to disagree -- and
+        // taking the value here without adding anything to it is this
+        // side of that promise.
+        if (isVertex) m_out << "StageOutput main(StageInput input, uint fluxionInstanceID : SV_InstanceID)\n{\n";
+        else m_out << "StageOutput main(StageInput input)\n{\n";
+        if (isVertex) m_out << "    InstanceIndex = (int)fluxionInstanceID;\n";
+
         for (const IRStageIOField& f : m_module.inputs)
             m_out << "    " << f.name << " = input." << f.name << ";\n";
         m_out << "    shaderMain();\n";

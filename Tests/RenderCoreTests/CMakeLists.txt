@@ -47,6 +47,11 @@ engine_add_test(
         Test_GraphCompile.cpp
         Test_JsonLoader.c
         Test_DumpDot.c
+        Test_RenderGraphAsset.c
+        Test_RenderPipelineAsset.c
+        Test_RenderPipelineAssetGPU.cpp
+        Test_GPUScene.cpp
+        Test_MaterialAsset.cpp
         Test_ShaderProgram.cpp
         Test_ShaderReload.cpp
         Test_Material.cpp

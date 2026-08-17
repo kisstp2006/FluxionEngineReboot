@@ -308,6 +308,12 @@ void Fluxion_RHI_CommandList_DrawIndirect(FluxionRHICommandListHandle commandLis
     s_backend->CommandListDrawIndirect(commandList, argsBuffer, offset, drawCount, stride);
 }
 
+void Fluxion_RHI_CommandList_DrawIndexedIndirect(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle argsBuffer, usize offset, u32 drawCount, u32 stride)
+{
+    if (s_backend == NULL) return;
+    s_backend->CommandListDrawIndexedIndirect(commandList, argsBuffer, offset, drawCount, stride);
+}
+
 void Fluxion_RHI_CommandList_Dispatch(FluxionRHICommandListHandle commandList, u32 groupCountX, u32 groupCountY, u32 groupCountZ)
 {
     if (s_backend == NULL) return;

@@ -413,11 +413,9 @@ void Fluxion_RHID3D12_CommandListDrawIndirect(FluxionRHICommandListHandle comman
     FLUXION_ASSERT_MSG(cl->insideRendering, "Fluxion RHI D3D12 backend: DrawIndirect called outside BeginRendering/EndRendering");
 
     // A minimal, always-available indirect signature (draw-only, no
-    // per-command root-argument updates) -- created lazily and cached
-    // for the process lifetime, mirroring how the pipeline cache is
-    // lazily created on first use.
-    static ComPtr<ID3D12CommandSignature> s_drawIndirectSignature;
-    if (s_drawIndirectSignature == nullptr)
+    // per-command root-argument updates) -- created lazily on first use,
+    // and kept ON THE DEVICE, because that is what it belongs to.
+    if (deviceState->drawIndirectSignature == nullptr)
     {
         D3D12_INDIRECT_ARGUMENT_DESC argDesc = {};
         argDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
@@ -425,9 +423,36 @@ void Fluxion_RHID3D12_CommandListDrawIndirect(FluxionRHICommandListHandle comman
         sigDesc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS);
         sigDesc.NumArgumentDescs = 1;
         sigDesc.pArgumentDescs = &argDesc;
-        deviceState->device->CreateCommandSignature(&sigDesc, nullptr, IID_PPV_ARGS(&s_drawIndirectSignature));
+        deviceState->device->CreateCommandSignature(&sigDesc, nullptr, IID_PPV_ARGS(&deviceState->drawIndirectSignature));
     }
-    cl->list->ExecuteIndirect(s_drawIndirectSignature.Get(), drawCount, bufferState->resource.Get(), offset, nullptr, 0);
+    if (deviceState->drawIndirectSignature == nullptr) return;
+    cl->list->ExecuteIndirect(deviceState->drawIndirectSignature.Get(), drawCount, bufferState->resource.Get(), offset, nullptr, 0);
+}
+
+void Fluxion_RHID3D12_CommandListDrawIndexedIndirect(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle argsBuffer, usize offset, u32 drawCount, u32 stride)
+{
+    FLUXION_UNUSED(stride);
+    FluxionRHID3D12CommandList* cl = Fluxion_RHID3D12_RequireRecording(commandList);
+    FluxionRHID3D12Buffer* bufferState = Fluxion_RHID3D12_ResolveBuffer(argsBuffer);
+    FluxionRHID3D12Device* deviceState = Fluxion_RHID3D12_SoleDevice();
+    if (cl == nullptr || bufferState == nullptr || deviceState == nullptr) return;
+    FLUXION_ASSERT_MSG(cl->insideRendering, "Fluxion RHI D3D12 backend: DrawIndexedIndirect called outside BeginRendering/EndRendering");
+
+    // Its own signature, kept the same way and for the same reason as
+    // the non-indexed one above: a signature carries the argument
+    // LAYOUT, and an indexed draw's five fields are not a draw's four.
+    if (deviceState->drawIndexedIndirectSignature == nullptr)
+    {
+        D3D12_INDIRECT_ARGUMENT_DESC argDesc = {};
+        argDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+        D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
+        sigDesc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+        sigDesc.NumArgumentDescs = 1;
+        sigDesc.pArgumentDescs = &argDesc;
+        deviceState->device->CreateCommandSignature(&sigDesc, nullptr, IID_PPV_ARGS(&deviceState->drawIndexedIndirectSignature));
+    }
+    if (deviceState->drawIndexedIndirectSignature == nullptr) return;
+    cl->list->ExecuteIndirect(deviceState->drawIndexedIndirectSignature.Get(), drawCount, bufferState->resource.Get(), offset, nullptr, 0);
 }
 
 void Fluxion_RHID3D12_CommandListDispatch(FluxionRHICommandListHandle commandList, u32 groupCountX, u32 groupCountY, u32 groupCountZ)

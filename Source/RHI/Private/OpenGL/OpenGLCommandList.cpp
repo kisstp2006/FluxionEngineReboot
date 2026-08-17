@@ -404,6 +404,33 @@ void Fluxion_RHIOpenGL_CommandListDrawIndirect(FluxionRHICommandListHandle comma
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
 }
 
+void Fluxion_RHIOpenGL_CommandListDrawIndexedIndirect(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle argsBuffer, usize offset, u32 drawCount, u32 stride)
+{
+    if (!Fluxion_RHIOpenGL_RequireRecording(commandList, "DrawIndexedIndirect")) return;
+    FLUXION_ASSERT_MSG(s_commandListState[commandList.index].insideRendering, "Fluxion RHI OpenGL backend: DrawIndexedIndirect called outside BeginRendering/EndRendering");
+    u32 pipelineIndex = s_commandListState[commandList.index].currentPipelineIndex;
+    FluxionRHIOpenGLPipeline* pipelineState = Fluxion_RHIOpenGL_ResolvePipelineByIndex(pipelineIndex);
+    FluxionRHIOpenGLBuffer* bufferState = Fluxion_RHIOpenGL_ResolveBuffer(argsBuffer);
+    if (pipelineState == nullptr || bufferState == nullptr) return;
+
+    // The index TYPE is not in the command -- it comes from the index
+    // buffer that is bound, exactly as it does for a direct indexed draw.
+    const bool use16 = s_commandListState[commandList.index].use16BitIndices;
+    const GLenum topology = Fluxion_RHIOpenGL_MapTopology(pipelineState->topology);
+    const GLenum indexType = use16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
+
+    // Same one-call binding as the non-indexed path beside it: the
+    // command's fields are read from whatever is bound to
+    // GL_DRAW_INDIRECT_BUFFER, and the RHI contract has no separate step
+    // to bind one.
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, bufferState->name);
+    for (u32 i = 0; i < drawCount; ++i)
+    {
+        glDrawElementsIndirect(topology, indexType, (const void*)(uintptr_t)(offset + (usize)i * stride));
+    }
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+}
+
 void Fluxion_RHIOpenGL_CommandListDispatch(FluxionRHICommandListHandle commandList, u32 groupCountX, u32 groupCountY, u32 groupCountZ)
 {
     if (!Fluxion_RHIOpenGL_RequireRecording(commandList, "Dispatch")) return;

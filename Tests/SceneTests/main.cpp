@@ -63,6 +63,7 @@ void Test_World_Run(TestContext& ctx);
 void Test_SceneAssetReferences_Run(TestContext& ctx);
 void Test_SceneLights_Run(TestContext& ctx);
 void Test_SceneCamera_Run(TestContext& ctx);
+void Test_RenderExtraction_Run(TestContext& ctx);
 
 int main()
 {
@@ -94,6 +95,7 @@ int main()
     Test_SceneAssetReferences_Run(ctx);
     Test_SceneLights_Run(ctx);
     Test_SceneCamera_Run(ctx);
+    Test_RenderExtraction_Run(ctx);
 
     Fluxion_Reflection_Shutdown();
 

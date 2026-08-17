@@ -473,6 +473,7 @@ static const FluxionRHIBackendVTable s_openglVTable = {
     Fluxion_RHIOpenGL_CommandListDraw,
     Fluxion_RHIOpenGL_CommandListDrawIndexed,
     Fluxion_RHIOpenGL_CommandListDrawIndirect,
+    Fluxion_RHIOpenGL_CommandListDrawIndexedIndirect,
     Fluxion_RHIOpenGL_CommandListDispatch,
     Fluxion_RHIOpenGL_CommandListCopyBuffer,
     Fluxion_RHIOpenGL_CommandListCopyTexture,

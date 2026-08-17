@@ -44,9 +44,14 @@
 
 // What changes from one object to the next within a frame.
 //
-// One matrix, for now, and declared here for the same reason the frame
-// block is: the engine writes this buffer, so its layout is the engine's
-// and there can be only one statement of it.
+// ONE ENTRY PER OBJECT IN THE WHOLE FRAME, not one per draw. A draw says
+// where in this list it starts, and the hardware says which instance is
+// being shaded; between them the vertex stage finds its own row. That is
+// what lets a thousand objects be one draw call rather than a thousand.
+//
+// The engine writes this buffer, so its layout is the engine's and there
+// can be only one statement of it -- FluxionGPUSceneObject in
+// GPUScene.h is the same bytes said in C.
 //
 // LIMITATION, said here rather than discovered from a picture: the normal
 // is transformed by the upper-left three by three of this matrix, which
@@ -54,6 +59,30 @@
 // scale needs the inverse transpose instead, and until that arrives here
 // as its own field, a squashed object's lighting is wrong in proportion
 // to how squashed it is.
-[Uniform(Object)] Matrix4x4 model;
+struct FluxionObject
+{
+    Matrix4x4 model;
+};
+
+[Buffer(Object)] FluxionObject objects;
+
+// x: which object in the list this draw's first instance is.
+//
+// A whole four-component vector to carry one number, and deliberately:
+// every other engine-written uniform here is one too, because that is
+// the one shape the two shading languages pack the same way without a
+// rule anybody has to remember. yzw unused.
+[Uniform(Object)] Vector4 objectParams;
+
+// This vertex's own placement.
+//
+// InstanceIndex COUNTS FROM ZERO WITHIN THE DRAW on every backend -- see
+// the built-in's own note in the shader compiler. The engine never
+// starts a draw at a non-zero instance, which is the whole reason that
+// sentence can be true in both target languages at once.
+Matrix4x4 FluxionObjectModel()
+{
+    return objects[int(objectParams.x) + InstanceIndex].model;
+}
 
 #endif

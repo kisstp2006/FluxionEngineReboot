@@ -57,6 +57,9 @@
 #include "RendererInternal.h"
 
 #include <Fluxion/Foundation/Assert.h>
+#include <Fluxion/Foundation/Log.h>
+
+#include <string.h>
 
 static void Fluxion_ForwardOpaquePassInternal_WriteColorName(char* buffer, usize bufferSize, u32 index)
 {
@@ -106,33 +109,6 @@ void FluxionForwardOpaquePass_Setup(FluxionRenderGraphBuilder* builder, void* us
     Fluxion_RenderGraphBuilder_ReadTexture(builder, FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE);
 }
 
-// Packets are sorted (index-sort, not moved in place) by
-// (pipeline.index, material.index) so consecutive draws minimize
-// pipeline/material bind group rebinding -- a real system would also
-// weigh depth/state changes and translucency ordering; this is the
-// "one afternoon" version.
-static void Fluxion_ForwardOpaquePassInternal_SortPacketIndices(const FluxionRenderer* renderer, u32* order)
-{
-    for (u32 i = 0; i < renderer->packetCount; ++i) order[i] = i;
-
-    for (u32 i = 1; i < renderer->packetCount; ++i)
-    {
-        u32 key = order[i];
-        const FluxionDrawPacket* keyPacket = &renderer->packets[key];
-        i32 j = (i32)i - 1;
-        while (j >= 0)
-        {
-            const FluxionDrawPacket* candidate = &renderer->packets[order[j]];
-            bool candidateFirst = (candidate->pipeline.index < keyPacket->pipeline.index) ||
-                (candidate->pipeline.index == keyPacket->pipeline.index && candidate->material.index <= keyPacket->material.index);
-            if (candidateFirst) break;
-            order[j + 1] = order[j];
-            --j;
-        }
-        order[j + 1] = key;
-    }
-}
-
 void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, void* userData)
 {
     FluxionRenderer* renderer = (FluxionRenderer*)userData;
@@ -180,44 +156,48 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
 
     Fluxion_RHI_CommandList_BeginRendering(commandList, &renderingDesc);
 
-    u32 order[FLUXION_RENDERER_MAX_DRAW_PACKETS_PER_FRAME];
-    Fluxion_ForwardOpaquePassInternal_SortPacketIndices(renderer, order);
-
-    for (u32 i = 0; i < renderer->packetCount; ++i)
+    // ONE DRAW PER BATCH, not one per object.
+    //
+    // What each batch is, and which run of the object list it covers,
+    // was worked out by Fluxion_Renderer_UploadScene before this pass
+    // ran; the command that draws it is already sitting in a buffer the
+    // GPU reads its own arguments from. What is left here is binding
+    // what the batch needs and pointing at its command.
+    const u32 batchCount = Fluxion_GPUScene_GetBatchCount(renderer->gpuScene);
+    if (batchCount > 0 && !FLUXION_HANDLE_IS_VALID(Fluxion_GPUScene_GetObjectBuffer(renderer->gpuScene)))
     {
-        const FluxionDrawPacket* packet = &renderer->packets[order[i]];
+        // A batch to draw and nothing to draw it from. Said here rather
+        // than left to a backend, which would report it as a descriptor
+        // nobody filled in -- true, and no help at all.
+        FLUXION_LOG_ERROR("Renderer", "the frame has %u batches and no object buffer behind them; nothing is drawn", batchCount);
+        return;
+    }
+
+    const FluxionRHIBufferHandle indirectBuffer = Fluxion_GPUScene_GetIndirectBuffer(renderer->gpuScene);
+
+
+    for (u32 i = 0; i < batchCount; ++i)
+    {
+        const FluxionGPUSceneBatch* batch = Fluxion_GPUScene_GetBatch(renderer->gpuScene, i);
+        if (batch == NULL) continue;
 
         FluxionRHIBufferHandle vertexBuffer, indexBuffer;
         u32 vertexCount, indexCount;
         bool use16BitIndices;
         FluxionRHIVertexLayout vertexLayout;
-        if (!FluxionRendererInternal_MeshBuffer_Get(packet->mesh, &vertexBuffer, &indexBuffer, &vertexCount, &indexCount, &use16BitIndices, &vertexLayout)) continue;
+        if (!FluxionRendererInternal_MeshBuffer_Get(batch->mesh, &vertexBuffer, &indexBuffer, &vertexCount, &indexCount, &use16BitIndices, &vertexLayout)) continue;
 
-        FluxionRHIPipelineHandle rhiPipeline = FluxionRendererInternal_RenderPipeline_Resolve(packet->pipeline, renderer->device, &vertexLayout);
+        FluxionRHIPipelineHandle rhiPipeline = FluxionRendererInternal_RenderPipeline_Resolve(batch->pipeline, renderer->device, &vertexLayout);
         if (!FLUXION_HANDLE_IS_VALID(rhiPipeline)) continue;
 
-        Fluxion_Material_FlushDirty(packet->material);
-        FluxionRHIBindGroupHandle materialBindGroup = FluxionRendererInternal_Material_GetBindGroup(packet->material);
+        Fluxion_Material_FlushDirty(batch->material);
+        FluxionRHIBindGroupHandle materialBindGroup = FluxionRendererInternal_Material_GetBindGroup(batch->material);
 
-        // The RHI has no per-draw dynamic bind-group offset (SetBindGroup
-        // takes no offset argument) -- so a fresh, tiny OBJECT bind group
-        // pointing at this one draw's slice of the shared object buffer
-        // is built and torn down per draw instead. Wasteful at real
-        // draw-call counts, acceptable for this pass's current scope.
-        FluxionRHIBindGroupEntry objectEntry;
-        objectEntry.binding = 0;
-        objectEntry.type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
-        objectEntry.buffer = renderer->objectBuffer;
-        objectEntry.bufferOffset = packet->objectDataOffset;
-        objectEntry.bufferSize = sizeof(FluxionMat4);
-        objectEntry.textureView = (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
-        objectEntry.sampler = (FluxionRHISamplerHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
-
-        FluxionRHIBindGroupDesc objectBindGroupDesc;
-        objectBindGroupDesc.layout = renderer->objectBindGroupLayout;
-        objectBindGroupDesc.entries = &objectEntry;
-        objectBindGroupDesc.entryCount = 1;
-        FluxionRHIBindGroupHandle objectBindGroup = Fluxion_RHI_CreateBindGroup(renderer->device, &objectBindGroupDesc);
+        // The batch's own bind group, built with the batch (GPUScene.c)
+        // rather than here: a group made and destroyed around each draw
+        // hands its descriptors to the next one while this command list
+        // is still only recorded.
+        const FluxionRHIBindGroupHandle objectBindGroup = Fluxion_GPUScene_GetBatchBindGroup(renderer->gpuScene, i);
 
         // FRAME must be (re)bound only after SetPipeline, not once before
         // this loop -- the Vulkan backend's SetBindGroup needs a pipeline
@@ -235,15 +215,22 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
         if (FLUXION_HANDLE_IS_VALID(indexBuffer))
         {
             Fluxion_RHI_CommandList_SetIndexBuffer(commandList, indexBuffer, 0, use16BitIndices);
-            Fluxion_RHI_CommandList_DrawIndexed(commandList, indexCount, 1, 0, 0, 0);
+            Fluxion_RHI_CommandList_DrawIndexedIndirect(commandList, indirectBuffer,
+                                                        (usize)i * sizeof(FluxionRHIDrawIndexedIndirectCommand), 1,
+                                                        (u32)sizeof(FluxionRHIDrawIndexedIndirectCommand));
         }
         else
         {
-            Fluxion_RHI_CommandList_Draw(commandList, vertexCount, 1, 0, 0);
+            // A mesh with no indices is still ONE call for the whole
+            // batch -- just a direct one, because the command the scene
+            // wrote describes an indexed draw and there is nothing to
+            // index. The instance count is the batch's, and the first
+            // instance is zero, which is what keeps the shader's index
+            // arithmetic the same either way.
+            Fluxion_RHI_CommandList_Draw(commandList, vertexCount, batch->objectCount, 0, 0);
         }
         ++renderer->lastDrawCallCount;
 
-        Fluxion_RHI_DestroyBindGroup(objectBindGroup);
     }
 
     // Last, not first. The sky sits exactly on the far plane and keeps

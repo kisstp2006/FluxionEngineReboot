@@ -1,0 +1,11 @@
+{
+  "name": "MinimalForward",
+  "graph": "MinimalForward",
+  "lighting": "forward",
+  "shadowQuality": "off",
+  "taa": false,
+  "ssao": false,
+  "ssr": false,
+  "bloom": false,
+  "msaa": 1
+}

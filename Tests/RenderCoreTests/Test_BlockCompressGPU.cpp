@@ -242,16 +242,23 @@ const u16 kQuadIndices[12] = {
     0, 2, 1, 0, 3, 2, // and the other
 };
 
+// Where an object is comes from the ENGINE's object list now, not from a
+// matrix this shader declares for itself: the frame keeps one row per
+// object, and a draw says where its own run of rows starts. A shader
+// that still declared its own [Uniform(Object)] matrix would read the
+// row INDEX as a matrix -- which is exactly what this one did until the
+// list arrived, and the picture it produced was not obviously a binding
+// mistake.
 const char* kVertexSource =
+    "#include \"Fluxion/Object.jsl\"\n"
     "[Input] Vector3 position;\n"
     "[Input] Vector2 uv;\n"
     "[Output] Vector2 vUV;\n"
     "[Output] Vector4 Position;\n"
     "[Uniform(Frame)] Matrix4x4 viewProjection;\n"
-    "[Uniform(Object)] Matrix4x4 model;\n"
     "void main() {\n"
     "  vUV = uv;\n"
-    "  Position = viewProjection * model * Vector4(position, 1.0);\n"
+    "  Position = viewProjection * FluxionObjectModel() * Vector4(position, 1.0);\n"
     "}\n";
 
 // Nothing but the sample. No tint, no lighting, no curve -- anything else
@@ -562,6 +569,7 @@ void CompareOneFormatAgainstTheHardware(TestContext* ctx, const GpuFixture& fixt
 
         Fluxion_Renderer_BeginFrame(renderer, view);
         Fluxion_Renderer_DrawMesh(renderer, mesh, material, pipeline, nullptr);
+        Fluxion_Renderer_UploadScene(renderer, cmd);
         TEST_CHECK(ctx, Fluxion_RenderGraph_Compile(graph));
         Fluxion_RenderGraph_Execute(graph, cmd);
         Fluxion_Renderer_EndFrame(renderer, cmd);

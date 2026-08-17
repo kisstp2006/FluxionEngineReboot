@@ -437,6 +437,10 @@ bool Fluxion_SceneLight_EnsureRegistered(void);
 // The camera component, for the same reason and at the same moment.
 bool Fluxion_SceneCamera_EnsureRegistered(void);
 
+// The native render component, registered beside the rest -- an object
+// carrying one is drawn without a script asking for it.
+bool Fluxion_SceneMeshRenderer_EnsureRegistered(void);
+
 // This object's transform, or null when the handle names no live object.
 FluxionTransform* Fluxion_SceneInternal_Transform(FluxionSceneRecord* record, FluxionGameObjectHandle object);
 

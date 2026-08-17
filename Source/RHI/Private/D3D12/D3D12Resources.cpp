@@ -89,7 +89,15 @@ FluxionRHIBufferHandle Fluxion_RHID3D12_CreateBuffer(FluxionRHIDeviceHandle devi
     if (deviceState == nullptr || desc == nullptr || desc->size == 0) return invalid;
 
     u32 index, generation;
-    if (!Fluxion_RHID3D12_PoolAllocate(s_bufferSlots, FLUXION_RHI_D3D12_MAX_BUFFERS, &index, &generation)) return invalid;
+    if (!Fluxion_RHID3D12_PoolAllocate(s_bufferSlots, FLUXION_RHI_D3D12_MAX_BUFFERS, &index, &generation))
+    {
+        // Said rather than returned in silence: a caller handed an
+        // invalid handle has to work out for itself whether the pool ran
+        // out, the device refused the size, or it asked for nothing at
+        // all -- and the three want different answers.
+        FLUXION_LOG_ERROR("RHI.D3D12", "no room for another buffer (the pool holds %d)", FLUXION_RHI_D3D12_MAX_BUFFERS);
+        return invalid;
+    }
 
     D3D12_HEAP_TYPE heapType = Fluxion_RHID3D12_MapHeapType(desc->memoryClass);
 
@@ -129,6 +137,8 @@ FluxionRHIBufferHandle Fluxion_RHID3D12_CreateBuffer(FluxionRHIDeviceHandle devi
         nullptr, &buffer->allocation, IID_PPV_ARGS(&buffer->resource));
     if (FAILED(hr))
     {
+        FLUXION_LOG_ERROR("RHI.D3D12", "a %zu byte buffer (\"%s\") could not be allocated: 0x%08lX", (usize)allocatedSize,
+                          desc->debugName != nullptr ? desc->debugName : "unnamed", (unsigned long)hr);
         Fluxion_RHID3D12_PoolFree(s_bufferSlots, FLUXION_RHI_D3D12_MAX_BUFFERS, index, generation);
         return invalid;
     }

@@ -187,6 +187,18 @@ struct FluxionRHID3D12Device
     FluxionRHID3D12RetiredEntry retired[FLUXION_RHI_D3D12_MAX_RETIRED];
     u32 retiredCount = 0;
 
+    // What an indirect draw's arguments look like, one signature per
+    // shape, built the first time each is needed.
+    //
+    // ON THE DEVICE, not in a static beside the call. A signature is
+    // created BY a device and dies with it, so a process-lifetime cache
+    // hands the second device a pointer into the first one's grave --
+    // which is not a wrong picture, it is an access violation inside
+    // ExecuteIndirect, and it only appears once a program makes two
+    // devices (a test that checks every backend does exactly that).
+    ComPtr<ID3D12CommandSignature> drawIndirectSignature;
+    ComPtr<ID3D12CommandSignature> drawIndexedIndirectSignature;
+
     // One process-lifetime ID3D12PipelineLibrary shared by every
     // graphics/compute PSO this device creates -- see
     // Fluxion_RHID3D12_SavePipelineCacheToFile/LoadPipelineCacheFromFile.

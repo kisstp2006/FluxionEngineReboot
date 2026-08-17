@@ -68,6 +68,9 @@
 #include <Fluxion/Foundation/Serialization/Stream.h>
 #include <Fluxion/Platform/File.h>
 #include <Fluxion/RHI/RHI.h>
+#include <Fluxion/Platform/Time.h>
+#include <Fluxion/RenderCore/Pipeline/RenderGraphAsset.h>
+#include <Fluxion/RenderCore/Pipeline/RenderPipelineAsset.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraph.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraphPassRegistry.h>
 #include <Fluxion/RenderCore/Renderer/Exposure.h>
@@ -79,6 +82,8 @@
 #include <Fluxion/RenderCore/Renderer/RenderTarget.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
 #include <Fluxion/RenderCore/Renderer/ShadowMatrices.h>
+#include <Fluxion/RenderCore/Renderer/MaterialAsset.h>
+#include <Fluxion/RenderCore/Renderer/MeshAsset.h>
 #include <Fluxion/RenderCore/Renderer/TextureAsset.h>
 #include <Fluxion/RenderCore/Renderer/Renderer.h>
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
@@ -86,6 +91,7 @@
 #include <Fluxion/Scene/EngineScript.hpp>
 #include <Fluxion/Scene/Camera.h>
 #include <Fluxion/Scene/Light.h>
+#include <Fluxion/Scene/MeshRenderer.h>
 #include <Fluxion/Scene/Scene.h>
 #include <Fluxion/Scene/SceneScript.hpp>
 #include <Fluxion/Script/Script.hpp>
@@ -130,6 +136,102 @@ std::string ReadFile(const char* path)
     std::ostringstream contents;
     contents << file.rdbuf();
     return contents.str();
+}
+
+// --- Cooking this sample's render pipelines ------------------------------
+//
+// The same path the sky takes: an authored file is read, cooked into the
+// mounted asset folder, and entered in the database, after which nothing
+// asks for a path again -- a pipeline is an id, and the graph it draws
+// with is another one.
+
+// What the pipeline cook resolves graph names against. A real project
+// would ask its database; this sample has two of them and knows both.
+struct DemoGraphNames
+{
+    static constexpr u32 kCapacity = 4;
+    const char* names[kCapacity] = {};
+    FluxionUUID ids[kCapacity] = {};
+    u32 count = 0;
+};
+
+bool DemoResolveGraphName(const char* graphName, FluxionUUID* outGraphId, void* context)
+{
+    const DemoGraphNames* known = (const DemoGraphNames*)context;
+    for (u32 i = 0; i < known->count; ++i)
+    {
+        if (std::strcmp(known->names[i], graphName) == 0)
+        {
+            *outGraphId = known->ids[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+bool DemoAddCookedAsset(const char* name, const char* extension, FluxionAssetTypeId type, const std::vector<u8>& cooked, FluxionUUID* outId)
+{
+    const std::string vfsPath = std::string("assets://") + name + "." + extension;
+    if (!Fluxion_Vfs_WriteAll(vfsPath.c_str(), cooked.data(), cooked.size()))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not write the cooked %s.", name);
+        return false;
+    }
+
+    FluxionAssetDesc desc{};
+    desc.type = type;
+    desc.name = name;
+    desc.cookedPath = vfsPath.c_str();
+    desc.version = 1;
+    if (!Fluxion_AssetDatabase_Add(&desc, outId))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not enter %s in the asset database.", name);
+        return false;
+    }
+
+    return true;
+}
+
+bool DemoCookRenderGraph(const char* name, FluxionUUID* outId)
+{
+    const std::string source = ReadFile((std::string(FLUXION_DEMO_PIPELINE_DIR) + "/" + name + ".rendergraph").c_str());
+    if (source.empty())
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not read %s.rendergraph from %s", name, FLUXION_DEMO_PIPELINE_DIR);
+        return false;
+    }
+
+    FluxionRenderGraphAsset asset{};
+    if (!Fluxion_RenderGraphAsset_ParseText(source.c_str(), source.size(), &asset)) return false;
+
+    std::vector<u8> cooked(8192, 0);
+    FluxionStream writer;
+    Fluxion_MemoryStream_InitWriter(&writer, cooked.data(), cooked.size());
+    if (!Fluxion_RenderGraphAsset_Write(&writer, &asset) || Fluxion_Stream_HasOverflowed(&writer)) return false;
+    cooked.resize(Fluxion_Stream_GetPosition(&writer));
+
+    return DemoAddCookedAsset(name, "fluxrendergraph", Fluxion_RenderGraphAsset_TypeId(), cooked, outId);
+}
+
+bool DemoCookRenderPipeline(const char* name, const DemoGraphNames& graphs, FluxionUUID* outId)
+{
+    const std::string source = ReadFile((std::string(FLUXION_DEMO_PIPELINE_DIR) + "/" + name + ".pipeline").c_str());
+    if (source.empty())
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not read %s.pipeline from %s", name, FLUXION_DEMO_PIPELINE_DIR);
+        return false;
+    }
+
+    FluxionRenderPipelineAsset asset{};
+    if (!Fluxion_RenderPipelineAsset_ParseText(source.c_str(), source.size(), DemoResolveGraphName, (void*)&graphs, &asset)) return false;
+
+    std::vector<u8> cooked(1024, 0);
+    FluxionStream writer;
+    Fluxion_MemoryStream_InitWriter(&writer, cooked.data(), cooked.size());
+    if (!Fluxion_RenderPipelineAsset_Write(&writer, &asset) || Fluxion_Stream_HasOverflowed(&writer)) return false;
+    cooked.resize(Fluxion_Stream_GetPosition(&writer));
+
+    return DemoAddCookedAsset(name, "fluxpipeline", Fluxion_RenderPipelineAsset_TypeId(), cooked, outId);
 }
 
 void ReportScriptDiagnostics(const Fluxion::Script::DiagnosticList& diagnostics)
@@ -275,12 +377,19 @@ int main(int argc, char** argv)
     // automated run covers the shutdown path instead of being killed
     // partway through it. 0 means run until asked to stop.
     u64 frameLimit = 0;
+
+    // --pipeline=DefaultForward (the default) | --pipeline=MinimalForward
+    // -- which render pipeline asset the project starts out drawing with.
+    // P swaps between them while it runs, by putting one on the camera;
+    // this only decides what the project's own default is.
+    const char* startingPipeline = "DefaultForward";
     for (int i = 1; i < argc; ++i)
     {
         if (std::strcmp(argv[i], "--graphics=opengl") == 0) backendType = FLUXION_RHI_BACKEND_OPENGL;
         else if (std::strcmp(argv[i], "--graphics=vulkan") == 0) backendType = FLUXION_RHI_BACKEND_VULKAN;
         else if (std::strcmp(argv[i], "--graphics=d3d12") == 0) backendType = FLUXION_RHI_BACKEND_D3D12;
         else if (std::strncmp(argv[i], "--frames=", 9) == 0) frameLimit = std::strtoull(argv[i] + 9, nullptr, 10);
+        else if (std::strncmp(argv[i], "--pipeline=", 11) == 0) startingPipeline = argv[i] + 11;
     }
     const char* backendName = backendType == FLUXION_RHI_BACKEND_OPENGL ? "OpenGL" : backendType == FLUXION_RHI_BACKEND_D3D12 ? "D3D12" : "Vulkan";
     // The host owns diagnostics subsystems, same as it owns the job
@@ -584,7 +693,19 @@ int main(int argc, char** argv)
         // and releasing a texture calls its TYPE's unload -- so the type
         // has to still be registered while that happens.
         Fluxion_AssetSystem_Shutdown();
+        Fluxion_MaterialAsset_UnregisterType();
+        Fluxion_MeshAsset_UnregisterType();
+        Fluxion_RenderPipelineAsset_UnregisterType();
+        Fluxion_RenderGraphAsset_UnregisterType();
         Fluxion_TextureAsset_UnregisterType());
+
+    // Neither of these takes a device: what a pipeline and a graph hold
+    // is a description, and a description has nothing to hand a GPU.
+    if (!Fluxion_RenderGraphAsset_RegisterType() || !Fluxion_RenderPipelineAsset_RegisterType())
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not register the render pipeline asset types.");
+        return 1;
+    }
 
     // The device and the queue go in here because the load has two halves
     // and only one of them can happen on a worker: reading and decoding
@@ -736,6 +857,87 @@ int main(int argc, char** argv)
     const FluxionRHISamplerDesc skySamplerDesc = Fluxion_TextureAsset_GetSamplerDesc(&skySettings);
     FluxionRHISamplerHandle skySampler = Fluxion_RHI_CreateSampler(device, &skySamplerDesc);
     FLUXION_SCOPE_EXIT(Fluxion_RHI_DestroySampler(skySampler));
+
+    // --- The pipelines this sample can draw with --------------------------
+    //
+    // Two of them, and the difference is meant to be visible: one has a
+    // shadow pass in its graph and asks for the sharpest atlas, the other
+    // has neither. NOTHING BELOW THIS POINT NAMES EITHER -- the frame is
+    // built out of whichever asset the camera and the project between
+    // them resolve to, which is the whole point of the milestone.
+    //
+    // Graphs first: a pipeline names its graph by name, and the name has
+    // to already be something the database can answer for.
+
+    DemoGraphNames graphNames;
+    for (const char* graphName : { "DefaultForward", "MinimalForward" })
+    {
+        if (!DemoCookRenderGraph(graphName, &graphNames.ids[graphNames.count])) return 1;
+        graphNames.names[graphNames.count] = graphName;
+        ++graphNames.count;
+    }
+
+    // One entry per pipeline this sample cooked: the reference a camera
+    // or the project can name, and the two assets behind it, held from
+    // here to the end so that switching between them costs nothing and
+    // cannot fail halfway through a frame.
+    struct DemoPipeline
+    {
+        const char* name;
+        FluxionAssetRef ref;
+        FluxionAssetHandle pipeline;
+        FluxionAssetHandle graph;
+    };
+
+    DemoPipeline demoPipelines[2] = { { "DefaultForward", {}, {}, {} }, { "MinimalForward", {}, {}, {} } };
+
+    FLUXION_SCOPE_EXIT(
+        for (DemoPipeline& entry : demoPipelines) {
+            if (FLUXION_HANDLE_IS_VALID(entry.graph)) Fluxion_Assets_Release(entry.graph);
+            if (FLUXION_HANDLE_IS_VALID(entry.pipeline)) Fluxion_Assets_Release(entry.pipeline);
+        });
+
+    for (DemoPipeline& entry : demoPipelines)
+    {
+        if (!DemoCookRenderPipeline(entry.name, graphNames, &entry.ref.asset)) return 1;
+
+        // Waited for rather than pumped for: there is no frame to draw
+        // until the thing that says how to draw it has arrived, and a
+        // sample that started anyway would have to invent a fallback
+        // render path -- which is exactly what this milestone removes.
+        entry.pipeline = Fluxion_Assets_AcquireRef(entry.ref);
+        if (Fluxion_Assets_Wait(entry.pipeline) != FLUXION_ASSET_STATE_READY)
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "The render pipeline %s would not load.", entry.name);
+            return 1;
+        }
+
+        const FluxionRenderPipelineAsset* asset = (const FluxionRenderPipelineAsset*)Fluxion_Assets_GetObject(entry.pipeline);
+        entry.graph = Fluxion_Assets_AcquireRef(asset->graph);
+        if (Fluxion_Assets_Wait(entry.graph) != FLUXION_ASSET_STATE_READY)
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "The render graph %s draws with would not load.", entry.name);
+            return 1;
+        }
+    }
+
+    // What a camera that names nothing gets. A project setting, in the
+    // one sense this build has one: an answer the engine holds, rather
+    // than a file nobody can write yet.
+    {
+        const DemoPipeline* chosen = nullptr;
+        for (const DemoPipeline& entry : demoPipelines)
+        {
+            if (std::strcmp(entry.name, startingPipeline) == 0) chosen = &entry;
+        }
+        if (chosen == nullptr)
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "There is no pipeline called %s; this sample has DefaultForward and MinimalForward.",
+                startingPipeline);
+            return 1;
+        }
+        Fluxion_RenderPipelineAsset_SetProjectDefault(chosen->ref);
+    }
 
     // --- Depth buffer: sized once at startup to the initial window
     // extent -- this demo doesn't otherwise handle swapchain-resize edge
@@ -1075,6 +1277,123 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    // --- The same cube, the long way round: as assets ---------------------
+    //
+    // What the script draws above is a handle somebody registered under a
+    // name. What the grid below draws is an ID in a component, resolved
+    // through the asset system every frame -- which is what a scene that
+    // was SAVED and read back would have, since a handle means nothing in
+    // the run that follows.
+
+    if (!Fluxion_MeshAsset_RegisterType(device, graphicsQueue) ||
+        !Fluxion_MaterialAsset_RegisterType(device, graphicsQueue, swapchainDesc.format, depthTextureDesc.format))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not register the mesh and material asset types.");
+        return 1;
+    }
+
+    FluxionAssetRef cubeMeshRef{};
+    {
+        FluxionMeshAssetData meshData{};
+        meshData.vertexData = vertices;
+        meshData.vertexDataSize = sizeof(vertices);
+        meshData.indexData = indices;
+        meshData.indexDataSize = sizeof(indices);
+        meshData.use16BitIndices = true;
+        meshData.vertexLayout = cubeMeshDesc.vertexLayout;
+        meshData.bounds = cubeMeshDesc.bounds;
+
+        std::vector<u8> cooked(sizeof(vertices) + sizeof(indices) + 1024, 0);
+        FluxionStream writer;
+        Fluxion_MemoryStream_InitWriter(&writer, cooked.data(), cooked.size());
+        if (!Fluxion_MeshAsset_Write(&writer, &meshData) || Fluxion_Stream_HasOverflowed(&writer))
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not cook the cube mesh.");
+            return 1;
+        }
+        cooked.resize(Fluxion_Stream_GetPosition(&writer));
+
+        if (!DemoAddCookedAsset("CubeMesh", "fluxmesh", Fluxion_MeshAsset_TypeId(), cooked, &cubeMeshRef.asset)) return 1;
+    }
+
+    FluxionAssetRef cubeMaterialRef{};
+    {
+        // The same source the material above was built from, and the same
+        // parameter values -- said as data this time, because that is
+        // what a component can point at.
+        const FluxionMaterialAssetParameter parameters[] = {
+            { "baseColorFactor", FLUXION_MATERIAL_ASSET_PARAMETER_VEC4, FluxionVec4{ 1.0f, 1.0f, 1.0f, 1.0f } },
+            { "metallicFactor", FLUXION_MATERIAL_ASSET_PARAMETER_FLOAT, FluxionVec4{ 0.0f, 0.0f, 0.0f, 0.0f } },
+            { "roughnessFactor", FLUXION_MATERIAL_ASSET_PARAMETER_FLOAT, FluxionVec4{ 0.4f, 0.0f, 0.0f, 0.0f } },
+        };
+
+        FluxionMaterialAssetData materialData{};
+        materialData.source = cubeMaterialSource.c_str();
+        materialData.parameters = parameters;
+        materialData.parameterCount = (u32)(sizeof(parameters) / sizeof(parameters[0]));
+
+        std::vector<u8> cooked(cubeMaterialSource.size() + 4096, 0);
+        FluxionStream writer;
+        Fluxion_MemoryStream_InitWriter(&writer, cooked.data(), cooked.size());
+        if (!Fluxion_MaterialAsset_Write(&writer, &materialData) || Fluxion_Stream_HasOverflowed(&writer))
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not cook the cube material.");
+            return 1;
+        }
+        cooked.resize(Fluxion_Stream_GetPosition(&writer));
+
+        if (!DemoAddCookedAsset("CubeMaterial", "fluxmat", Fluxion_MaterialAsset_TypeId(), cooked, &cubeMaterialRef.asset)) return 1;
+    }
+
+    // --- A grid of them, drawn by nothing but their own components --------
+    //
+    // The point of the number is the measurement: a thousand objects that
+    // share a mesh and a material used to be a thousand draw calls and a
+    // thousand bind groups. What the frame reports below is how many
+    // draws it actually issued.
+    {
+        // 784, not a round thousand: a scene holds
+        // FLUXION_SCENE_MAX_GAME_OBJECTS of them, and the sun, the
+        // camera, the floor and the turning cube need somewhere to live
+        // too. The measurement does not care about the exact number --
+        // what it compares is objects against draw calls.
+        const i32 kGridSide = 28;
+        const f32 kSpacing = 1.8f;
+
+        for (i32 z = 0; z < kGridSide; ++z)
+        {
+            for (i32 x = 0; x < kGridSide; ++x)
+            {
+                FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(scene, "GridCube");
+
+                Fluxion_GameObject_SetLocalPosition(scene, object,
+                    FluxionVec3{ ((f32)x - (f32)kGridSide * 0.5f) * kSpacing, -2.0f, ((f32)z - (f32)kGridSide * 0.5f) * kSpacing - 6.0f });
+
+                FluxionMeshRenderer meshRenderer{};
+                meshRenderer.mesh = cubeMeshRef;
+                meshRenderer.material = cubeMaterialRef;
+                if (Fluxion_GameObject_AddComponent(scene, object, Fluxion_MeshRenderer_TypeId(), &meshRenderer) == nullptr)
+                {
+                    FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a mesh renderer on a grid cube.");
+                    return 1;
+                }
+            }
+        }
+
+        FLUXION_LOG_INFO("ForwardRendererDemo", "%d cubes in the scene, each one a component rather than a draw call.",
+            kGridSide * kGridSide);
+    }
+
+    // The list the extraction fills and the renderer reads, made once and
+    // reused: it keeps its memory between frames on purpose.
+    FluxionRenderWorld renderWorld;
+    if (!Fluxion_RenderWorld_Init(&renderWorld))
+    {
+        FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not make the render world.");
+        return 1;
+    }
+    FLUXION_SCOPE_EXIT(Fluxion_RenderWorld_Shutdown(&renderWorld));
+
     // The sun, as an object: it can be moved, turned off, saved and read
     // back, and a second one is a second object rather than a renderer
     // change. Large numbers on purpose -- sunlight IS enormous, and the
@@ -1202,12 +1521,19 @@ int main(int argc, char** argv)
     // negative Z, which is what the fixed camera of the old demo was.
     // Being an object means a script could move it exactly as one moves
     // the orbiting light.
+    // Kept, because P puts a pipeline on this camera and takes it off
+    // again -- which is the per-camera override, exercised rather than
+    // described.
+    FluxionGameObjectHandle cameraObject = Fluxion_Scene_CreateGameObject(scene, "Camera");
     {
-        FluxionGameObjectHandle cameraObject = Fluxion_Scene_CreateGameObject(scene, "Camera");
         FluxionCamera camera{};
         camera.fovYRadians = kCameraFieldOfView;
         camera.nearPlane = kCameraNearPlane;
         camera.farPlane = kCameraFarPlane;
+
+        // Nothing named, which means the project's default. A scene that
+        // wants one camera drawn differently fills this in; this one
+        // starts out not wanting that.
         if (Fluxion_GameObject_AddComponent(scene, cameraObject, Fluxion_Camera_TypeId(), &camera) == nullptr)
         {
             FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put the camera on its object.");
@@ -1290,6 +1616,44 @@ int main(int argc, char** argv)
         if (Fluxion_Input_WasKeyPressed(FLUXION_KEY_ESCAPE)) running = false;
         if (frameLimit != 0 && ++framesDrawn >= frameLimit) running = false;
         if (!running) break;
+
+        // P puts the other pipeline on the camera, and P again takes it
+        // back off -- the shadows go with it, and the scene, the scripts
+        // and the components are not touched either way. That is the
+        // whole claim: what a frame is made of is data now.
+        if (Fluxion_Input_WasKeyPressed(FLUXION_KEY_P))
+        {
+            FluxionCamera* camera = (FluxionCamera*)Fluxion_GameObject_GetComponent(scene, cameraObject, Fluxion_Camera_TypeId());
+            if (camera != nullptr)
+            {
+                const FluxionAssetRef projectDefault = Fluxion_RenderPipelineAsset_GetProjectDefault();
+
+                if (Fluxion_AssetRef_IsSet(camera->renderPipeline))
+                {
+                    // Back to nothing, which is the camera saying
+                    // "whatever the project uses" rather than a camera
+                    // with no pipeline at all.
+                    camera->renderPipeline = FluxionAssetRef{};
+                }
+                else
+                {
+                    for (const DemoPipeline& entry : demoPipelines)
+                    {
+                        if (!Fluxion_UUID_Equals(entry.ref.asset, projectDefault.asset)) camera->renderPipeline = entry.ref;
+                    }
+                }
+
+                const FluxionAssetRef inForce = Fluxion_RenderPipelineAsset_Resolve(camera->renderPipeline);
+                for (const DemoPipeline& entry : demoPipelines)
+                {
+                    if (Fluxion_UUID_Equals(entry.ref.asset, inForce.asset))
+                    {
+                        FLUXION_LOG_INFO("ForwardRendererDemo", "Drawing with %s%s.", entry.name,
+                            Fluxion_AssetRef_IsSet(camera->renderPipeline) ? " (the camera's own)" : " (the project's default)");
+                    }
+                }
+            }
+        }
 
         // Edit a file in Scripts/, press R, and the cube goes on turning
         // from wherever it had got to -- components keep their values,
@@ -1485,6 +1849,32 @@ int main(int argc, char** argv)
             continue;
         }
 
+        // Which pipeline draws this frame. Asked every frame, and in
+        // this order: what the camera names wins, and what the project
+        // names is what it falls back to -- P moves the answer from one
+        // to the other while this runs.
+        FluxionAssetRef cameraPipeline{};
+        Fluxion_Scene_GatherCameraRenderPipeline(scene, &cameraPipeline);
+        const FluxionAssetRef pipelineRef = Fluxion_RenderPipelineAsset_Resolve(cameraPipeline);
+
+        const DemoPipeline* activePipeline = nullptr;
+        for (const DemoPipeline& entry : demoPipelines)
+        {
+            if (Fluxion_UUID_Equals(entry.ref.asset, pipelineRef.asset)) activePipeline = &entry;
+        }
+        if (activePipeline == nullptr)
+        {
+            // A camera naming a pipeline this sample never cooked. Said
+            // rather than drawn around: there is no default render path
+            // left to fall back to, which is the point.
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "The camera names a render pipeline this sample does not have.");
+            running = false;
+            continue;
+        }
+
+        const FluxionRenderPipelineAsset* pipelineAsset = (const FluxionRenderPipelineAsset*)Fluxion_Assets_GetObject(activePipeline->pipeline);
+        const FluxionRenderGraphAsset* graphAsset = (const FluxionRenderGraphAsset*)Fluxion_Assets_GetObject(activePipeline->graph);
+
         FluxionRenderViewDesc viewDesc{};
         viewDesc.viewMatrix = cameraView;
         viewDesc.projectionMatrix = cameraProjection;
@@ -1508,6 +1898,13 @@ int main(int argc, char** argv)
         // curve of its own, so the pass has to encode for the display.
         // Written down beside the format that made it true.
         viewDesc.encodeOutputToSRGB = true;
+
+        // And the parts the pipeline decides rather than this file: the
+        // shadow atlas it asked for. Last, so that what a pipeline says
+        // is what the view is made with -- and the view is made fresh
+        // every frame here, so switching pipelines needs nothing else.
+        Fluxion_RenderPipelineAsset_ApplyToViewDesc(pipelineAsset, &viewDesc);
+
         FluxionRenderViewHandle frameView = Fluxion_RenderView_Create(device, &viewDesc);
 
         // The lights, read out of the scene rather than written here.
@@ -1691,25 +2088,40 @@ int main(int argc, char** argv)
         // frame after a resize), and D3D12 validates that the declared
         // before-state really matches -- so the distinction cannot be
         // skipped.
-        FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(device);
-        Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Color0", backbuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
-        Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Depth", depthTexture,
-            depthIsUndefined ? FLUXION_RHI_RESOURCE_STATE_UNDEFINED : FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE);
+        // WHAT THIS FRAME IS MADE OF COMES OUT OF THE ASSET, not out of
+        // this file: which passes there are, and in what shape, is the
+        // graph's business. What is left here is the one thing a file
+        // cannot hold -- the real resources behind the names it
+        // declares, and the state each of them is already in.
+        //
+        // The atlas is imported as something to read: the view cleared
+        // it once before the first frame and every frame since has left
+        // it that way round, so this is where it really is -- and D3D12
+        // checks that the state declared here is the state it is in.
+        const FluxionRenderGraphBinding frameBindings[] = {
+            { "ForwardOpaquePass.Color0", backbuffer, {}, FLUXION_RHI_RESOURCE_STATE_UNDEFINED },
+            { "ForwardOpaquePass.Depth", depthTexture, {},
+              depthIsUndefined ? FLUXION_RHI_RESOURCE_STATE_UNDEFINED : FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE },
+            { FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE, Fluxion_RenderView_GetShadowAtlasTexture(frameView), {},
+              FLUXION_RHI_RESOURCE_STATE_SHADER_READ },
+        };
         depthIsUndefined = false;
 
-        // The atlas, imported as something to read: the view cleared it
-        // once before the first frame and every frame since has left it
-        // that way round, so this is where it really is -- and D3D12
-        // checks that the state declared here is the state it is in.
-        Fluxion_RenderGraph_ImportTexture(graph, FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE,
-            Fluxion_RenderView_GetShadowAtlasTexture(frameView), FLUXION_RHI_RESOURCE_STATE_SHADER_READ);
+        FluxionRenderGraphInstantiateDesc instantiate{};
+        instantiate.bindings = frameBindings;
+        instantiate.bindingCount = (u32)(sizeof(frameBindings) / sizeof(frameBindings[0]));
 
-        // Added before the pass that reads it, though the order here is
-        // not what decides: each pass says what it touches, and the graph
-        // works the rest out. Both are added whether or not anything
-        // casts a shadow this frame -- see their Setup functions.
-        Fluxion_RenderGraph_AddPassFromRegistry(graph, "ShadowPass", Fluxion_Renderer_GetForwardOpaquePassUserData(renderer));
-        Fluxion_RenderGraph_AddPassFromRegistry(graph, "ForwardOpaquePass", Fluxion_Renderer_GetForwardOpaquePassUserData(renderer));
+        // Both registered pass types read the same renderer, so no
+        // resolver is needed to tell them apart yet -- the context goes
+        // to every node.
+        instantiate.context = Fluxion_Renderer_GetForwardOpaquePassUserData(renderer);
+
+        FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(device);
+        if (!Fluxion_RenderGraphAsset_Instantiate(graphAsset, graph, &instantiate))
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "The render graph could not be built from its asset -- this is a real bug, not a transient condition.");
+            std::exit(1);
+        }
 
         Fluxion_Renderer_BeginFrame(renderer, frameView);
 
@@ -1718,6 +2130,18 @@ int main(int argc, char** argv)
         // its colour is chosen and where the draw is asked for, and a
         // draw only lands inside the frame the renderer has open.
         Fluxion_Scene_Tick(scene, Fluxion_Time_GetDeltaTime());
+
+        // And the scene as the RENDERER sees it: one walk, into a list
+        // that belongs to the renderer rather than to the world. The
+        // grid below is drawn entirely from this -- no script asks for
+        // any of it.
+        const u64 extractionStart = Fluxion_Platform_GetHighResolutionTicks();
+        Fluxion_Scene_ExtractRenderWorld(scene, aspect, &renderWorld);
+        Fluxion_Renderer_SubmitRenderWorld(renderer, &renderWorld);
+        const u64 extractionEnd = Fluxion_Platform_GetHighResolutionTicks();
+
+        // Everything asked for this frame, grouped and moved across.
+        Fluxion_Renderer_UploadScene(renderer, cmd);
 
         if (!Fluxion_RenderGraph_Compile(graph))
         {
@@ -1729,6 +2153,25 @@ int main(int argc, char** argv)
         Fluxion_RenderGraph_Execute(graph, cmd);
         Fluxion_Renderer_EndFrame(renderer, cmd);
         Fluxion_RHI_CommandList_WriteTimestamp(cmd, gpuTimeQueries, 1);
+
+        // THE MEASUREMENT THIS MILESTONE IS FOR, said once a second
+        // rather than every frame: how many objects the frame held,
+        // against how many draw calls it took to draw them.
+        //
+        // The old path issued one draw and one bind group PER OBJECT.
+        // What this prints is the same scene through the new one -- and
+        // the ratio is the whole claim, so it is printed rather than
+        // asserted in a comment.
+        if ((framesDrawn % 60) == 0)
+        {
+            const u64 ticksPerSecond = Fluxion_Platform_GetHighResolutionFrequency();
+            const f64 extractionMs = ticksPerSecond != 0
+                ? (f64)(extractionEnd - extractionStart) * 1000.0 / (f64)ticksPerSecond
+                : 0.0;
+
+            FLUXION_LOG_INFO("ForwardRendererDemo", "%u objects -> %u draw calls; extracting them took %.3f ms.",
+                renderWorld.objectCount, Fluxion_Renderer_GetLastDrawCallCount(renderer), extractionMs);
+        }
 
         // The render graph's own compiled barrier list ends the backbuffer
         // in whatever state "ForwardOpaquePass" last wrote it as

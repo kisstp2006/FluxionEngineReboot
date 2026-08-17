@@ -46,6 +46,9 @@ engine_set_warnings(ForwardRendererDemo)
 target_compile_definitions(ForwardRendererDemo PRIVATE
     FLUXION_DEMO_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Shaders"
     FLUXION_DEMO_SCRIPT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Scripts"
+    # The authored render pipelines and graphs. Read at start-up and
+    # cooked into the folder below, the same way the sky is.
+    FLUXION_DEMO_PIPELINE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Pipelines"
     # Under the build tree rather than beside the sources: a checkout is
     # never written to, and deleting the build tree is all it takes to be
     # rid of what has accumulated here.
@@ -78,3 +81,24 @@ add_test(NAME ForwardRendererDemoSmoke
 set_tests_properties(ForwardRendererDemoSmoke PROPERTIES
     SKIP_RETURN_CODE 77
     TIMEOUT 120)
+
+# The same run through the other render pipeline asset -- a graph with no
+# shadow pass in it, and a view built for the shadow quality that one
+# asks for. Two pipelines is what makes "the pipeline is data" a claim
+# with something behind it rather than one path with a file beside it.
+add_test(NAME ForwardRendererDemoSmokeMinimalPipeline
+         COMMAND ForwardRendererDemo --graphics=vulkan --frames=30 --pipeline=MinimalForward)
+
+set_tests_properties(ForwardRendererDemoSmokeMinimalPipeline PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 120)
+
+# The two runs must not overlap. They are the same program in the same
+# working directory, so they open the same pipeline cache files -- and
+# two copies of it writing one cache is a race the sample is not built to
+# survive (measured: run side by side under a parallel ctest, one of them
+# crashes and the other times out; run one after the other, both pass).
+# The lock is a name rather than a real file; ctest only uses it to keep
+# the two apart.
+set_tests_properties(ForwardRendererDemoSmoke ForwardRendererDemoSmokeMinimalPipeline PROPERTIES
+    RESOURCE_LOCK "ForwardRendererDemoWorkingDirectory")

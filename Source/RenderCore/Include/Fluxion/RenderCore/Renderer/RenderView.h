@@ -233,6 +233,22 @@ typedef struct FluxionRenderViewDesc
     // no way today to ask a texture view what its format is. Until it
     // does, the caller that chose the format says what it chose.
     bool encodeOutputToSRGB;
+
+    // How big this view's shadow atlas is, and how big one tile of it
+    // is, both in texels and both a side of a square.
+    //
+    // Zero for either means the engine's own default pair, so a caller
+    // that has no opinion about shadows does not have to have one. When
+    // they are given, the atlas must be a whole number of tiles across
+    // -- a remainder would be atlas nobody can address -- and a view
+    // asked for an impossible pair is not created.
+    //
+    // Here rather than settable later because the atlas is a texture,
+    // and a texture is made once: changing these means a new view.
+    // Fluxion_RenderPipelineAsset_ApplyToViewDesc fills them in from a
+    // pipeline's shadow quality.
+    u32 shadowAtlasSize;
+    u32 shadowTileSize;
 } FluxionRenderViewDesc;
 
 FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device, const FluxionRenderViewDesc* desc);
@@ -315,7 +331,8 @@ u32 Fluxion_RenderView_SetShadows(FluxionRenderViewHandle view, const FluxionRen
 // How big this view's shadow atlas is, and how big one tile of it is,
 // both in texels. Asked rather than assumed: a caller that imports the
 // atlas into a render graph, or reads it back, needs the number the
-// engine actually used.
+// engine actually used -- which is what the description asked for, or
+// the default when it asked for nothing.
 void Fluxion_RenderView_GetShadowAtlasSize(FluxionRenderViewHandle view, u32* outAtlasSize, u32* outTileSize);
 
 // The atlas itself, to import into a render graph under the name the

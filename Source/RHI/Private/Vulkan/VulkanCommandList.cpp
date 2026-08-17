@@ -481,6 +481,15 @@ void Fluxion_RHIVulkan_CommandListDrawIndirect(FluxionRHICommandListHandle comma
     vkCmdDrawIndirect(cl->commandBuffer, bufferState->buffer, offset, drawCount, stride);
 }
 
+void Fluxion_RHIVulkan_CommandListDrawIndexedIndirect(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle argsBuffer, usize offset, u32 drawCount, u32 stride)
+{
+    FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);
+    FluxionRHIVulkanBuffer* bufferState = Fluxion_RHIVulkan_ResolveBuffer(argsBuffer);
+    if (cl == nullptr || bufferState == nullptr) return;
+    FLUXION_ASSERT_MSG(cl->insideRendering, "Fluxion RHI Vulkan backend: DrawIndexedIndirect called outside BeginRendering/EndRendering");
+    vkCmdDrawIndexedIndirect(cl->commandBuffer, bufferState->buffer, offset, drawCount, stride);
+}
+
 void Fluxion_RHIVulkan_CommandListDispatch(FluxionRHICommandListHandle commandList, u32 groupCountX, u32 groupCountY, u32 groupCountZ)
 {
     FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);

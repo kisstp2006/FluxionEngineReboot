@@ -1,0 +1,12 @@
+{
+  "name": "DefaultForward",
+  "imports": [
+    { "name": "ForwardOpaquePass.Color0", "kind": "texture" },
+    { "name": "ForwardOpaquePass.Depth", "kind": "texture" },
+    { "name": "ShadowPass.Atlas", "kind": "texture" }
+  ],
+  "nodes": [
+    { "name": "shadow", "type": "ShadowPass" },
+    { "name": "opaque", "type": "ForwardOpaquePass" }
+  ]
+}

@@ -66,7 +66,7 @@ void main() {
   // Through the object's own placement first, then into the light's
   // clip space -- the same two steps the camera's vertex stage takes,
   // with the light's matrix in the camera's place.
-  Position = lightViewProjection * (model * Vector4(position, 1.0));
+  Position = lightViewProjection * (FluxionObjectModel() * Vector4(position, 1.0));
 }
 
 #endif

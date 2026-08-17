@@ -238,6 +238,14 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
 
     const FluxionRHITextureViewHandle atlasView = FluxionRendererInternal_RenderView_GetShadowAtlasView(renderer->currentView);
     if (!FLUXION_HANDLE_IS_VALID(atlasView)) return;
+
+    // The view's own numbers, not the engine's defaults: a view built
+    // for a pipeline that asked for a different shadow quality has an
+    // atlas of a different size, and drawing into it by the default
+    // measurements would put every tile in the wrong place.
+    u32 atlasSize = 0;
+    u32 atlasTileSize = 0;
+    Fluxion_RenderView_GetShadowAtlasSize(renderer->currentView, &atlasSize, &atlasTileSize);
     if (!EnsureProgram(renderer)) return;
 
     // Transposed on the way out, at the one boundary where that happens:
@@ -266,15 +274,15 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
     renderingDesc.colorAttachments = nullptr;
     renderingDesc.colorAttachmentCount = 0;
     renderingDesc.depthAttachment = &depthAttachment;
-    renderingDesc.width = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
-    renderingDesc.height = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+    renderingDesc.width = atlasSize;
+    renderingDesc.height = atlasSize;
 
     // The WHOLE atlas is cleared once, and each light then draws into
     // its own part of it. Beginning a render per tile would clear the
     // others every time.
     Fluxion_RHI_CommandList_BeginRendering(commandList, &renderingDesc);
 
-    const f32 tileSize = (f32)FLUXION_RENDERER_SHADOW_TILE_SIZE;
+    const f32 tileSize = (f32)atlasTileSize;
 
     // CASTERS OUTSIDE, SHADOWS INSIDE, which is the opposite of the way
     // this reads. A shadow is a viewport and a bind group -- both cheap,
@@ -294,83 +302,55 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
         shadowFrustum[shadowIndex] = Fluxion_Mat4_FrustumPlanes(lightViewProjection);
     }
 
-    for (u32 i = 0; i < renderer->packetCount; ++i)
+    const u32 batchCount = Fluxion_GPUScene_GetBatchCount(renderer->gpuScene);
+    const FluxionRHIBufferHandle indirectBuffer = Fluxion_GPUScene_GetIndirectBuffer(renderer->gpuScene);
+
+    for (u32 i = 0; i < batchCount; ++i)
     {
-        const FluxionDrawPacket* packet = &renderer->packets[i];
+        const FluxionGPUSceneBatch* batch = Fluxion_GPUScene_GetBatch(renderer->gpuScene, i);
+        if (batch == nullptr) continue;
 
         FluxionRHIBufferHandle vertexBuffer, indexBuffer;
         u32 vertexCount, indexCount;
         bool use16BitIndices;
         FluxionRHIVertexLayout vertexLayout;
-        if (!FluxionRendererInternal_MeshBuffer_Get(packet->mesh, &vertexBuffer, &indexBuffer, &vertexCount, &indexCount, &use16BitIndices, &vertexLayout)) continue;
+        if (!FluxionRendererInternal_MeshBuffer_Get(batch->mesh, &vertexBuffer, &indexBuffer, &vertexCount, &indexCount, &use16BitIndices, &vertexLayout)) continue;
 
-        // Where this caster is and how far it reaches, as a sphere.
+        // WHAT IS CULLED IS A BATCH, not a caster.
         //
-        // A SPHERE RATHER THAN THE BOX, because a box has to be turned
-        // with the object and a sphere does not -- eight corners
-        // transformed per caster per shadow, against one centre and one
-        // number. It claims more room than the box does, which for
-        // throwing work away is the safe direction: what survives may be
-        // outside, what is dropped certainly is.
-        const FluxionMat4& world = renderer->packetTransforms[i];
-        FluxionAABB bounds;
-        bool haveBounds = FluxionRendererInternal_MeshBuffer_GetBounds(packet->mesh, &bounds);
-
-        FluxionVec3 worldCentre = { 0.0f, 0.0f, 0.0f };
-        f32 worldRadius = 0.0f;
-        if (haveBounds)
-        {
-            const FluxionVec3 centre = { (bounds.min.x + bounds.max.x) * 0.5f,
-                                         (bounds.min.y + bounds.max.y) * 0.5f,
-                                         (bounds.min.z + bounds.max.z) * 0.5f };
-            const FluxionVec3 extent = { (bounds.max.x - bounds.min.x) * 0.5f,
-                                         (bounds.max.y - bounds.min.y) * 0.5f,
-                                         (bounds.max.z - bounds.min.z) * 0.5f };
-
-            worldCentre.x = world.m[0][0] * centre.x + world.m[0][1] * centre.y + world.m[0][2] * centre.z + world.m[0][3];
-            worldCentre.y = world.m[1][0] * centre.x + world.m[1][1] * centre.y + world.m[1][2] * centre.z + world.m[1][3];
-            worldCentre.z = world.m[2][0] * centre.x + world.m[2][1] * centre.y + world.m[2][2] * centre.z + world.m[2][3];
-
-            // The largest the transform stretches anything, taken from
-            // its own rows -- a scale of two in one axis grows the
-            // sphere by two whichever way the object was turned.
-            f32 longestAxis = 0.0f;
-            for (u32 row = 0; row < 3; ++row)
-            {
-                const f32 length = sqrtf(world.m[row][0] * world.m[row][0] +
-                                         world.m[row][1] * world.m[row][1] +
-                                         world.m[row][2] * world.m[row][2]);
-                if (length > longestAxis) longestAxis = length;
-            }
-
-            worldRadius = sqrtf(extent.x * extent.x + extent.y * extent.y + extent.z * extent.z) * longestAxis;
-        }
-
-        // Nothing to draw anywhere is worth finding out before a
-        // pipeline is built for it.
+        // It used to be a caster: each object was tested against each
+        // shadow's frustum, and one that no shadow could see cost
+        // nothing. A batch is a run of objects drawn by one command
+        // now, so the granularity the test can work at is the run --
+        // the sphere that holds all of it, worked out where the objects
+        // were gathered (GPUScene.c).
+        //
+        // Coarser, and said rather than quietly lost: a batch spread
+        // across the world is one sphere spanning the world, and no
+        // shadow will reject it. What brings the finer answer back is
+        // the culling moving to the GPU, where it can be per instance
+        // rather than per draw.
         bool wantedByAny = false;
         for (u32 shadowIndex = 0; shadowIndex < shadowCount && !wantedByAny; ++shadowIndex)
         {
-            if (!haveBounds || Fluxion_Frustum_TouchesSphere(&shadowFrustum[shadowIndex], worldCentre, worldRadius)) wantedByAny = true;
+            if (batch->boundsRadius <= 0.0f ||
+                Fluxion_Frustum_TouchesSphere(&shadowFrustum[shadowIndex], batch->boundsCentre, batch->boundsRadius))
+            {
+                wantedByAny = true;
+            }
         }
         if (!wantedByAny) continue;
 
         if (!EnsurePipeline(renderer, &vertexLayout)) break;
 
-        FluxionRHIBindGroupEntry objectEntry;
-        objectEntry.binding = 0;
-        objectEntry.type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
-        objectEntry.buffer = renderer->objectBuffer;
-        objectEntry.bufferOffset = packet->objectDataOffset;
-        objectEntry.bufferSize = sizeof(FluxionMat4);
-        objectEntry.textureView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
-        objectEntry.sampler = FluxionRHISamplerHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
-
-        FluxionRHIBindGroupDesc objectBindGroupDesc;
-        objectBindGroupDesc.layout = renderer->objectBindGroupLayout;
-        objectBindGroupDesc.entries = &objectEntry;
-        objectBindGroupDesc.entryCount = 1;
-        FluxionRHIBindGroupHandle objectBindGroup = Fluxion_RHI_CreateBindGroup(renderer->device, &objectBindGroupDesc);
+        // Zeroed whole, not filled field by field: an entry has a field
+        // this one does not use (the element stride, below, on the other
+        // one) and leaving it as whatever was on the stack is how a
+        // storage-buffer view ends up describing 0xCCCCCCCC-byte
+        // elements -- which is not a wrong picture but a removed device.
+        // The batch's own bind group -- the same one the forward pass
+        // binds, built once with the batch. See GPUScene.h.
+        const FluxionRHIBindGroupHandle objectBindGroup = Fluxion_GPUScene_GetBatchBindGroup(renderer->gpuScene, i);
 
         // Rebound only when EnsurePipeline above actually built another
         // one, which happens when a mesh of a different shape turns up.
@@ -382,24 +362,24 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
         }
 
         Fluxion_RHI_CommandList_SetVertexBuffer(commandList, 0, vertexBuffer, 0);
-        if (FLUXION_HANDLE_IS_VALID(indexBuffer))
-        {
-            Fluxion_RHI_CommandList_SetIndexBuffer(commandList, indexBuffer, 0, use16BitIndices);
-        }
-
-        // Bound after the pipeline, always: one backend's SetBindGroup
-        // needs a pipeline already bound to know which layout it belongs
-        // to, and silently does nothing without one.
+        if (FLUXION_HANDLE_IS_VALID(indexBuffer)) Fluxion_RHI_CommandList_SetIndexBuffer(commandList, indexBuffer, 0, use16BitIndices);
         Fluxion_RHI_CommandList_SetBindGroup(commandList, FLUXION_RHI_BIND_GROUP_OBJECT, objectBindGroup);
 
+        // SHADOWS OUTSIDE, BATCHES INSIDE was the other way round when a
+        // caster was a draw: a shadow is a viewport and a bind group,
+        // both cheap, and a caster's bind group was not. Now the batch's
+        // bind group is built once here and the shadows loop inside it,
+        // which is the same trade in the same direction.
         for (u32 shadowIndex = 0; shadowIndex < shadowCount; ++shadowIndex)
         {
+            if (batch->boundsRadius > 0.0f &&
+                !Fluxion_Frustum_TouchesSphere(&shadowFrustum[shadowIndex], batch->boundsCentre, batch->boundsRadius))
+            {
+                continue;
+            }
+
             FluxionShadowAtlasTile tile;
             if (!FluxionRendererInternal_RenderView_GetShadow(renderer->currentView, shadowIndex, nullptr, &tile)) continue;
-
-            // The near cascades cover a few metres each. Without this
-            // they get the whole world, one draw at a time.
-            if (haveBounds && !Fluxion_Frustum_TouchesSphere(&shadowFrustum[shadowIndex], worldCentre, worldRadius)) continue;
 
             // The viewport is what puts a shadow in its own corner of the
             // atlas, and the scissor is what keeps it there: geometry
@@ -409,21 +389,24 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
             const f32 tileX = (f32)tile.x * tileSize;
             const f32 tileY = (f32)tile.y * tileSize;
             Fluxion_RHI_CommandList_SetViewport(commandList, tileX, tileY, tileSize, tileSize, 0.0f, 1.0f);
-            Fluxion_RHI_CommandList_SetScissor(commandList, (i32)tileX, (i32)tileY, FLUXION_RENDERER_SHADOW_TILE_SIZE, FLUXION_RENDERER_SHADOW_TILE_SIZE);
+            Fluxion_RHI_CommandList_SetScissor(commandList, (i32)tileX, (i32)tileY, atlasTileSize, atlasTileSize);
 
             Fluxion_RHI_CommandList_SetBindGroup(commandList, FLUXION_RHI_BIND_GROUP_GLOBAL, renderer->shadowGlobalBindGroups[shadowIndex]);
 
             if (FLUXION_HANDLE_IS_VALID(indexBuffer))
             {
-                Fluxion_RHI_CommandList_DrawIndexed(commandList, indexCount, 1, 0, 0, 0);
+                Fluxion_RHI_CommandList_DrawIndexedIndirect(commandList, indirectBuffer,
+                                                            (usize)i * sizeof(FluxionRHIDrawIndexedIndirectCommand), 1,
+                                                            (u32)sizeof(FluxionRHIDrawIndexedIndirectCommand));
             }
             else
             {
-                Fluxion_RHI_CommandList_Draw(commandList, vertexCount, 1, 0, 0);
+                // See the forward pass: a mesh with no indices is drawn
+                // directly, still once for the whole batch.
+                Fluxion_RHI_CommandList_Draw(commandList, vertexCount, batch->objectCount, 0, 0);
             }
         }
 
-        Fluxion_RHI_DestroyBindGroup(objectBindGroup);
     }
 
     Fluxion_RHI_CommandList_EndRendering(commandList);

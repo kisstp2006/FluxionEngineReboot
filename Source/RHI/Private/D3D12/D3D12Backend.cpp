@@ -498,6 +498,7 @@ extern void Fluxion_RHID3D12_CommandListSetIndexBuffer(FluxionRHICommandListHand
 extern void Fluxion_RHID3D12_CommandListDraw(FluxionRHICommandListHandle, u32, u32, u32, u32);
 extern void Fluxion_RHID3D12_CommandListDrawIndexed(FluxionRHICommandListHandle, u32, u32, u32, i32, u32);
 extern void Fluxion_RHID3D12_CommandListDrawIndirect(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, u32, u32);
+extern void Fluxion_RHID3D12_CommandListDrawIndexedIndirect(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, u32, u32);
 extern void Fluxion_RHID3D12_CommandListDispatch(FluxionRHICommandListHandle, u32, u32, u32);
 extern void Fluxion_RHID3D12_CommandListCopyBuffer(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, FluxionRHIBufferHandle, usize, usize);
 extern void Fluxion_RHID3D12_CommandListCopyTexture(FluxionRHICommandListHandle, FluxionRHITextureHandle, FluxionRHITextureHandle);
@@ -570,6 +571,7 @@ static const FluxionRHIBackendVTable s_d3d12VTable = {
     Fluxion_RHID3D12_CommandListDraw,
     Fluxion_RHID3D12_CommandListDrawIndexed,
     Fluxion_RHID3D12_CommandListDrawIndirect,
+    Fluxion_RHID3D12_CommandListDrawIndexedIndirect,
     Fluxion_RHID3D12_CommandListDispatch,
     Fluxion_RHID3D12_CommandListCopyBuffer,
     Fluxion_RHID3D12_CommandListCopyTexture,

@@ -43,6 +43,7 @@
 
 #include <Fluxion/Scene/Camera.h>
 #include <Fluxion/Scene/Scene.h>
+#include <Fluxion/Scene/SceneSerialization.h>
 
 #include <cmath>
 
@@ -166,6 +167,88 @@ void TwoCamerasGiveOneAnswer(TestContext& ctx)
     Fluxion_Scene_Destroy(scene);
 }
 
+// --- Which pipeline this camera is drawn with -----------------------------
+
+void ACameraThatNamesNoPipelineSaysNothing(TestContext& ctx)
+{
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+
+    FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(scene, "Eye");
+    FluxionCamera camera{};
+    camera.fovYRadians = 1.0f;
+    camera.nearPlane = 0.1f;
+    camera.farPlane = 100.0f;
+    Fluxion_GameObject_AddComponent(scene, object, Fluxion_Camera_TypeId(), &camera);
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    // Found, and holding nothing -- which is the camera saying "whatever
+    // the project uses", not an error.
+    FluxionAssetRef pipeline{};
+    pipeline.asset = Fluxion_UUID_Generate();
+    TEST_CHECK(ctx, Fluxion_Scene_GatherCameraRenderPipeline(scene, &pipeline));
+    TEST_CHECK(ctx, !Fluxion_AssetRef_IsSet(pipeline));
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+void ASceneWithNoCameraNamesNoPipelineEither(TestContext& ctx)
+{
+    FluxionSceneHandle scene = Fluxion_Scene_Create();
+    Fluxion_Scene_CreateGameObject(scene, "NotACamera");
+    Fluxion_Scene_Tick(scene, 0.0f);
+
+    FluxionAssetRef pipeline{};
+    TEST_CHECK(ctx, !Fluxion_Scene_GatherCameraRenderPipeline(scene, &pipeline));
+
+    Fluxion_Scene_Destroy(scene);
+}
+
+void ThePipelineACameraNamesSurvivesBeingSaved(TestContext& ctx)
+{
+    const FluxionUUID chosen = Fluxion_UUID_Generate();
+
+    FluxionSceneHandle source = Fluxion_Scene_Create();
+    FluxionGameObjectHandle object = Fluxion_Scene_CreateGameObject(source, "Eye");
+
+    FluxionCamera camera{};
+    camera.fovYRadians = 1.0f;
+    camera.nearPlane = 0.1f;
+    camera.farPlane = 100.0f;
+    camera.renderPipeline.asset = chosen;
+    Fluxion_GameObject_AddComponent(source, object, Fluxion_Camera_TypeId(), &camera);
+    Fluxion_Scene_Tick(source, 0.0f);
+
+    // Read straight back first: the field is a component's, so a scene
+    // that could not even be asked would fail here rather than in the
+    // saving.
+    FluxionAssetRef live{};
+    TEST_CHECK(ctx, Fluxion_Scene_GatherCameraRenderPipeline(source, &live));
+    TEST_CHECK(ctx, Fluxion_UUID_Equals(live.asset, chosen));
+
+    usize size = 0;
+    u8* bytes = Fluxion_Scene_SaveToBuffer(source, 4096, &size);
+    TEST_CHECK(ctx, bytes != nullptr);
+    if (bytes == nullptr) return;
+    Fluxion_Scene_Destroy(source);
+
+    FluxionSceneHandle loaded = Fluxion_Scene_Create();
+    {
+        FluxionStream reader;
+        Fluxion_MemoryStream_InitReader(&reader, bytes, size);
+        TEST_CHECK(ctx, Fluxion_Scene_Load(loaded, &reader));
+    }
+    Fluxion_Scene_FreeBuffer(bytes, size);
+
+    // Sixteen bytes that mean the same thing in every run: an asset
+    // reference needs no special handling to be saved, and this is what
+    // says so for the camera's.
+    FluxionAssetRef reloaded{};
+    TEST_CHECK(ctx, Fluxion_Scene_GatherCameraRenderPipeline(loaded, &reloaded));
+    TEST_CHECK(ctx, Fluxion_UUID_Equals(reloaded.asset, chosen));
+
+    Fluxion_Scene_Destroy(loaded);
+}
+
 } // namespace
 
 void Test_SceneCamera_Run(TestContext& ctx)
@@ -174,4 +257,7 @@ void Test_SceneCamera_Run(TestContext& ctx)
     TheViewUndoesWhereTheCameraStands(ctx);
     TheProjectionMapsThePlanesWhereItSays(ctx);
     TwoCamerasGiveOneAnswer(ctx);
+    ACameraThatNamesNoPipelineSaysNothing(ctx);
+    ASceneWithNoCameraNamesNoPipelineEither(ctx);
+    ThePipelineACameraNamesSurvivesBeingSaved(ctx);
 }

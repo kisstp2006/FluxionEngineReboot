@@ -225,6 +225,13 @@ extern "C" void Test_RendererFrame_Run(TestContext* ctx)
     TEST_CHECK(ctx, Fluxion_RenderGraph_Compile(graph));
 
     Fluxion_RHI_CommandList_Begin(fixture.commandList);
+
+    // Between the draws and the drawing, and inside the recording: what
+    // it records is a copy, and a copy is a command. A frame that left
+    // this out would draw the sky and nothing else -- which is what the
+    // count below would say.
+    Fluxion_Renderer_UploadScene(renderer, fixture.commandList);
+
     Fluxion_RenderGraph_Execute(graph, fixture.commandList);
     Fluxion_RHI_CommandList_End(fixture.commandList);
 

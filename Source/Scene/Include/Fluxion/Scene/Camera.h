@@ -41,6 +41,7 @@
 
 #pragma once
 
+#include <Fluxion/Assets/AssetRef.h>
 #include <Fluxion/Foundation/Math.h>
 #include <Fluxion/Core/Reflection/TypeId.h>
 #include <Fluxion/Scene/Scene.h>
@@ -66,6 +67,22 @@ typedef struct FluxionCamera
 
     f32 nearPlane;
     f32 farPlane;
+
+    // Which render pipeline asset draws what this camera sees. Nil --
+    // which is what a camera nobody set one on has -- means the
+    // project's default, so the common case is the one nobody has to
+    // fill in.
+    //
+    // A reference rather than anything the renderer hands out, for the
+    // reason every asset field here is one: this gets saved with the
+    // scene, and a handle means where something sat in a table during
+    // one run of one program.
+    //
+    // THIS IS THE WHOLE OF WHAT A CAMERA KNOWS ABOUT RENDERING. It does
+    // not know whether the pipeline it names is forward or deferred,
+    // what passes it has, or what it costs -- so a scene keeps working
+    // when the answer to any of those changes.
+    FluxionAssetRef renderPipeline;
 } FluxionCamera;
 
 FluxionTypeId Fluxion_Camera_TypeId(void);
@@ -77,6 +94,20 @@ FluxionTypeId Fluxion_Camera_TypeId(void);
 // reported. False when no object carries one, and the outputs are then
 // left alone.
 bool Fluxion_Scene_GatherCamera(FluxionSceneHandle scene, f32 aspect, FluxionMat4* outView, FluxionMat4* outProjection);
+
+// What that same camera says about which pipeline draws it.
+//
+// Its own function rather than two more outputs on the one above,
+// because a caller that only wants the matrices is the common one and a
+// caller that only wants this -- deciding, before a view exists, what
+// kind of view to build -- is a real one too. The same camera answers
+// both: the first found, as above.
+//
+// False when nothing in the scene carries a camera. The reference that
+// comes back may still be nil, which is the camera saying "whatever the
+// project uses" -- Fluxion_RenderPipelineAsset_Resolve is what turns
+// those two into one answer.
+bool Fluxion_Scene_GatherCameraRenderPipeline(FluxionSceneHandle scene, FluxionAssetRef* outPipeline);
 
 #ifdef __cplusplus
 }

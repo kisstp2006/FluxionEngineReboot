@@ -45,6 +45,8 @@
 #include <Fluxion/RenderCore/Renderer/RenderTarget.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
 
+#include <string.h>
+
 // Engine-internal, and named here rather than reached through a header
 // the module keeps private. What it reports is not a detail: it decides
 // whether the environment passes run this frame at all.
@@ -85,7 +87,12 @@ void Test_RenderView_Run(TestContext* ctx)
     FluxionRenderTargetHandle renderTarget = Fluxion_RenderTarget_Create(device, &targetDesc);
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(renderTarget));
 
+    // Zeroed first, not filled field by field: the description has
+    // fields whose zero means "the engine's own default" -- the shadow
+    // atlas sizes among them -- and a stack description that skipped one
+    // would be asking for whatever was on the stack.
     FluxionRenderViewDesc viewDesc;
+    memset(&viewDesc, 0, sizeof(viewDesc));
     viewDesc.viewMatrix = Fluxion_Mat4_Identity();
     viewDesc.projectionMatrix = Fluxion_Mat4_Identity();
     viewDesc.viewport.x = 0.0f;

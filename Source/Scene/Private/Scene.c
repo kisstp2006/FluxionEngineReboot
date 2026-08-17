@@ -43,6 +43,8 @@
 
 #include "SceneInternal.h"
 
+#include <Fluxion/Scene/MeshRenderer.h>
+
 #include <Fluxion/Foundation/Assert.h>
 
 #include <string.h>
@@ -158,6 +160,10 @@ void Fluxion_Scene_Destroy(FluxionSceneHandle scene)
             "Fluxion: destroying a scene left one of its objects standing");
         if (record->firstRoot.index == root.index && record->firstRoot.generation == root.generation) break;
     }
+
+    // Whatever the extraction acquired for this scene goes with it: an
+    // asset held by a scene nobody can reach any more is held forever.
+    Fluxion_Scene_ReleaseRenderAssets(scene);
 
     Fluxion_SceneComponents_ReleaseScene(record);
     Fluxion_SceneArchetype_ReleaseScene(record);

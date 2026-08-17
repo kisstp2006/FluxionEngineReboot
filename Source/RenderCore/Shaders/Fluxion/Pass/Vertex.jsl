@@ -70,6 +70,10 @@
 [Output] Vector4 Position;
 
 void main() {
+  // Read once: it is a buffer lookup now, not a uniform, and every line
+  // below wants the same row of it.
+  Matrix4x4 model = FluxionObjectModel();
+
   Vector4 worldPosition = model * Vector4(position, 1.0);
   vWorldPosition = worldPosition.xyz;
 

@@ -47,6 +47,7 @@
 
 
 #include <Fluxion/Foundation/Assert.h>
+#include <Fluxion/Foundation/Log.h>
 
 #include <string.h>
 
@@ -108,6 +109,13 @@ typedef struct FluxionRenderViewRecord
     // depends on where this view is looking from.
     FluxionRHITextureHandle shadowAtlasTexture;
     FluxionRHITextureViewHandle shadowAtlasView;
+
+    // The size the atlas was actually made at, and the tile it is cut
+    // into. Kept rather than read from a constant: two views of one
+    // scene may be drawn through pipelines that asked for different
+    // shadow quality, and the texture each got is the answer for it.
+    u32 shadowAtlasSize;
+    u32 shadowTileSize;
 
     // What the shadow pass draws this frame: a matrix per shadow and the
     // tile each was given. Kept here as well as in the buffer below
@@ -371,6 +379,19 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     }
     if (index == FLUXION_RENDERER_MAX_RENDER_VIEWS) return invalid;
 
+    // Nothing asked for means the engine's own pair; anything else is
+    // taken as given and checked, because an atlas that is not a whole
+    // number of tiles across has room in it that nothing can be placed
+    // in -- and finding that out when the first shadow goes missing is
+    // finding it out too late.
+    const u32 shadowAtlasSize = desc->shadowAtlasSize != 0 ? desc->shadowAtlasSize : FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+    const u32 shadowTileSize = desc->shadowTileSize != 0 ? desc->shadowTileSize : FLUXION_RENDERER_SHADOW_TILE_SIZE;
+    if (shadowTileSize == 0 || shadowAtlasSize < shadowTileSize || (shadowAtlasSize % shadowTileSize) != 0)
+    {
+        FLUXION_LOG_ERROR("RenderView", "a %u texel shadow atlas cannot be cut into %u texel tiles", shadowAtlasSize, shadowTileSize);
+        return invalid;
+    }
+
     FluxionRHIBufferDesc bufferDesc;
     bufferDesc.size = sizeof(FluxionFrameConstants);
     bufferDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_CONSTANT_BUFFER;
@@ -483,8 +504,8 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     // a backend for before the comparison sampling arrived.
     FluxionRHITextureDesc shadowDesc;
     memset(&shadowDesc, 0, sizeof(shadowDesc));
-    shadowDesc.width = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
-    shadowDesc.height = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+    shadowDesc.width = shadowAtlasSize;
+    shadowDesc.height = shadowAtlasSize;
     shadowDesc.depth = 1;
     shadowDesc.mipLevels = 1;
     shadowDesc.arrayLayers = 1;
@@ -589,6 +610,8 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     record->dfgWanted = true;
     record->shadowAtlasTexture = shadowAtlasTexture;
     record->shadowAtlasView = shadowAtlasView;
+    record->shadowAtlasSize = shadowAtlasSize;
+    record->shadowTileSize = shadowTileSize;
     record->shadowSampler = shadowSampler;
     record->shadowStaging = shadowStaging;
     record->shadowStorage = shadowStorage;
@@ -692,7 +715,7 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
     constants.lightParams.x = (f32)record->lightCount;
     constants.lightParams.y = (f32)record->shadowCount;
 
-    constants.shadowAtlasParams.x = 1.0f / (f32)FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+    constants.shadowAtlasParams.x = 1.0f / (f32)record->shadowAtlasSize;
 
     // Every shadow rectangle in this engine counts rows downwards from
     // the top, because that is how the shadow pass's viewport places them
@@ -948,9 +971,11 @@ bool FluxionRendererInternal_RenderView_MarkPrefilteredFilled(FluxionRenderViewH
 
 void Fluxion_RenderView_GetShadowAtlasSize(FluxionRenderViewHandle view, u32* outAtlasSize, u32* outTileSize)
 {
-    FLUXION_UNUSED(view);
-    if (outAtlasSize != NULL) *outAtlasSize = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
-    if (outTileSize != NULL) *outTileSize = FLUXION_RENDERER_SHADOW_TILE_SIZE;
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return;
+
+    if (outAtlasSize != NULL) *outAtlasSize = record->shadowAtlasSize;
+    if (outTileSize != NULL) *outTileSize = record->shadowTileSize;
 }
 
 FluxionRHITextureHandle Fluxion_RenderView_GetShadowAtlasTexture(FluxionRenderViewHandle view)
@@ -1038,8 +1063,8 @@ u32 Fluxion_RenderView_SetShadows(FluxionRenderViewHandle view, const FluxionRen
     if (count == 0) return 0;
 
     FluxionShadowAtlasDesc atlas;
-    atlas.atlasSize = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
-    atlas.tileSize = FLUXION_RENDERER_SHADOW_TILE_SIZE;
+    atlas.atlasSize = record->shadowAtlasSize;
+    atlas.tileSize = record->shadowTileSize;
 
     const u32 offered = count < FLUXION_RENDER_VIEW_MAX_SHADOWS ? count : FLUXION_RENDER_VIEW_MAX_SHADOWS;
 
@@ -1123,8 +1148,8 @@ void Fluxion_RenderView_UploadLighting(FluxionRenderViewHandle view, FluxionRHIC
         FluxionRHIRenderingDesc renderingDesc;
         memset(&renderingDesc, 0, sizeof(renderingDesc));
         renderingDesc.depthAttachment = &depthAttachment;
-        renderingDesc.width = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
-        renderingDesc.height = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+        renderingDesc.width = record->shadowAtlasSize;
+        renderingDesc.height = record->shadowAtlasSize;
 
         Fluxion_RHI_CommandList_BeginRendering(commandList, &renderingDesc);
         Fluxion_RHI_CommandList_EndRendering(commandList);

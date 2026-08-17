@@ -102,6 +102,15 @@ public:
         // shader never references it.
         m_globals["ThreadID"] = ShaderType{ TypeKind::Uint };
 
+        // A vertex-only built-in: WHICH INSTANCE of this draw is being
+        // shaded, counting from zero. An int rather than a uint because
+        // the only thing anybody does with it is index a buffer, and
+        // every index in this language is an int.
+        //
+        // Seeded here the same permissive way; which stage it is allowed
+        // in is checked where the stage is known (see BuildIR).
+        m_globals["InstanceIndex"] = ShaderType{ TypeKind::Int };
+
         // Pass 1: collect every global name (uniforms, stage IO, consts,
         // output slots, function overload sets) before checking any
         // function body, so forward references between declarations work.

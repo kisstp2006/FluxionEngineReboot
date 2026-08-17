@@ -444,6 +444,7 @@ bool Fluxion_SceneArchetype_PlaceNewObject(FluxionSceneRecord* record, FluxionGa
         if (!Fluxion_SceneTransform_EnsureRegistered()) return false;
         if (!Fluxion_SceneLight_EnsureRegistered()) return false;
         if (!Fluxion_SceneCamera_EnsureRegistered()) return false;
+        if (!Fluxion_SceneMeshRenderer_EnsureRegistered()) return false;
 
         record->baseArchetype = Fluxion_SceneArchetype_FindOrCreate(record, intrinsic, 2);
         if (record->baseArchetype == FLUXION_SCENE_NO_ARCHETYPE) return false;

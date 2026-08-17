@@ -80,13 +80,18 @@ FluxionRenderGraphPassHandle Fluxion_RenderGraph_AddPassFromRegistry(FluxionRend
 FluxionRenderGraphTextureHandle Fluxion_RenderGraph_ImportTexture(FluxionRenderGraph* graph, const char* resourceName, FluxionRHITextureHandle texture, FluxionRHIResourceState currentState);
 FluxionRenderGraphBufferHandle Fluxion_RenderGraph_ImportBuffer(FluxionRenderGraph* graph, const char* resourceName, FluxionRHIBufferHandle buffer, FluxionRHIResourceState currentState);
 
-// Loads node topology from a JSON buffer (see the .rendergraph format
-// documented alongside RenderGraphJsonLoader.c), adding passes via the
+// Loads node topology from a JSON buffer (the .rendergraph format is
+// documented in Pipeline/RenderGraphAsset.h), adding passes via the
 // exact same Fluxion_RenderGraph_AddPassFromRegistry path above -- a
 // JSON-described graph and a code-described one are indistinguishable
 // once built. Returns false on a malformed file or a reference to an
 // unregistered pass type name (nothing is left partially added in that
 // case: the whole file is parsed and validated before any node is added).
+//
+// NODES ONLY: a file's declared imports are read and checked for shape
+// and then left alone, because meeting them takes real RHI handles and
+// this call is given none. Fluxion_RenderGraphAsset_Instantiate is the
+// one that takes those and holds the file to its declarations.
 bool Fluxion_RenderGraph_LoadFromJSON(FluxionRenderGraph* graph, const char* jsonText, usize jsonLength);
 
 // Setup -> topological sort -> cycle detection -> pass culling -> barrier

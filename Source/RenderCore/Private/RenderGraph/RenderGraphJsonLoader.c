@@ -39,196 +39,45 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-// `.rendergraph` file format (JSON):
+// Building a graph straight from a `.rendergraph` text, with no asset
+// system in between -- what a test and a small program want.
 //
-//   {
-//     "imports": [ { "name": "Backbuffer", "kind": "texture" } ],
-//     "nodes": [
-//       { "name": "brightness", "type": "CubeBrightnessCompute" },
-//       { "name": "draw", "type": "CubeDraw" }
-//     ]
-//   }
-//
-// The format deliberately does NOT encode edges: each pass type's Setup
-// callback declares the resource names it touches, and Compile derives
-// the edges. The JSON only decides which pass instances exist and what
-// they are named.
-//
-// "imports" is validated for shape but otherwise informational -- a real
-// handle cannot come from a text file, so the caller still imports the
-// resource through the C calls under the same name. The section records
-// which names the file's author expects to be supplied that way.
+// The text itself is read by Fluxion_RenderGraphAsset_ParseText, which is
+// where the format is documented. This call is what it was before that
+// existed: NODES ONLY. The imports a file declares are a contract that
+// needs real handles to be met, and there are none to be had here -- so
+// they are read and validated for shape, and satisfying them is
+// Fluxion_RenderGraphAsset_Instantiate's job, not this one's.
 
 #include "RenderGraphInternal.h"
 
 #include <Fluxion/Foundation/Assert.h>
+#include <Fluxion/RenderCore/Pipeline/RenderGraphAsset.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraphPassRegistry.h>
 
-#include <pdjson.h>
-
 #include <string.h>
-
-#define FLUXION_RENDER_GRAPH_JSON_MAX_NAME 64
-
-typedef struct FluxionRenderGraphJsonNode
-{
-    char name[FLUXION_RENDER_GRAPH_JSON_MAX_NAME];
-    char type[FLUXION_RENDER_GRAPH_JSON_MAX_NAME];
-} FluxionRenderGraphJsonNode;
-
-static void Fluxion_RenderGraphJson_CopyBoundedString(char* dest, usize destSize, const char* src, usize srcLength)
-{
-    usize copyLength = srcLength < destSize - 1 ? srcLength : destSize - 1;
-    memcpy(dest, src, copyLength);
-    dest[copyLength] = '\0';
-}
-
-static bool Fluxion_RenderGraphJson_SkipImportsArray(json_stream* json)
-{
-    enum json_type type = json_next(json);
-    if (type != JSON_ARRAY) return false;
-
-    while ((type = json_next(json)) == JSON_OBJECT)
-    {
-        bool hasName = false;
-        bool hasKind = false;
-        while ((type = json_next(json)) == JSON_STRING)
-        {
-            const char* key = json_get_string(json, NULL);
-            if (strcmp(key, "name") == 0)
-            {
-                type = json_next(json);
-                if (type != JSON_STRING) return false;
-                hasName = true;
-            }
-            else if (strcmp(key, "kind") == 0)
-            {
-                type = json_next(json);
-                if (type != JSON_STRING) return false;
-                const char* value = json_get_string(json, NULL);
-                if (strcmp(value, "texture") != 0 && strcmp(value, "buffer") != 0) return false;
-                hasKind = true;
-            }
-            else
-            {
-                json_skip(json);
-            }
-        }
-        if (type != JSON_OBJECT_END) return false;
-        if (!hasName || !hasKind) return false;
-    }
-
-    return type == JSON_ARRAY_END;
-}
-
-// Parses the "nodes" array into outNodes (capacity maxNodes), validating
-// every entry's "type" against the pass-type registry as it goes --
-// returns false immediately (before adding anything to `graph`) on any
-// malformed entry or unregistered type, per Fluxion_RenderGraph_LoadFromJSON's
-// documented all-or-nothing contract.
-static bool Fluxion_RenderGraphJson_ParseNodesArray(json_stream* json, FluxionRenderGraphJsonNode* outNodes, u32 maxNodes, u32* outNodeCount)
-{
-    enum json_type type = json_next(json);
-    if (type != JSON_ARRAY) return false;
-
-    u32 count = 0;
-    while ((type = json_next(json)) == JSON_OBJECT)
-    {
-        if (count >= maxNodes) return false;
-
-        FluxionRenderGraphJsonNode* node = &outNodes[count];
-        node->name[0] = '\0';
-        node->type[0] = '\0';
-
-        while ((type = json_next(json)) == JSON_STRING)
-        {
-            const char* key = json_get_string(json, NULL);
-            if (strcmp(key, "name") == 0)
-            {
-                type = json_next(json);
-                if (type != JSON_STRING) return false;
-                const char* value = json_get_string(json, NULL);
-                Fluxion_RenderGraphJson_CopyBoundedString(node->name, sizeof(node->name), value, strlen(value));
-            }
-            else if (strcmp(key, "type") == 0)
-            {
-                type = json_next(json);
-                if (type != JSON_STRING) return false;
-                const char* value = json_get_string(json, NULL);
-                Fluxion_RenderGraphJson_CopyBoundedString(node->type, sizeof(node->type), value, strlen(value));
-            }
-            else
-            {
-                json_skip(json);
-            }
-        }
-        if (type != JSON_OBJECT_END) return false;
-
-        if (node->name[0] == '\0' || node->type[0] == '\0') return false;
-        if (!Fluxion_RenderGraphPassRegistry_Find(node->type)) return false;
-
-        ++count;
-    }
-    if (type != JSON_ARRAY_END) return false;
-
-    *outNodeCount = count;
-    return true;
-}
 
 bool Fluxion_RenderGraph_LoadFromJSON(FluxionRenderGraph* graph, const char* jsonText, usize jsonLength)
 {
     FLUXION_ASSERT(graph != NULL && jsonText != NULL);
 
-    json_stream json;
-    json_open_buffer(&json, jsonText, jsonLength);
+    FluxionRenderGraphAsset asset;
+    if (!Fluxion_RenderGraphAsset_ParseText(jsonText, jsonLength, &asset)) return false;
 
-    bool ok = true;
-    enum json_type type = json_next(&json);
-    if (type != JSON_OBJECT) ok = false;
-
-    FluxionRenderGraphJsonNode s_parsedNodes[FLUXION_RENDER_GRAPH_MAX_NODES];
-    u32 parsedNodeCount = 0;
-    bool sawNodes = false;
-
-    while (ok && (type = json_next(&json)) == JSON_STRING)
+    // Checked before anything is added, so the all-or-nothing promise
+    // holds for a file whose last node is the unregistered one.
+    for (u32 i = 0; i < asset.nodeCount; ++i)
     {
-        const char* key = json_get_string(&json, NULL);
-        char keyBuffer[32];
-        Fluxion_RenderGraphJson_CopyBoundedString(keyBuffer, sizeof(keyBuffer), key, strlen(key));
-
-        if (strcmp(keyBuffer, "imports") == 0)
-        {
-            if (!Fluxion_RenderGraphJson_SkipImportsArray(&json)) { ok = false; break; }
-        }
-        else if (strcmp(keyBuffer, "nodes") == 0)
-        {
-            if (!Fluxion_RenderGraphJson_ParseNodesArray(&json, s_parsedNodes, FLUXION_RENDER_GRAPH_MAX_NODES, &parsedNodeCount)) { ok = false; break; }
-            sawNodes = true;
-        }
-        else
-        {
-            json_skip(&json);
-        }
+        if (Fluxion_RenderGraphPassRegistry_Find(asset.nodes[i].passType) == NULL) return false;
     }
 
-    if (ok && type != JSON_OBJECT_END) ok = false;
-    if (ok && !sawNodes) ok = false;
-
-    json_close(&json);
-
-    if (!ok) return false;
-
-    // Every entry already validated (well-formed + a registered pass
-    // type) during the parse above -- this second pass only ever adds
-    // nodes, it cannot fail.
-    for (u32 i = 0; i < parsedNodeCount; ++i)
+    for (u32 i = 0; i < asset.nodeCount; ++i)
     {
-        FluxionRenderGraphPassHandle handle = Fluxion_RenderGraph_AddPassFromRegistry(graph, s_parsedNodes[i].type, NULL);
+        const FluxionRenderGraphPassHandle handle = Fluxion_RenderGraph_AddPassFromRegistry(graph, asset.nodes[i].passType, NULL);
         FLUXION_ASSERT(FLUXION_HANDLE_IS_VALID(handle));
-        if (FLUXION_HANDLE_IS_VALID(handle))
-        {
-            Fluxion_RenderGraphJson_CopyBoundedString(graph->nodes[handle.index].name, sizeof(graph->nodes[handle.index].name), s_parsedNodes[i].name, strlen(s_parsedNodes[i].name));
-        }
+        if (!FLUXION_HANDLE_IS_VALID(handle)) return false;
+
+        memcpy(graph->nodes[handle.index].name, asset.nodes[i].name, strlen(asset.nodes[i].name) + 1);
     }
 
     return true;

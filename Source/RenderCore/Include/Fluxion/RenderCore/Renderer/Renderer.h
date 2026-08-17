@@ -49,6 +49,10 @@
 #include <Fluxion/RenderCore/Renderer/RenderPipeline.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
 
+// Only named in a signature below, never dereferenced by this header --
+// see Scene/RenderWorld.h for what it is.
+struct FluxionRenderWorld;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -80,13 +84,39 @@ void Fluxion_Renderer_UpdateEnvironment(FluxionRendererHandle renderer, FluxionR
 
 void Fluxion_Renderer_BeginFrame(FluxionRendererHandle renderer, FluxionRenderViewHandle view);
 
-// Every DrawMesh call is immediately visible to "ForwardOpaquePass" --
-// there is no separate flush step, so a typical frame is: BeginFrame,
-// any number of DrawMesh calls, then the caller compiles and executes
+// Adds one thing to what this frame draws. It does NOT reach a device by
+// itself -- see Fluxion_Renderer_UploadScene, which is the step that
+// does, and which has to come after the last of these.
+//
+// A typical frame is: BeginFrame, any number of DrawMesh calls,
+// UploadScene, then the caller compiles and executes
 // (Fluxion_RenderGraph_Compile/Execute) whatever render graph it built
 // containing this renderer's "ForwardOpaquePass" node, and only then
 // calls EndFrame (with the same command list) to close out the frame.
 void Fluxion_Renderer_DrawMesh(FluxionRendererHandle renderer, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material, FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform);
+
+// Everything a render world holds, handed to this frame in one call.
+//
+// The same thing DrawMesh does, once per object -- and the reason it is
+// its own call is that a render world is where a step BETWEEN the scene
+// and the frame will live: what is visible, which level of detail, what
+// the last frame decided. An object marked not visible is not submitted,
+// which is the whole of that step for now.
+void Fluxion_Renderer_SubmitRenderWorld(FluxionRendererHandle renderer, const struct FluxionRenderWorld* world);
+
+// Works out what this frame's draws have in common, lays them out in
+// that order, and records the copy that puts them where a shader can
+// read them.
+//
+// AFTER THE LAST DrawMesh AND BEFORE ANYTHING DRAWS. Not inside DrawMesh,
+// because the order objects end up in depends on all of them: what makes
+// a thousand objects one draw call is that the ones sharing a pipeline,
+// a material and a mesh sit next to each other, and that cannot be known
+// while they are still arriving.
+//
+// The same rule, and the same reason, as Fluxion_RenderView_UploadLighting
+// -- and the same place in a frame.
+void Fluxion_Renderer_UploadScene(FluxionRendererHandle renderer, FluxionRHICommandListHandle commandList);
 
 // Draws this frame's accumulated Fluxion_DebugDraw_* geometry (if any)
 // directly into `commandList`, then resets per-frame state. Call after

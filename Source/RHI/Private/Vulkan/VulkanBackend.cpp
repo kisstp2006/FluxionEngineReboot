@@ -642,6 +642,7 @@ extern void Fluxion_RHIVulkan_CommandListSetIndexBuffer(FluxionRHICommandListHan
 extern void Fluxion_RHIVulkan_CommandListDraw(FluxionRHICommandListHandle, u32, u32, u32, u32);
 extern void Fluxion_RHIVulkan_CommandListDrawIndexed(FluxionRHICommandListHandle, u32, u32, u32, i32, u32);
 extern void Fluxion_RHIVulkan_CommandListDrawIndirect(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, u32, u32);
+extern void Fluxion_RHIVulkan_CommandListDrawIndexedIndirect(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, u32, u32);
 extern void Fluxion_RHIVulkan_CommandListDispatch(FluxionRHICommandListHandle, u32, u32, u32);
 extern void Fluxion_RHIVulkan_CommandListCopyBuffer(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, FluxionRHIBufferHandle, usize, usize);
 extern void Fluxion_RHIVulkan_CommandListCopyTexture(FluxionRHICommandListHandle, FluxionRHITextureHandle, FluxionRHITextureHandle);
@@ -729,6 +730,7 @@ static const FluxionRHIBackendVTable s_vulkanVTable = {
     Fluxion_RHIVulkan_CommandListDraw,
     Fluxion_RHIVulkan_CommandListDrawIndexed,
     Fluxion_RHIVulkan_CommandListDrawIndirect,
+    Fluxion_RHIVulkan_CommandListDrawIndexedIndirect,
     Fluxion_RHIVulkan_CommandListDispatch,
     Fluxion_RHIVulkan_CommandListCopyBuffer,
     Fluxion_RHIVulkan_CommandListCopyTexture,

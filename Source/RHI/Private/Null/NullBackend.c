@@ -487,6 +487,16 @@ static void Fluxion_RHI_Null_CommandListDrawIndirect(FluxionRHICommandListHandle
     FLUXION_ASSERT_MSG(s_commandListState[commandList.index].insideRendering, "Fluxion RHI Null backend: DrawIndirect called outside BeginRendering/EndRendering");
 }
 
+static void Fluxion_RHI_Null_CommandListDrawIndexedIndirect(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle argsBuffer, usize offset, u32 drawCount, u32 stride)
+{
+    FLUXION_UNUSED(argsBuffer);
+    FLUXION_UNUSED(offset);
+    FLUXION_UNUSED(drawCount);
+    FLUXION_UNUSED(stride);
+    if (!Fluxion_RHI_Null_RequireRecording(commandList, "DrawIndexedIndirect")) return;
+    FLUXION_ASSERT_MSG(s_commandListState[commandList.index].insideRendering, "Fluxion RHI Null backend: DrawIndexedIndirect called outside BeginRendering/EndRendering");
+}
+
 static void Fluxion_RHI_Null_CommandListDispatch(FluxionRHICommandListHandle commandList, u32 groupCountX, u32 groupCountY, u32 groupCountZ)
 {
     FLUXION_UNUSED(groupCountX);
@@ -969,6 +979,7 @@ static const FluxionRHIBackendVTable s_nullVTable = {
     Fluxion_RHI_Null_CommandListDraw,
     Fluxion_RHI_Null_CommandListDrawIndexed,
     Fluxion_RHI_Null_CommandListDrawIndirect,
+    Fluxion_RHI_Null_CommandListDrawIndexedIndirect,
     Fluxion_RHI_Null_CommandListDispatch,
     Fluxion_RHI_Null_CommandListCopyBuffer,
     Fluxion_RHI_Null_CommandListCopyTexture,

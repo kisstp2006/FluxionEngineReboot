@@ -201,6 +201,36 @@ void Fluxion_RHI_CommandList_SetIndexBuffer(FluxionRHICommandListHandle commandL
 void Fluxion_RHI_CommandList_Draw(FluxionRHICommandListHandle commandList, u32 vertexCount, u32 instanceCount, u32 firstVertex, u32 firstInstance);
 void Fluxion_RHI_CommandList_DrawIndexed(FluxionRHICommandListHandle commandList, u32 indexCount, u32 instanceCount, u32 firstIndex, i32 vertexOffset, u32 firstInstance);
 void Fluxion_RHI_CommandList_DrawIndirect(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle argsBuffer, usize offset, u32 drawCount, u32 stride);
+
+// One indexed draw, as it sits in a buffer the GPU reads its own
+// arguments from.
+//
+// THE SAME FIVE FIELDS IN THE SAME ORDER AS ALL THREE NATIVE APIS --
+// D3D12_DRAW_INDEXED_ARGUMENTS, VkDrawIndexedIndirectCommand and OpenGL's
+// DrawElementsIndirectCommand agree on this layout exactly, which is why
+// this can be one struct rather than three and a conversion. Written down
+// because the day one of them disagrees, nothing here fails to compile:
+// the geometry just comes out wrong.
+typedef struct FluxionRHIDrawIndexedIndirectCommand
+{
+    u32 indexCount;
+    u32 instanceCount;
+    u32 firstIndex;
+    i32 vertexOffset;
+    u32 firstInstance;
+} FluxionRHIDrawIndexedIndirectCommand;
+
+// Indexed draws whose arguments the GPU reads out of `argsBuffer`, one
+// FluxionRHIDrawIndexedIndirectCommand every `stride` bytes starting at
+// `offset`. An index buffer must be bound, exactly as for DrawIndexed.
+//
+// `firstInstance` IS A TRAP, and the engine's answer to it is to always
+// write zero: a shader's instance index counts from zero under HLSL
+// (SV_InstanceID ignores the start instance) and from the start instance
+// under GLSL (gl_InstanceIndex includes it). Anything that needs to know
+// which instance it is beyond that gets a base index by other means --
+// see Fluxion/Object.jsl.
+void Fluxion_RHI_CommandList_DrawIndexedIndirect(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle argsBuffer, usize offset, u32 drawCount, u32 stride);
 void Fluxion_RHI_CommandList_Dispatch(FluxionRHICommandListHandle commandList, u32 groupCountX, u32 groupCountY, u32 groupCountZ);
 
 void Fluxion_RHI_CommandList_CopyBuffer(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle src, usize srcOffset, FluxionRHIBufferHandle dst, usize dstOffset, usize size);

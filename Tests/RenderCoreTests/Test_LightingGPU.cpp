@@ -505,6 +505,11 @@ Rgb RenderOne(TestContext* ctx, LightingRig& rig, const Configuration& configura
 
     Fluxion_Renderer_BeginFrame(rig.renderer, view);
     Fluxion_Renderer_DrawMesh(rig.renderer, rig.mesh, material, rig.pipeline, nullptr);
+
+    // What turns the draws asked for into rows the vertex stage can
+    // read. Between the last draw and the drawing, inside the recording.
+    Fluxion_Renderer_UploadScene(rig.renderer, cmd);
+
     TEST_CHECK(ctx, Fluxion_RenderGraph_Compile(graph));
     Fluxion_RenderGraph_Execute(graph, cmd);
     Fluxion_Renderer_EndFrame(rig.renderer, cmd);
@@ -1429,6 +1434,8 @@ void RenderShadowScene(TestContext* ctx, LightingRig& rig, FluxionMeshBufferHand
     const FluxionMat4 occluder = PlaceAndScale(FluxionVec3{ kOccluderCentre, 0.0f, kOccluderHeight },
                                                FluxionVec3{ kOccluderHalfWidth, kShadowSceneHalfWidth * 1.5f, 1.0f });
     Fluxion_Renderer_DrawMesh(rig.renderer, mesh, material, rig.pipeline, &occluder);
+
+    Fluxion_Renderer_UploadScene(rig.renderer, cmd);
 
     TEST_CHECK(ctx, Fluxion_RenderGraph_Compile(graph));
     Fluxion_RenderGraph_Execute(graph, cmd);

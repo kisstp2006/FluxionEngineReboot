@@ -57,6 +57,7 @@
 #include <Fluxion/RHI/RHI.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraphPass.h>
 #include <Fluxion/RenderCore/Renderer/DrawPacket.h>
+#include <Fluxion/RenderCore/Renderer/GPUScene.h>
 #include <Fluxion/RenderCore/Renderer/Material.h>
 #include <Fluxion/RenderCore/Renderer/MeshBuffer.h>
 #include <Fluxion/RenderCore/Renderer/RenderPipeline.h>
@@ -114,9 +115,12 @@ extern "C" {
 // The tile got smaller rather than the atlas bigger, because the atlas
 // is what costs memory and a tile is what costs sharpness -- and the
 // sharpness lost is mostly in the far cascades, where a texel already
-// covers more than anyone can make out. Raising the atlas is the one
-// number to change; the allocator and everything above it are told the
-// size rather than assuming it.
+// covers more than anyone can make out.
+//
+// WHAT A VIEW GETS WHEN NOTHING ASKS FOR ANYTHING ELSE. A view is made
+// with the pair its description names (see FluxionRenderViewDesc), and
+// carries that pair around with it; these two are only the answer for a
+// description that left the question open.
 #define FLUXION_RENDERER_SHADOW_ATLAS_SIZE 2048
 #define FLUXION_RENDERER_SHADOW_TILE_SIZE 512
 
@@ -204,20 +208,29 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeFrameLay
     return desc;
 }
 
-// OBJECT is a uniform (constant) buffer, not a storage buffer -- it's a
-// single small read-only struct per draw (the world transform), never
-// written by any shader. A storage buffer's SRV+UAV pair (see
-// D3D12Pipeline.cpp's dual-range comment) requires the backing resource
-// to allow unordered access, which D3D12 forbids on the CPU-visible
-// (upload-heap) memory this buffer actually needs -- a uniform buffer
-// has no such restriction and no per-element-stride ambiguity either.
+// OBJECT is two bindings now: a tiny uniform buffer saying where in the
+// object list this draw starts, and the object list itself.
+//
+// The list is a STORAGE buffer because it is one entry per object in the
+// whole frame rather than one small struct per draw -- and a storage
+// buffer's SRV+UAV pair (see D3D12Pipeline.cpp's dual-range comment)
+// requires the backing resource to allow unordered access, which D3D12
+// forbids on CPU-visible memory. That is why the list is device memory
+// written by a copy (GPUScene.c) rather than mapped and written
+// directly, while the small uniform beside it, which is neither, can
+// still be mapped.
 static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeObjectLayoutDesc(void)
 {
     FluxionRHIBindGroupLayoutDesc desc = { };
     desc.entries[0].binding = 0;
     desc.entries[0].type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
     desc.entries[0].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_VERTEX | FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
-    desc.entryCount = 1;
+
+    desc.entries[1].binding = 1;
+    desc.entries[1].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[1].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_VERTEX;
+
+    desc.entryCount = 2;
     desc.debugName = "Fluxion.Renderer.ObjectBindGroupLayout";
     return desc;
 }
@@ -248,19 +261,16 @@ typedef struct FluxionRenderer
     bool inFrame;
     FluxionRenderViewHandle currentView;
 
-    FluxionDrawPacket packets[FLUXION_RENDERER_MAX_DRAW_PACKETS_PER_FRAME];
-    FluxionMat4 packetTransforms[FLUXION_RENDERER_MAX_DRAW_PACKETS_PER_FRAME];
-    u32 packetCount;
+    // Everything this frame draws, and the grouping of it -- see
+    // GPUScene.h. The renderer used to keep a packet per draw and a
+    // matrix beside it; the scene keeps both, in the order the device
+    // wants them, which is what lets a group of objects be one call.
+    FluxionGPUSceneHandle gpuScene;
 
     // Incremented by ForwardOpaquePass.c's Execute for each draw call it
     // actually issues -- see Fluxion_Renderer_GetLastDrawCallCount.
     u32 lastDrawCallCount;
 
-    // Per-draw world transform storage buffer, grown by doubling
-    // whenever packetCount would exceed its current element capacity --
-    // never shrinks. Uploaded from packetTransforms at EndFrame.
-    FluxionRHIBufferHandle objectBuffer;
-    u32 objectBufferCapacity; // in FluxionMat4 elements
     FluxionRHIBindGroupLayoutHandle objectBindGroupLayout;
 
     // --- built-in debug-draw pipeline (see DebugDraw.c) -------------------

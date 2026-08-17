@@ -145,6 +145,12 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     FluxionMeshBufferHandle mesh = Fluxion_MeshBuffer_Create(device, queue, &meshDesc);
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(mesh));
 
+    // The same geometry under a second handle: what makes two batches is
+    // the mesh being a different one, not the shape being different.
+    meshDesc.debugName = "ShadowPassGPU.SecondQuad";
+    FluxionMeshBufferHandle secondMesh = Fluxion_MeshBuffer_Create(device, queue, &meshDesc);
+    TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(secondMesh));
+
     FluxionRendererHandle renderer = Fluxion_Renderer_Create(device, queue);
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(renderer));
 
@@ -187,6 +193,28 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     const FluxionMat4 identity = Fluxion_Mat4_Identity();
     Fluxion_Renderer_DrawMesh(renderer, mesh, Fluxion::Foundation::NoHandle<FluxionMaterialHandle>(),
                               Fluxion::Foundation::NoHandle<FluxionRenderPipelineHandle>(), &identity);
+
+    // A SECOND BATCH, and it is here for one reason: the first batch's
+    // rows begin at zero, so a draw that ignored the batch's own first-
+    // object index would look perfectly right with only one of them.
+    //
+    // Its own mesh, so it cannot join the first batch, and a transform
+    // that moves it clear off the quad above -- three units along X,
+    // where the light's slab is eight wide. If the base index went
+    // missing, this batch would read row zero and draw exactly where the
+    // first one already did, and the far half of the tile would stay at
+    // the clear.
+    FluxionMat4 moved = Fluxion_Mat4_Identity();
+    moved.m[0][3] = 3.0f;
+    moved.m[1][3] = 2.0f; // and nearer the light, so its depth is its own
+    Fluxion_Renderer_DrawMesh(renderer, secondMesh, Fluxion::Foundation::NoHandle<FluxionMaterialHandle>(),
+                              Fluxion::Foundation::NoHandle<FluxionRenderPipelineHandle>(), &moved);
+
+    // What turns the draws asked for into rows a shader can read, and
+    // the commands that draw them. After the last DrawMesh and before
+    // anything draws -- the pass finds nothing to do without it.
+    Fluxion_Renderer_UploadScene(renderer, cmd);
+
     TEST_CHECK(ctx, Fluxion_RenderGraph_Compile(graph));
     Fluxion_RenderGraph_Execute(graph, cmd);
     Fluxion_Renderer_EndFrame(renderer, cmd);
@@ -222,9 +250,17 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     {
         const u32 tile = tileSize;
 
-        // The middle of the first tile, where the quad certainly is.
+        // WHERE EACH QUAD ALONE REACHES, measured rather than assumed.
+        //
+        // The light's slab is sixteen wide and the quads are eight, so
+        // the first one covers the middle half of the tile and the
+        // second -- moved three along, which the light's axes turn into
+        // the other direction -- covers the near half. Five eighths
+        // across is the first one on its own; one eighth is the second
+        // one on its own.
+        const usize firstOnlyColumn = (usize)((f32)tile * 0.625f);
         f32 insideTile = 0.0f;
-        std::memcpy(&insideTile, mapped + (usize)(tile / 2) * alignedRow + (usize)(tile / 2) * sizeof(f32), sizeof(f32));
+        std::memcpy(&insideTile, mapped + (usize)(tile / 2) * alignedRow + firstOnlyColumn * sizeof(f32), sizeof(f32));
 
         // The middle of the tile beside it, which nothing drew into and
         // which the clear therefore still owns. This is what says the
@@ -244,7 +280,7 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
         // a shader computing tile coordinates cannot be right in two
         // orientations at once.
         f32 mirroredTile = 0.0f;
-        std::memcpy(&mirroredTile, mapped + (usize)(atlasSize - 1 - tile / 2) * alignedRow + (usize)(tile / 2) * sizeof(f32), sizeof(f32));
+        std::memcpy(&mirroredTile, mapped + (usize)(atlasSize - 1 - tile / 2) * alignedRow + firstOnlyColumn * sizeof(f32), sizeof(f32));
 
         FLUXION_LOG_INFO("RenderCoreTests", "%s: the tile was found %s.", backendName,
                          (insideTile < 0.9f) ? "counting rows from the top" : "counting rows from the bottom");
@@ -256,6 +292,27 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
         // the near half of the range quietly discarded.
         const f32 drawnDepth = (insideTile < 0.9f) ? insideTile : mirroredTile;
         TEST_CHECK(ctx, drawnDepth > 0.45f && drawnDepth < 0.55f);
+
+        // WHERE ONLY THE SECOND BATCH REACHES.
+        //
+        // And where only the SECOND batch reaches. That batch's rows
+        // start at one, not zero: a draw that ignored its own
+        // first-object index would read row zero here and draw the
+        // first quad again -- unmoved, unraised, and nowhere near this
+        // column.
+        //
+        // This is the check that the batch's own first-object index is
+        // used: without it the second batch reads row zero, draws where
+        // the first one did, and this texel keeps the clear.
+        const usize secondColumn = (usize)((f32)tile * 0.125f);
+        f32 secondFromTop = 0.0f;
+        f32 secondFromBottom = 0.0f;
+        std::memcpy(&secondFromTop, mapped + (usize)(tile / 2) * alignedRow + secondColumn * sizeof(f32), sizeof(f32));
+        std::memcpy(&secondFromBottom, mapped + (usize)(atlasSize - 1 - tile / 2) * alignedRow + secondColumn * sizeof(f32), sizeof(f32));
+
+        const f32 secondDepth = secondFromTop < secondFromBottom ? secondFromTop : secondFromBottom;
+        FLUXION_LOG_INFO("RenderCoreTests", "%s: where only the second batch reaches, the atlas reads %.4f.", backendName, (f64)secondDepth);
+        TEST_CHECK(ctx, secondDepth > 0.15f && secondDepth < 0.45f);
 
         // And the tile beside it, which nothing drew into, still holds
         // the clear. This is what says the viewport honoured its offset
@@ -271,6 +328,7 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     Fluxion_RHI_DestroyCommandList(cmd);
     Fluxion_RenderView_Destroy(view);
     Fluxion_Renderer_Destroy(renderer);
+    Fluxion_MeshBuffer_Destroy(secondMesh);
     Fluxion_MeshBuffer_Destroy(mesh);
     Fluxion_RenderGraphPassRegistry_Shutdown();
 

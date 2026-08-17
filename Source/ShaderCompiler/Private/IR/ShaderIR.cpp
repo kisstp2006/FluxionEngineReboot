@@ -161,6 +161,145 @@ static const Stmt* FindDiscard(const Stmt& stmt)
     }
 }
 
+// Where a named global is referenced under this expression, if it is.
+//
+// The built-ins this language seeds (ThreadID, InstanceIndex) each mean
+// something in ONE stage. Referenced from another they are not a
+// compile error here and never were -- they became `gl_InstanceID` in a
+// fragment shader, and the driver reported it against generated text
+// nobody wrote. This is what turns that into a message naming the line
+// the author actually typed.
+static const Expr* FindGlobalReference(const Expr& expr, const char* name)
+{
+    switch (expr.kind)
+    {
+        case ExprKind::VarRef:
+            return static_cast<const VarRefExpr&>(expr).name == name ? &expr : nullptr;
+
+        case ExprKind::Call: {
+            const auto& call = static_cast<const CallExpr&>(expr);
+            for (const ExprPtr& arg : call.args)
+            {
+                if (const Expr* found = FindGlobalReference(*arg, name)) return found;
+            }
+            return nullptr;
+        }
+
+        case ExprKind::Constructor: {
+            const auto& ctor = static_cast<const ConstructorExpr&>(expr);
+            for (const ExprPtr& arg : ctor.args)
+            {
+                if (const Expr* found = FindGlobalReference(*arg, name)) return found;
+            }
+            return nullptr;
+        }
+
+        case ExprKind::Binary: {
+            const auto& binary = static_cast<const BinaryExpr&>(expr);
+            if (const Expr* found = FindGlobalReference(*binary.lhs, name)) return found;
+            return FindGlobalReference(*binary.rhs, name);
+        }
+
+        case ExprKind::Unary:
+            return FindGlobalReference(*static_cast<const UnaryExpr&>(expr).operand, name);
+
+        case ExprKind::Member:
+            return FindGlobalReference(*static_cast<const MemberExpr&>(expr).base, name);
+
+        case ExprKind::Index: {
+            const auto& index = static_cast<const IndexExpr&>(expr);
+            if (const Expr* found = FindGlobalReference(*index.base, name)) return found;
+            return FindGlobalReference(*index.index, name);
+        }
+
+        case ExprKind::Ternary: {
+            const auto& ternary = static_cast<const TernaryExpr&>(expr);
+            if (const Expr* found = FindGlobalReference(*ternary.condition, name)) return found;
+            if (const Expr* found = FindGlobalReference(*ternary.thenExpr, name)) return found;
+            return FindGlobalReference(*ternary.elseExpr, name);
+        }
+
+        case ExprKind::Assign: {
+            const auto& assign = static_cast<const AssignExpr&>(expr);
+            if (const Expr* found = FindGlobalReference(*assign.target, name)) return found;
+            return FindGlobalReference(*assign.value, name);
+        }
+
+        default:
+            return nullptr;
+    }
+}
+
+static const Expr* FindGlobalReference(const Stmt& stmt, const char* name)
+{
+    switch (stmt.kind)
+    {
+        case StmtKind::Expr:
+            return FindGlobalReference(*static_cast<const ExprStmt&>(stmt).expr, name);
+
+        case StmtKind::VarDecl: {
+            const auto& decl = static_cast<const VarDeclStmt&>(stmt);
+            return decl.initializer ? FindGlobalReference(*decl.initializer, name) : nullptr;
+        }
+
+        case StmtKind::Block: {
+            const auto& block = static_cast<const BlockStmt&>(stmt);
+            for (const StmtPtr& inner : block.statements)
+            {
+                if (const Expr* found = FindGlobalReference(*inner, name)) return found;
+            }
+            return nullptr;
+        }
+
+        case StmtKind::If: {
+            const auto& branch = static_cast<const IfStmt&>(stmt);
+            if (branch.condition)
+            {
+                if (const Expr* found = FindGlobalReference(*branch.condition, name)) return found;
+            }
+            if (branch.thenBranch)
+            {
+                if (const Expr* found = FindGlobalReference(*branch.thenBranch, name)) return found;
+            }
+            return branch.elseBranch ? FindGlobalReference(*branch.elseBranch, name) : nullptr;
+        }
+
+        case StmtKind::For: {
+            const auto& loop = static_cast<const ForStmt&>(stmt);
+            if (loop.init)
+            {
+                if (const Expr* found = FindGlobalReference(*loop.init, name)) return found;
+            }
+            if (loop.condition)
+            {
+                if (const Expr* found = FindGlobalReference(*loop.condition, name)) return found;
+            }
+            if (loop.iteration)
+            {
+                if (const Expr* found = FindGlobalReference(*loop.iteration, name)) return found;
+            }
+            return loop.body ? FindGlobalReference(*loop.body, name) : nullptr;
+        }
+
+        case StmtKind::While: {
+            const auto& loop = static_cast<const WhileStmt&>(stmt);
+            if (loop.condition)
+            {
+                if (const Expr* found = FindGlobalReference(*loop.condition, name)) return found;
+            }
+            return loop.body ? FindGlobalReference(*loop.body, name) : nullptr;
+        }
+
+        case StmtKind::Return: {
+            const auto& ret = static_cast<const ReturnStmt&>(stmt);
+            return ret.value ? FindGlobalReference(*ret.value, name) : nullptr;
+        }
+
+        default:
+            return nullptr;
+    }
+}
+
 ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList& diagnostics, const IRBuildOptions& options)
 {
     ShaderIRModule module;
@@ -178,6 +317,35 @@ ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList
             {
                 diagnostics.AddError(found->location,
                     "'discard' only means something in a fragment shader -- there are no pixels to drop in any other stage");
+            }
+        }
+    }
+
+    // The built-ins, each checked against the one stage it exists in.
+    // Both of these become a stage-specific name in the generated text,
+    // so a shader that names one from the wrong stage does not fail
+    // here -- it fails in a driver, about a line nobody wrote.
+    for (const DeclPtr& decl : program.declarations)
+    {
+        if (decl->kind != DeclKind::Function) continue;
+        const auto* function = static_cast<const FunctionDecl*>(decl.get());
+        if (!function->body) continue;
+
+        if (stage != ShaderStage::Vertex)
+        {
+            if (const Expr* found = FindGlobalReference(*function->body, "InstanceIndex"))
+            {
+                diagnostics.AddError(found->location,
+                    "'InstanceIndex' only means something in a vertex shader -- no other stage is told which instance it is shading");
+            }
+        }
+
+        if (stage != ShaderStage::Compute)
+        {
+            if (const Expr* found = FindGlobalReference(*function->body, "ThreadID"))
+            {
+                diagnostics.AddError(found->location,
+                    "'ThreadID' only means something in a compute shader -- no other stage has a thread to be");
             }
         }
     }

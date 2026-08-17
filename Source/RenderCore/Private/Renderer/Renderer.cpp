@@ -48,6 +48,8 @@
 
 #include "RendererInternal.h"
 
+#include <Fluxion/RenderCore/Scene/RenderWorld.h>
+
 #include <Fluxion/Core/Diagnostics/ProfileScope.hpp>
 #include <Fluxion/Foundation/Memory/MemoryTracker.h>
 
@@ -368,10 +370,10 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     // leave untouched on a dxc/compile failure (debugVertexBuffer,
     // debugVertexShader, debugFragmentShader, debugPipeline,
     // debugFrameBindGroupLayout) needs the real invalid sentinel here
-    // too, not just objectBuffer/currentView, or a later Destroy call
+    // too, not just the object list/currentView, or a later Destroy call
     // would try to free a bogus "valid" handle instead of skipping it.
     renderer->currentView = FluxionRenderViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
-    renderer->objectBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->gpuScene = FluxionGPUSceneHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->debugVertexBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->debugVertexShader = FluxionRHIShaderHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->debugFragmentShader = FluxionRHIShaderHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -434,6 +436,16 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     FluxionRHIBindGroupLayoutDesc objectLayoutDesc = FluxionRendererInternal_MakeObjectLayoutDesc();
     renderer->objectBindGroupLayout = Fluxion_RHI_CreateBindGroupLayout(device, &objectLayoutDesc);
 
+    // The frame's object list, made with the renderer rather than on
+    // first use: every pass below reads it, and a pass that had to check
+    // whether it existed yet would be checking on every draw of every
+    // frame for a thing that is either there from the start or nowhere.
+    renderer->gpuScene = Fluxion_GPUScene_Create(device);
+    if (!FLUXION_HANDLE_IS_VALID(renderer->gpuScene))
+    {
+        FLUXION_LOG_ERROR("Renderer", "The frame's object list could not be made; nothing would be drawn.");
+    }
+
     CreateDebugDrawResources(*renderer);
 
     FluxionRenderGraphPassType passType;
@@ -476,11 +488,7 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
     Fluxion_RenderGraphPassRegistry_Unregister("ForwardOpaquePass");
     Fluxion_RenderGraphPassRegistry_Unregister("ShadowPass");
 
-    if (FLUXION_HANDLE_IS_VALID(renderer->objectBuffer))
-    {
-        Fluxion_RHI_DestroyBuffer(renderer->objectBuffer);
-        FluxionRendererInternal_RecordGpuFree(false, (usize)renderer->objectBufferCapacity * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE);
-    }
+    if (FLUXION_HANDLE_IS_VALID(renderer->gpuScene)) Fluxion_GPUScene_Destroy(renderer->gpuScene);
     if (FLUXION_HANDLE_IS_VALID(renderer->objectBindGroupLayout)) Fluxion_RHI_DestroyBindGroupLayout(renderer->objectBindGroupLayout);
     if (FLUXION_HANDLE_IS_VALID(renderer->debugVertexBuffer))
     {
@@ -527,7 +535,7 @@ extern "C" void Fluxion_Renderer_BeginFrame(FluxionRendererHandle rendererHandle
     FLUXION_ASSERT_MSG(!renderer->inFrame, "Fluxion_Renderer_BeginFrame called without a matching EndFrame");
     renderer->inFrame = true;
     renderer->currentView = view;
-    renderer->packetCount = 0;
+    Fluxion_GPUScene_Begin(renderer->gpuScene);
     renderer->debugVertexCount = 0;
     renderer->lastDrawCallCount = 0;
 }
@@ -537,75 +545,42 @@ extern "C" void Fluxion_Renderer_DrawMesh(FluxionRendererHandle rendererHandle, 
     FluxionRenderer* renderer = Resolve(rendererHandle);
     if (renderer == nullptr || !renderer->inFrame) return;
 
-    if (renderer->packetCount >= FLUXION_RENDERER_MAX_DRAW_PACKETS_PER_FRAME)
+    // Straight into the frame's object list. Nothing is uploaded here
+    // any more, and nothing can be: what a shader reads is device memory
+    // now, and the ORDER of it is not known until every draw of the
+    // frame has been asked for -- see Fluxion_Renderer_UploadScene.
+    Fluxion_GPUScene_Add(renderer->gpuScene, mesh, material, pipeline, transform);
+}
+
+extern "C" void Fluxion_Renderer_SubmitRenderWorld(FluxionRendererHandle rendererHandle, const FluxionRenderWorld* world)
+{
+    FLUXION_PROFILE_FUNCTION();
+
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr || !renderer->inFrame || world == nullptr) return;
+
+    for (u32 i = 0; i < world->objectCount; ++i)
     {
-        FLUXION_ASSERT_MSG(false, "Renderer: exceeded FLUXION_RENDERER_MAX_DRAW_PACKETS_PER_FRAME draw calls in one frame");
-        return;
+        const FluxionRenderObject& object = world->objects[i];
+
+        // The one thing this call does that a loop of DrawMesh would
+        // not: what was decided not to be seen is not sent. Nothing
+        // decides that yet, so nothing is dropped yet -- and the day
+        // something does, every caller already goes through here.
+        if (!object.visible) continue;
+
+        Fluxion_GPUScene_Add(renderer->gpuScene, object.mesh, object.material, object.pipeline, &object.transform);
     }
+}
 
-    u32 slot = renderer->packetCount++;
+extern "C" void Fluxion_Renderer_UploadScene(FluxionRendererHandle rendererHandle, FluxionRHICommandListHandle commandList)
+{
+    FLUXION_PROFILE_FUNCTION();
 
-    // Transposed HERE, at the upload boundary, matching the frame
-    // constants: callers pass ordinary row-major matrices, and the
-    // shader languages read them column-major. See UpdateFrameConstants.
-    renderer->packetTransforms[slot] =
-        Fluxion_Mat4_Transposed((transform != nullptr) ? *transform : Fluxion_Mat4_Identity());
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr || !renderer->inFrame) return;
 
-    FluxionDrawPacket& packet = renderer->packets[slot];
-    packet.mesh = mesh;
-    packet.material = material;
-    packet.pipeline = pipeline;
-    // OBJECT is bound as a uniform (constant) buffer, not a storage
-    // buffer -- it's genuinely just "one small read-only struct per
-    // draw", never written by a shader, and D3D12 constant-buffer-view
-    // offsets/sizes must land on 256-byte boundaries, so each draw's
-    // slice is padded out to that stride even though FluxionMat4 itself
-    // is only 64 bytes.
-    packet.objectDataOffset = slot * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE;
-    packet.layerMask = 0xFFFFFFFFu;
-
-    // --- grow (by doubling) + upload the OBJECT storage buffer, right
-    // now, not deferred to EndFrame ----------------------------------------
-    //
-    // A caller's typical frame is BeginFrame -> DrawMesh (any number of
-    // times) -> [compile + execute a render graph containing
-    // "ForwardOpaquePass", using the same command list] -> EndFrame; that
-    // Execute call reads this buffer, and it happens strictly between
-    // DrawMesh and EndFrame, so the buffer must already be sized and
-    // populated by the time this call returns, not whenever EndFrame
-    // eventually runs. The buffer is CPU_TO_GPU (host-visible), so
-    // "uploading" is a plain Map/memcpy/Unmap -- no command-list copy or
-    // barrier is needed for this, unlike a GPU_ONLY resource.
-    if (renderer->packetCount > renderer->objectBufferCapacity)
-    {
-        u32 newCapacity = (renderer->objectBufferCapacity == 0) ? 64u : renderer->objectBufferCapacity;
-        while (newCapacity < renderer->packetCount) newCapacity *= 2;
-
-        if (FLUXION_HANDLE_IS_VALID(renderer->objectBuffer))
-        {
-            Fluxion_RHI_DestroyBuffer(renderer->objectBuffer);
-            FluxionRendererInternal_RecordGpuFree(false, (usize)renderer->objectBufferCapacity * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE);
-        }
-
-        FluxionRHIBufferDesc bufferDesc;
-        bufferDesc.size = (usize)newCapacity * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE;
-        bufferDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_CONSTANT_BUFFER;
-        bufferDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
-        bufferDesc.debugName = "Fluxion.Renderer.ObjectBuffer";
-        renderer->objectBuffer = Fluxion_RHI_CreateBuffer(renderer->device, &bufferDesc);
-        if (FLUXION_HANDLE_IS_VALID(renderer->objectBuffer)) FluxionRendererInternal_RecordGpuAlloc(false, bufferDesc.size);
-        renderer->objectBufferCapacity = newCapacity;
-    }
-
-    if (FLUXION_HANDLE_IS_VALID(renderer->objectBuffer))
-    {
-        void* mapped = Fluxion_RHI_MapBuffer(renderer->objectBuffer);
-        if (mapped != nullptr)
-        {
-            std::memcpy((u8*)mapped + packet.objectDataOffset, &renderer->packetTransforms[slot], sizeof(FluxionMat4));
-            Fluxion_RHI_UnmapBuffer(renderer->objectBuffer);
-        }
-    }
+    Fluxion_GPUScene_Upload(renderer->gpuScene, commandList, renderer->objectBindGroupLayout);
 }
 
 extern "C" void Fluxion_Renderer_EndFrame(FluxionRendererHandle rendererHandle, FluxionRHICommandListHandle commandList)
@@ -684,7 +659,6 @@ extern "C" void Fluxion_Renderer_EndFrame(FluxionRendererHandle rendererHandle, 
     }
 
     renderer->inFrame = false;
-    renderer->packetCount = 0;
     renderer->debugVertexCount = 0;
 }
 
