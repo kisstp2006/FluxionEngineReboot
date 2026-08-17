@@ -553,6 +553,11 @@ void CompareOneFormatAgainstTheHardware(TestContext* ctx, const GpuFixture& fixt
         FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(fixture.device);
         Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Color0", color, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
         Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Depth", depth, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
+
+        // Read by the forward pass whether or not this check has any
+        // shadows -- see Test_RendererFrame for why it must be here.
+        Fluxion_RenderGraph_ImportTexture(graph, FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE,
+            Fluxion_RenderView_GetShadowAtlasTexture(view), FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
         Fluxion_RenderGraph_AddPassFromRegistry(graph, "ForwardOpaquePass", Fluxion_Renderer_GetForwardOpaquePassUserData(renderer));
 
         Fluxion_Renderer_BeginFrame(renderer, view);

@@ -158,6 +158,65 @@ FluxionMat4 Fluxion_ShadowMatrices_Directional(FluxionVec3 direction, FluxionVec
     return Fluxion_Mat4_Multiply(projection, view);
 }
 
+FluxionVec3 Fluxion_ShadowMatrices_CascadeSphere(FluxionVec3 cameraPosition, FluxionVec3 forward,
+                                                 f32 fovYRadians, f32 aspect,
+                                                 f32 sliceNear, f32 sliceFar, f32* outRadius)
+{
+    if (!(sliceFar > sliceNear)) sliceFar = sliceNear + 1.0f;
+    if (aspect <= 0.0f) aspect = 1.0f;
+
+    // How far a corner of the view sits from its axis, per unit of
+    // distance along it. Both directions at once: the corner is the
+    // diagonal of the two half-angles, so their extents add in square.
+    const f32 halfHeightPerUnit = tanf(fovYRadians * 0.5f);
+    const f32 cornerPerUnitSquared = halfHeightPerUnit * halfHeightPerUnit * (1.0f + aspect * aspect);
+
+    // Where along the axis a point is equally far from the near corners
+    // and the far ones. Falls out of setting those two distances equal
+    // and cancelling everything that does not depend on the centre.
+    f32 alongAxis = 0.5f * (sliceNear + sliceFar) * (1.0f + cornerPerUnitSquared);
+
+    // Past the far plane means the far corners already enclose the near
+    // ones, and the smallest sphere is the one around them alone.
+    if (alongAxis > sliceFar) alongAxis = sliceFar;
+
+    const f32 toFarPlane = sliceFar - alongAxis;
+    f32 radius = sqrtf(sliceFar * sliceFar * cornerPerUnitSquared + toFarPlane * toFarPlane);
+    if (!(radius > 0.0f)) radius = 1.0f;
+
+    if (outRadius != NULL) *outRadius = radius;
+
+    const FluxionVec3 axis = Fluxion_Vec3_Normalize(forward);
+    return Fluxion_Vec3_Add(cameraPosition, Fluxion_Vec3_Scale(axis, alongAxis));
+}
+
+void Fluxion_ShadowMatrices_DirectionalBias(f32 radius, u32 tileSize, f32* outDepthBias, f32* outNormalBias)
+{
+    if (radius <= 0.0f) radius = 1.0f;
+    if (tileSize == 0) tileSize = 1;
+
+    // The slab this shadow's depth is measured across is twice the
+    // radius -- see the matrix above -- and one texel covers that
+    // divided by the map's width. So a surface at forty-five degrees
+    // crosses exactly one texel's worth of depth per texel, and in the
+    // 0..1 the comparison works in, that is one over the width.
+    const f32 depthPerTexel = 1.0f / (f32)tileSize;
+    const f32 worldPerTexel = (2.0f * radius) / (f32)tileSize;
+
+    // Room for steeper than forty-five degrees, which is most of a
+    // scene. Beyond this a surface nearly edge-on to the light still
+    // stripes -- and no constant fixes that one, because the depth it
+    // would need is the depth of something else.
+    const f32 steepestSlopeCovered = 3.0f;
+
+    // A texel's DIAGONAL, not its side: the lookup may land at a corner
+    // of one, and moving out by the side would still leave it inside.
+    const f32 texelDiagonal = 1.41421356f;
+
+    if (outDepthBias != NULL) *outDepthBias = depthPerTexel * steepestSlopeCovered;
+    if (outNormalBias != NULL) *outNormalBias = worldPerTexel * texelDiagonal;
+}
+
 bool Fluxion_ShadowMatrices_CascadeSplits(f32 nearPlane, f32 farPlane, u32 count, f32 blend, f32* outSplits)
 {
     if (outSplits == NULL) return false;

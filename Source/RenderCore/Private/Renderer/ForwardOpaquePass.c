@@ -96,6 +96,14 @@ void FluxionForwardOpaquePass_Setup(FluxionRenderGraphBuilder* builder, void* us
     {
         Fluxion_RenderGraphBuilder_WriteDepthTarget(builder, "ForwardOpaquePass.Depth");
     }
+
+    // Declared whether or not anything casts a shadow this frame, for the
+    // same reason the shadow pass declares writing it: what a pass reads
+    // is part of what it IS, and a declaration that came and went would
+    // reorder the graph from one frame to the next. It is also the only
+    // thing that puts the two passes in the right order and hands the
+    // atlas over from being drawn into to being read.
+    Fluxion_RenderGraphBuilder_ReadTexture(builder, FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE);
 }
 
 // Packets are sorted (index-sort, not moved in place) by

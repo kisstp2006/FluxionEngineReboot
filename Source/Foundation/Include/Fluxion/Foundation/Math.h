@@ -267,6 +267,35 @@ static inline FluxionMat4 Fluxion_Mat4_Transposed(FluxionMat4 m)
     return r;
 }
 
+// Where a view matrix puts the eye, and which way it looks.
+//
+// A view matrix moves the world rather than the eye, so neither is in it
+// to read off -- both come from undoing it. Written down once here
+// because more than one caller wants them and each would otherwise index
+// the same four numbers by hand, in a convention that is easy to get
+// backwards and produces a picture rather than an error when it is.
+//
+// `forward` is the way the camera looks: negative Z in its own space,
+// the same axis every object in this engine faces along.
+static inline void Fluxion_Mat4_DecomposeView(FluxionMat4 view, FluxionVec3* outPosition, FluxionVec3* outForward)
+{
+    const FluxionMat4 cameraToWorld = Fluxion_Mat4_Inverse(view);
+
+    if (outPosition != NULL)
+    {
+        outPosition->x = cameraToWorld.m[0][3];
+        outPosition->y = cameraToWorld.m[1][3];
+        outPosition->z = cameraToWorld.m[2][3];
+    }
+
+    if (outForward != NULL)
+    {
+        outForward->x = -cameraToWorld.m[0][2];
+        outForward->y = -cameraToWorld.m[1][2];
+        outForward->z = -cameraToWorld.m[2][2];
+    }
+}
+
 // The rotation that turns an object's forward axis -- negative Z, the
 // same one a camera looks down -- to point along `target`. Facing exactly
 // backwards has no single answer, so one axis is picked rather than left

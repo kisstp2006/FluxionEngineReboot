@@ -446,8 +446,9 @@ void FluxionShadowPass_Setup(FluxionRenderGraphBuilder* builder, void* userData)
 void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandList, void* userData);
 void FluxionRendererInternal_Shadow_Destroy(FluxionRenderer* renderer);
 
-// The view's atlas, and which part of it this frame's shadow occupies.
-FluxionRHITextureHandle FluxionRendererInternal_RenderView_GetShadowAtlasTexture(FluxionRenderViewHandle view);
+// What the pass draws into. The texture itself is public -- a caller
+// building a graph has to import it -- but the view over it is this
+// module's own business.
 FluxionRHITextureViewHandle FluxionRendererInternal_RenderView_GetShadowAtlasView(FluxionRenderViewHandle view);
 
 // How many shadows this view draws this frame, and where each one goes.

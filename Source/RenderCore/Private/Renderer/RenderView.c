@@ -953,7 +953,7 @@ void Fluxion_RenderView_GetShadowAtlasSize(FluxionRenderViewHandle view, u32* ou
     if (outTileSize != NULL) *outTileSize = FLUXION_RENDERER_SHADOW_TILE_SIZE;
 }
 
-FluxionRHITextureHandle FluxionRendererInternal_RenderView_GetShadowAtlasTexture(FluxionRenderViewHandle view)
+FluxionRHITextureHandle Fluxion_RenderView_GetShadowAtlasTexture(FluxionRenderViewHandle view)
 {
     const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
     if (record == NULL)

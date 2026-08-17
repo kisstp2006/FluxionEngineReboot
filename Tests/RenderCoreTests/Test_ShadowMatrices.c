@@ -257,4 +257,77 @@ void Test_ShadowMatrices_Run(TestContext* ctx)
         const FluxionVec3 atCorner = { 1.0f + 10.0f, 2.0f + 10.0f, 3.0f };
         TEST_CHECK(ctx, Near(fabsf(Project(positiveX, atCorner).y), 1.0f, 0.01f));
     }
+
+    // --- The sphere around a slice of what the camera sees --------------
+    {
+        const FluxionVec3 eye = { 5.0f, 1.0f, -2.0f };
+        const FluxionVec3 forward = { 0.0f, 0.0f, -1.0f };
+        const f32 fov = 1.0472f;
+        const f32 aspect = 16.0f / 9.0f;
+        const f32 sliceNear = 2.0f;
+        const f32 sliceFar = 10.0f;
+
+        f32 radius = 0.0f;
+        const FluxionVec3 centre = Fluxion_ShadowMatrices_CascadeSphere(eye, forward, fov, aspect,
+                                                                       sliceNear, sliceFar, &radius);
+
+        // On the axis the camera looks down, and in front of it.
+        TEST_CHECK(ctx, Near(centre.x, eye.x, 0.001f) && Near(centre.y, eye.y, 0.001f));
+        TEST_CHECK(ctx, centre.z < eye.z);
+
+        // Every corner of the slice is inside, and the far ones are ON
+        // the surface -- a sphere any smaller would cut the slice, and
+        // any larger would spend resolution on nothing.
+        const f32 halfHeight = tanf(fov * 0.5f);
+        for (u32 corner = 0; corner < 8; ++corner)
+        {
+            const f32 distance = (corner & 4u) != 0 ? sliceFar : sliceNear;
+            const f32 x = ((corner & 1u) != 0 ? 1.0f : -1.0f) * distance * halfHeight * aspect;
+            const f32 y = ((corner & 2u) != 0 ? 1.0f : -1.0f) * distance * halfHeight;
+
+            const FluxionVec3 point = { eye.x + x, eye.y + y, eye.z - distance };
+            const FluxionVec3 offset = { point.x - centre.x, point.y - centre.y, point.z - centre.z };
+            const f32 length = sqrtf(offset.x * offset.x + offset.y * offset.y + offset.z * offset.z);
+
+            TEST_CHECK(ctx, length <= radius + 0.001f);
+            if ((corner & 4u) != 0) TEST_CHECK(ctx, Near(length, radius, 0.001f));
+        }
+
+        // A slice starting at the eye is a cone, and its sphere is the
+        // one around the far quad alone -- the near "corners" are a
+        // single point already inside it.
+        f32 fromNothing = 0.0f;
+        Fluxion_ShadowMatrices_CascadeSphere(eye, forward, fov, aspect, 0.0f, sliceFar, &fromNothing);
+        TEST_CHECK(ctx, fromNothing > 0.0f && fromNothing <= radius * 2.0f);
+    }
+
+    // --- The two offsets that keep a surface from shadowing itself ------
+    {
+        f32 depthBias = 0.0f;
+        f32 normalBias = 0.0f;
+        Fluxion_ShadowMatrices_DirectionalBias(8.0f, 1024, &depthBias, &normalBias);
+        TEST_CHECK(ctx, depthBias > 0.0f && normalBias > 0.0f);
+
+        // Both are one texel's worth of something, so both halve when the
+        // map doubles. That relationship is the whole content of them --
+        // a bias that did not follow the resolution would be a number
+        // that happened to work at one size.
+        f32 finerDepth = 0.0f;
+        f32 finerNormal = 0.0f;
+        Fluxion_ShadowMatrices_DirectionalBias(8.0f, 2048, &finerDepth, &finerNormal);
+        TEST_CHECK(ctx, Near(finerDepth, depthBias * 0.5f, 0.0001f));
+        TEST_CHECK(ctx, Near(finerNormal, normalBias * 0.5f, 0.0001f));
+
+        // A wider slab covers more world per texel, so what a lookup must
+        // step out along the normal grows with it -- while the depth
+        // offset, which is measured in the slab's own 0..1, does not.
+        f32 widerDepth = 0.0f;
+        f32 widerNormal = 0.0f;
+        Fluxion_ShadowMatrices_DirectionalBias(16.0f, 1024, &widerDepth, &widerNormal);
+        TEST_CHECK(ctx, Near(widerDepth, depthBias, 0.0001f));
+        TEST_CHECK(ctx, Near(widerNormal, normalBias * 2.0f, 0.0001f));
+
+        // Asking for one of them is allowed.
+        Fluxion_ShadowMatrices_DirectionalBias(8.0f, 1024, NULL, &normalBias);
+    }
 }

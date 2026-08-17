@@ -494,6 +494,12 @@ Rgb RenderOne(TestContext* ctx, LightingRig& rig, const Configuration& configura
     FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(rig.device);
     Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Color0", rig.color, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
     Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Depth", rig.depth, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
+
+    // Already cleared and left readable by the upload above, which is
+    // what makes this the state to declare rather than UNDEFINED -- and
+    // one backend checks that the declaration is true.
+    Fluxion_RenderGraph_ImportTexture(graph, FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE,
+        Fluxion_RenderView_GetShadowAtlasTexture(view), FLUXION_RHI_RESOURCE_STATE_SHADER_READ);
     Fluxion_RenderGraph_AddPassFromRegistry(graph, "ForwardOpaquePass", Fluxion_Renderer_GetForwardOpaquePassUserData(rig.renderer));
 
     Fluxion_Renderer_BeginFrame(rig.renderer, view);

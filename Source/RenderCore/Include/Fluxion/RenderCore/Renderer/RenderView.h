@@ -298,6 +298,18 @@ u32 Fluxion_RenderView_SetShadows(FluxionRenderViewHandle view, const FluxionRen
 // engine actually used.
 void Fluxion_RenderView_GetShadowAtlasSize(FluxionRenderViewHandle view, u32* outAtlasSize, u32* outTileSize);
 
+// The atlas itself, to import into a render graph under the name the
+// shadow pass writes and the forward pass reads -- see
+// FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE below. A caller that draws
+// through a graph has to import it: the two passes name it, and a name
+// nothing stands behind is a shadow nobody drew.
+FluxionRHITextureHandle Fluxion_RenderView_GetShadowAtlasTexture(FluxionRenderViewHandle view);
+
+// What both passes call it. Said once, here, rather than spelled out at
+// each end -- the two spellings agreeing is the whole of whether a
+// shadow drawn is a shadow read.
+#define FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE "ShadowPass.Atlas"
+
 // The lights this view is lit by, replacing whatever it had.
 //
 // Copied, so the caller's array need not outlive the call. The storage

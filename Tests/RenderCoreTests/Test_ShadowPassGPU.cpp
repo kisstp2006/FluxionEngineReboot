@@ -71,8 +71,6 @@
 // puts the quad in the wrong tile; a light matrix transposed the wrong
 // way puts it nowhere at all.
 
-extern "C" FluxionRHITextureHandle FluxionRendererInternal_RenderView_GetShadowAtlasTexture(FluxionRenderViewHandle view);
-
 namespace
 {
 
@@ -172,7 +170,7 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     shadow.coverTo = 1000.0f;
     TEST_CHECK(ctx, Fluxion_RenderView_SetShadows(view, &shadow, 1) == 1);
 
-    const FluxionRHITextureHandle atlas = FluxionRendererInternal_RenderView_GetShadowAtlasTexture(view);
+    const FluxionRHITextureHandle atlas = Fluxion_RenderView_GetShadowAtlasTexture(view);
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(atlas));
 
     // Checked rather than assumed: everything after this reads as a wrong

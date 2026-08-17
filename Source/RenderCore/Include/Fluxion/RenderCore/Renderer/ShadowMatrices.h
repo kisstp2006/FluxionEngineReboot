@@ -103,6 +103,35 @@ FluxionMat4 Fluxion_ShadowMatrices_Directional(FluxionVec3 direction, FluxionVec
 // FLUXION_SHADOW_MAX_CASCADES, or a range that is not positive.
 bool Fluxion_ShadowMatrices_CascadeSplits(f32 nearPlane, f32 farPlane, u32 count, f32 blend, f32* outSplits);
 
+// The sphere holding one slice of what the camera can see.
+//
+// This is what the sun's matrix above wants, and working it out is the
+// step between a pair of split distances and a matrix. A SPHERE rather
+// than the eight corners, for the reason the matrix gives: a sphere is
+// the same size whichever way the camera faces, and a slab fitted to it
+// therefore does not change shape as the camera turns.
+//
+// Exact, not an estimate: the sphere returned touches the slice's near
+// and far corners together, or the far corners alone where those already
+// enclose the rest.
+//
+// `forward` is the way the camera looks; it is normalized here. The
+// radius is written through `outRadius` and is never zero.
+FluxionVec3 Fluxion_ShadowMatrices_CascadeSphere(FluxionVec3 cameraPosition, FluxionVec3 forward,
+                                                 f32 fovYRadians, f32 aspect,
+                                                 f32 sliceNear, f32 sliceFar, f32* outRadius);
+
+// The two offsets a sun shadow of this size needs.
+//
+// Both come from one number: how much world a single texel of the map
+// covers, which is the whole of why a lit surface shadows itself. They
+// live here rather than at the caller because it is this file that
+// decides the slab a shadow's depth is measured in -- a bias chosen
+// anywhere else would be a number that happened to work.
+//
+// Writes nothing through a null pointer, so a caller may ask for one.
+void Fluxion_ShadowMatrices_DirectionalBias(f32 radius, u32 tileSize, f32* outDepthBias, f32* outNormalBias);
+
 // A spot light's view-projection.
 //
 // The cone becomes the field of view, doubled: the angle names the

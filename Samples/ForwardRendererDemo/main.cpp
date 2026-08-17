@@ -78,6 +78,7 @@
 #include <Fluxion/RenderCore/Renderer/RenderPipeline.h>
 #include <Fluxion/RenderCore/Renderer/RenderTarget.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
+#include <Fluxion/RenderCore/Renderer/ShadowMatrices.h>
 #include <Fluxion/RenderCore/Renderer/TextureAsset.h>
 #include <Fluxion/RenderCore/Renderer/Renderer.h>
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
@@ -233,6 +234,23 @@ FluxionVec3 SkyColor(FluxionVec3 direction, FluxionVec3 toSun)
 // change is broken" when it means "not here". ctest reads this particular
 // code as skipped.
 static const int kExitEnvironmentCannotRun = 77;
+
+// The eye. Named because the shadow cascades are fitted to exactly this
+// shape of view, and a camera changed here without them would light the
+// scene from a slab that no longer matches what is on the screen.
+static const f32 kCameraFieldOfView = 1.0472f; // sixty degrees
+static const f32 kCameraNearPlane = 0.1f;
+static const f32 kCameraFarPlane = 100.0f;
+
+// How the sun's cascades divide what they cover. Mostly logarithmic,
+// which is the published recommendation -- see ShadowMatrices.h, which
+// explains what each end of this is wrong about on its own.
+static const f32 kCascadeLogarithmicShare = 0.85f;
+
+// How much of each cascade is spent handing over to the next. Enough to
+// hide the change in sharpness, little enough that most of a cascade is
+// still read from one map alone.
+static const f32 kCascadeHandoverShare = 0.1f;
 
 int main(int argc, char** argv)
 {
@@ -1148,6 +1166,28 @@ int main(int argc, char** argv)
         }
     }
 
+    // Something for the shadow to land on.
+    //
+    // The same mesh as the cube, flattened and moved down: a shadow needs
+    // a surface under the thing casting it, and a second mesh would prove
+    // nothing this one does not. It draws through the same component, so
+    // it is in the same list the shadow pass walks -- the cube casts, the
+    // floor receives, and neither is told which it is.
+    {
+        FluxionGameObjectHandle floorObject = Fluxion_Scene_CreateGameObject(scene, "Floor");
+        Fluxion_GameObject_SetLocalPosition(scene, floorObject, FluxionVec3{ 0.0f, -1.5f, -3.0f });
+        Fluxion_GameObject_SetLocalScale(scene, floorObject, FluxionVec3{ 20.0f, 0.1f, 20.0f });
+
+        const u32 componentClass = Fluxion::Scene::FindComponentClass(scene, "CubeRenderer");
+        if (componentClass == Fluxion::Script::kNoClass ||
+            Fluxion::Scene::AddComponent(scene, floorObject, componentClass).IsNull())
+        {
+            FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put a renderer on the floor: %s",
+                Fluxion_Scene_GetLastError(scene));
+            return 1;
+        }
+    }
+
     // The eye, as an object -- sixty degrees, at the origin, looking down
     // negative Z, which is what the fixed camera of the old demo was.
     // Being an object means a script could move it exactly as one moves
@@ -1155,9 +1195,9 @@ int main(int argc, char** argv)
     {
         FluxionGameObjectHandle cameraObject = Fluxion_Scene_CreateGameObject(scene, "Camera");
         FluxionCamera camera{};
-        camera.fovYRadians = 1.0472f;
-        camera.nearPlane = 0.1f;
-        camera.farPlane = 100.0f;
+        camera.fovYRadians = kCameraFieldOfView;
+        camera.nearPlane = kCameraNearPlane;
+        camera.farPlane = kCameraFarPlane;
         if (Fluxion_GameObject_AddComponent(scene, cameraObject, Fluxion_Camera_TypeId(), &camera) == nullptr)
         {
             FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to put the camera on its object.");
@@ -1480,6 +1520,71 @@ int main(int argc, char** argv)
         }
         Fluxion_RenderView_SetLights(frameView, sceneLights, lightsUsed);
 
+        // --- What the sun casts ------------------------------------------
+        //
+        // One cascade per tile of the atlas, near to far. The near ones
+        // cover a few metres at the map's full resolution and the far one
+        // covers the rest of what is visible -- which is the whole trick:
+        // detail where the pixels are, and coverage everywhere else.
+        {
+            u32 atlasSize = 0;
+            u32 tileSize = 0;
+            Fluxion_RenderView_GetShadowAtlasSize(frameView, &atlasSize, &tileSize);
+            const u32 tilesAcross = tileSize > 0 ? atlasSize / tileSize : 0;
+            const u32 cascadeCount = tilesAcross * tilesAcross;
+
+            // Which light is the sun. The first directional one: a scene
+            // with two suns is not a thing this sample makes.
+            u32 sunIndex = lightsUsed;
+            for (u32 i = 0; i < lightsUsed; ++i)
+            {
+                if (sceneLights[i].type == FLUXION_RENDER_LIGHT_DIRECTIONAL) { sunIndex = i; break; }
+            }
+
+            FluxionRenderViewShadow shadows[FLUXION_RENDER_VIEW_MAX_SHADOWS] = {};
+            u32 shadowCount = 0;
+
+            if (sunIndex < lightsUsed && cascadeCount > 0 && cascadeCount <= FLUXION_RENDER_VIEW_MAX_SHADOWS)
+            {
+                FluxionVec3 eye{};
+                FluxionVec3 forward{};
+                Fluxion_Mat4_DecomposeView(cameraView, &eye, &forward);
+
+                // Not out to the camera's own far plane. A sun that had
+                // to cover a hundred metres would spend its last cascade
+                // on ground nobody can make out anyway, and every nearer
+                // one would be coarser for it.
+                const f32 shadowDistance = 40.0f;
+
+                f32 splits[FLUXION_SHADOW_MAX_CASCADES + 1] = {};
+                if (Fluxion_ShadowMatrices_CascadeSplits(kCameraNearPlane, shadowDistance, cascadeCount,
+                                                         kCascadeLogarithmicShare, splits))
+                {
+                    for (u32 i = 0; i < cascadeCount; ++i)
+                    {
+                        f32 radius = 0.0f;
+                        const FluxionVec3 centre = Fluxion_ShadowMatrices_CascadeSphere(
+                            eye, forward, kCameraFieldOfView, aspect, splits[i], splits[i + 1], &radius);
+
+                        FluxionRenderViewShadow* shadow = &shadows[shadowCount];
+                        shadow->lightViewProjection = Fluxion_ShadowMatrices_Directional(
+                            sceneLights[sunIndex].direction, centre, radius, tileSize);
+                        shadow->lightIndex = sunIndex;
+                        shadow->coverTo = splits[i + 1];
+
+                        // Handed over across the last part of each
+                        // cascade rather than at a line.
+                        shadow->blendBand = (splits[i + 1] - splits[i]) * kCascadeHandoverShare;
+
+                        Fluxion_ShadowMatrices_DirectionalBias(radius, tileSize, &shadow->depthBias, &shadow->normalBias);
+                        ++shadowCount;
+                    }
+                }
+            }
+
+            Fluxion_RenderView_SetShadows(frameView, shadows, shadowCount);
+        }
+
         // --- The sky, resolved from what the scene asked for -------------
         //
         // Every frame, and not once at startup, because what the scene
@@ -1552,6 +1657,19 @@ int main(int argc, char** argv)
         Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Depth", depthTexture,
             depthIsUndefined ? FLUXION_RHI_RESOURCE_STATE_UNDEFINED : FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE);
         depthIsUndefined = false;
+
+        // The atlas, imported as something to read: the view cleared it
+        // once before the first frame and every frame since has left it
+        // that way round, so this is where it really is -- and D3D12
+        // checks that the state declared here is the state it is in.
+        Fluxion_RenderGraph_ImportTexture(graph, FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE,
+            Fluxion_RenderView_GetShadowAtlasTexture(frameView), FLUXION_RHI_RESOURCE_STATE_SHADER_READ);
+
+        // Added before the pass that reads it, though the order here is
+        // not what decides: each pass says what it touches, and the graph
+        // works the rest out. Both are added whether or not anything
+        // casts a shadow this frame -- see their Setup functions.
+        Fluxion_RenderGraph_AddPassFromRegistry(graph, "ShadowPass", Fluxion_Renderer_GetForwardOpaquePassUserData(renderer));
         Fluxion_RenderGraph_AddPassFromRegistry(graph, "ForwardOpaquePass", Fluxion_Renderer_GetForwardOpaquePassUserData(renderer));
 
         Fluxion_Renderer_BeginFrame(renderer, frameView);

@@ -211,6 +211,12 @@ extern "C" void Test_RendererFrame_Run(TestContext* ctx)
     // convention before adding the pass node.
     FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(fixture.device);
     Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Color0", colorTexture, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
+
+    // The forward pass reads the shadow atlas whether or not anything
+    // casts one, so every graph holding that pass has to import it --
+    // which the compiler says out loud rather than drawing without it.
+    Fluxion_RenderGraph_ImportTexture(graph, FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE,
+        Fluxion_RenderView_GetShadowAtlasTexture(view), FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
     Fluxion_RenderGraph_AddPassFromRegistry(graph, "ForwardOpaquePass", Fluxion_Renderer_GetForwardOpaquePassUserData(renderer));
 
     Fluxion_Renderer_BeginFrame(renderer, view);
