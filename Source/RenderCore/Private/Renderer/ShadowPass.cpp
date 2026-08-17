@@ -309,6 +309,7 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
     {
         const FluxionGPUSceneBatch* batch = Fluxion_GPUScene_GetBatch(renderer->gpuScene, i);
         if (batch == nullptr) continue;
+        if (batch->visibleCount == 0) continue;
 
         FluxionRHIBufferHandle vertexBuffer, indexBuffer;
         u32 vertexCount, indexCount;

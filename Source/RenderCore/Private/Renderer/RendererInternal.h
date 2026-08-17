@@ -230,7 +230,15 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeObjectLa
     desc.entries[1].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
     desc.entries[1].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_VERTEX;
 
-    desc.entryCount = 2;
+    // Which of the objects this frame draws -- see Fluxion/Object.jsl.
+    // The compiler hands storage buffers their bindings in declaration
+    // order after the uniform block, so this is the second one declared
+    // there and nothing is free to reorder either side alone.
+    desc.entries[2].binding = 2;
+    desc.entries[2].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[2].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_VERTEX;
+
+    desc.entryCount = 3;
     desc.debugName = "Fluxion.Renderer.ObjectBindGroupLayout";
     return desc;
 }
@@ -564,6 +572,13 @@ bool FluxionRendererInternal_MeshBuffer_GetBounds(FluxionMeshBufferHandle mesh, 
 bool FluxionRendererInternal_RenderTarget_Get(FluxionRenderTargetHandle target, FluxionRHITextureViewHandle* outColorViews, u32* outColorViewCount, FluxionRHITextureViewHandle* outDepthView);
 
 bool FluxionRendererInternal_RenderView_Get(FluxionRenderViewHandle view, FluxionRenderTargetHandle* outRenderTarget, u32* outLayerMask, FluxionRHIBindGroupHandle* outFrameBindGroup);
+
+// Where this view looks from and how far, in the shape a cull wants:
+// the view-projection AS THIS SIDE WRITES IT (not the transposed copy
+// the shaders read), the eye in world space, and the distance beyond
+// which nothing is drawn.
+bool FluxionRendererInternal_RenderView_GetCamera(FluxionRenderViewHandle view, FluxionMat4* outViewProjection,
+                                                  FluxionVec3* outCameraPosition, f32* outCullDistance);
 
 // The view's own viewport rect, in pixels -- ForwardOpaquePass.c and
 // Renderer.cpp's debug-draw pass both need this for

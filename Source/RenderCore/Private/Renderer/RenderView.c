@@ -66,6 +66,7 @@ typedef struct FluxionRenderViewRecord
     u32 layerMask;
 
     FluxionVec3 ambientColor;
+    f32 cullDistance;
     f32 exposure;
     f32 tonemapWhitePoint;
     bool encodeOutputToSRGB;
@@ -583,6 +584,7 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     record->renderTarget = desc->renderTarget;
     record->layerMask = desc->layerMask;
     record->ambientColor = desc->ambientColor;
+    record->cullDistance = desc->cullDistance;
 
     // Taken as one when nobody said. See the field's own comment: an
     // unset multiplier producing a black screen would read as a broken
@@ -1174,6 +1176,29 @@ void Fluxion_RenderView_UploadLighting(FluxionRenderViewHandle view, FluxionRHIC
         Fluxion_RHI_CommandList_CopyBuffer(commandList, record->shadowStaging, 0, record->shadowStorage, 0,
                                            (usize)record->shadowCount * sizeof(FluxionRenderShadowGPU));
     }
+}
+
+bool FluxionRendererInternal_RenderView_GetCamera(FluxionRenderViewHandle view, FluxionMat4* outViewProjection,
+                                                  FluxionVec3* outCameraPosition, f32* outCullDistance)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return false;
+
+    // Worked out here rather than read from the frame constants: those
+    // are transposed for the shading languages, and what a frustum is
+    // derived from has to be the matrix as this side writes it.
+    if (outViewProjection != NULL) *outViewProjection = Fluxion_Mat4_Multiply(record->projectionMatrix, record->viewMatrix);
+
+    if (outCameraPosition != NULL)
+    {
+        const FluxionMat4 cameraToWorld = Fluxion_Mat4_RigidInverse(record->viewMatrix);
+        outCameraPosition->x = cameraToWorld.m[0][3];
+        outCameraPosition->y = cameraToWorld.m[1][3];
+        outCameraPosition->z = cameraToWorld.m[2][3];
+    }
+
+    if (outCullDistance != NULL) *outCullDistance = record->cullDistance;
+    return true;
 }
 
 bool FluxionRendererInternal_RenderView_Get(FluxionRenderViewHandle view, FluxionRenderTargetHandle* outRenderTarget, u32* outLayerMask, FluxionRHIBindGroupHandle* outFrameBindGroup)

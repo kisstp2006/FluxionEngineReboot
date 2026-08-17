@@ -87,10 +87,21 @@ typedef struct FluxionGPUSceneBatch
     FluxionRenderPipelineHandle pipeline;
 
     // Where this batch's rows start in the object buffer, and how many
-    // there are. The shader adds its own zero-based instance index to
-    // the first of these -- see Fluxion/Object.jsl.
+    // there are. These describe what the batch HOLDS.
     u32 firstObject;
     u32 objectCount;
+
+    // And what it DRAWS: where its slice of the visible list begins, and
+    // how many of its objects survived the cull. The shader adds its own
+    // zero-based instance index to the first of these -- see
+    // Fluxion/Object.jsl -- and the indirect command's instance count is
+    // the second.
+    //
+    // Two pairs rather than one, because they answer different
+    // questions: a batch whose objects are all off screen still holds
+    // them, it just draws none of them.
+    u32 firstVisible;
+    u32 visibleCount;
 
     // Everything in this batch, in world space, as one sphere.
     //
@@ -109,6 +120,34 @@ typedef struct FluxionGPUSceneBatch
 // until that backend is the one running.
 #define FLUXION_GPU_SCENE_BATCH_UNIFORM_STRIDE 256
 
+// WHAT THE FRAME CAN SEE, and so what it need not draw.
+//
+// All of it is the view's: the frustum comes from its matrices, the
+// distance and the layer mask are its own. Handed over once a frame,
+// before the upload, because everything below is decided per object and
+// nothing about it changes while that is happening.
+typedef struct FluxionGPUSceneCullDesc
+{
+    // As this side writes it, NOT the transposed copy the shaders read --
+    // the frustum planes are derived from it.
+    FluxionMat4 viewProjection;
+
+    FluxionVec3 cameraPosition;
+
+    // Beyond this, nothing is drawn. Zero means no limit, which is what
+    // a view that never mentioned distance gets.
+    f32 cullDistance;
+
+    // An object is drawn when it shares a layer with the view. Zero on
+    // either side means "every layer", so a caller that never thought
+    // about layers is not quietly excluded from its own frame.
+    u32 layerMask;
+
+    // False turns the whole thing off: every object is drawn, which is
+    // what a program with no camera at all (a test, a tool) wants.
+    bool enabled;
+} FluxionGPUSceneCullDesc;
+
 FluxionGPUSceneHandle Fluxion_GPUScene_Create(FluxionRHIDeviceHandle device);
 void Fluxion_GPUScene_Destroy(FluxionGPUSceneHandle scene);
 
@@ -124,6 +163,20 @@ void Fluxion_GPUScene_Begin(FluxionGPUSceneHandle scene);
 // remember to.
 bool Fluxion_GPUScene_Add(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
                           FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform);
+
+// One thing to draw, with the layers it belongs to. The call above is
+// this one with every layer.
+bool Fluxion_GPUScene_AddLayered(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
+                                 FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, u32 layerMask);
+
+// What this frame can see. Cleared by Begin, so a caller that says
+// nothing gets a frame that draws everything.
+void Fluxion_GPUScene_SetCulling(FluxionGPUSceneHandle scene, const FluxionGPUSceneCullDesc* cull);
+
+// How many objects were added, and how many of them survived the cull.
+// Two numbers rather than one, because their RATIO is the only thing
+// that says whether the culling did anything.
+u32 Fluxion_GPUScene_GetVisibleCount(FluxionGPUSceneHandle scene);
 
 // Groups what was added, lays the rows out in that order, writes one
 // indirect command per group, builds the OBJECT bind group each group is
@@ -149,6 +202,10 @@ const FluxionGPUSceneBatch* Fluxion_GPUScene_GetBatch(FluxionGPUSceneHandle scen
 
 // The object rows, as a storage buffer the vertex stage reads.
 FluxionRHIBufferHandle Fluxion_GPUScene_GetObjectBuffer(FluxionGPUSceneHandle scene);
+
+// Which rows this frame draws, in draw order -- what
+// Fluxion/Object.jsl calls visibleObjects.
+FluxionRHIBufferHandle Fluxion_GPUScene_GetVisibleBuffer(FluxionGPUSceneHandle scene);
 
 // One FluxionRHIDrawIndexedIndirectCommand per batch, in batch order.
 FluxionRHIBufferHandle Fluxion_GPUScene_GetIndirectBuffer(FluxionGPUSceneHandle scene);

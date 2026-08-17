@@ -234,6 +234,15 @@ typedef struct FluxionRenderViewDesc
     // does, the caller that chose the format says what it chose.
     bool encodeOutputToSRGB;
 
+    // How far this view sees. Beyond it an object is not drawn at all.
+    //
+    // ZERO MEANS NO LIMIT, which is what a description that never
+    // mentioned distance gets -- a view that saw nothing because nobody
+    // filled this in would read as a broken renderer rather than as a
+    // setting with a hole in it. The far plane still applies either way;
+    // this is the cheaper test, made before anything is submitted.
+    f32 cullDistance;
+
     // How big this view's shadow atlas is, and how big one tile of it
     // is, both in texels and both a side of a square.
     //

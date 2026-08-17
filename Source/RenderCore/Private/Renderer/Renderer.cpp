@@ -569,7 +569,7 @@ extern "C" void Fluxion_Renderer_SubmitRenderWorld(FluxionRendererHandle rendere
         // something does, every caller already goes through here.
         if (!object.visible) continue;
 
-        Fluxion_GPUScene_Add(renderer->gpuScene, object.mesh, object.material, object.pipeline, &object.transform);
+        Fluxion_GPUScene_AddLayered(renderer->gpuScene, object.mesh, object.material, object.pipeline, &object.transform, object.layerMask);
     }
 }
 
@@ -580,6 +580,21 @@ extern "C" void Fluxion_Renderer_UploadScene(FluxionRendererHandle rendererHandl
     FluxionRenderer* renderer = Resolve(rendererHandle);
     if (renderer == nullptr || !renderer->inFrame) return;
 
+    // What this frame can see, taken from the view it is being drawn
+    // through. Handed over here rather than at every DrawMesh: it is one
+    // answer for the whole frame, and the objects have all arrived by
+    // now.
+    FluxionGPUSceneCullDesc cull;
+    std::memset(&cull, 0, sizeof(cull));
+
+    FluxionRenderTargetHandle target{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    u32 viewLayerMask = 0;
+    FluxionRendererInternal_RenderView_Get(renderer->currentView, &target, &viewLayerMask, nullptr);
+    cull.layerMask = viewLayerMask;
+    cull.enabled = FluxionRendererInternal_RenderView_GetCamera(renderer->currentView, &cull.viewProjection,
+                                                                &cull.cameraPosition, &cull.cullDistance);
+
+    Fluxion_GPUScene_SetCulling(renderer->gpuScene, &cull);
     Fluxion_GPUScene_Upload(renderer->gpuScene, commandList, renderer->objectBindGroupLayout);
 }
 
@@ -699,6 +714,12 @@ extern "C" void Fluxion_Renderer_SetDebugDrawDepthFormat(FluxionRendererHandle r
 extern "C" void* Fluxion_Renderer_GetForwardOpaquePassUserData(FluxionRendererHandle rendererHandle)
 {
     return Resolve(rendererHandle);
+}
+
+extern "C" u32 Fluxion_Renderer_GetVisibleObjectCount(FluxionRendererHandle rendererHandle)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    return renderer != nullptr ? Fluxion_GPUScene_GetVisibleCount(renderer->gpuScene) : 0;
 }
 
 extern "C" u32 Fluxion_Renderer_GetLastDrawCallCount(FluxionRendererHandle rendererHandle)

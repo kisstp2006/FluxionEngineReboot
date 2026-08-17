@@ -77,6 +77,8 @@ typedef struct FluxionGPUSceneEntry
     // it was added rather than once per pass that wants to know.
     FluxionVec3 boundsCentre;
     f32 boundsRadius;
+
+    u32 layerMask;
 } FluxionGPUSceneEntry;
 
 typedef struct FluxionGPUSceneRecord
@@ -112,6 +114,12 @@ typedef struct FluxionGPUSceneRecord
     FluxionRHIBufferHandle objectStorage;
     u32 objectCapacity; // in rows
 
+    // Which rows this frame draws, in draw order -- see
+    // Fluxion/Object.jsl. Staged and copied exactly like the rows: a
+    // shader reads it, so it is device memory.
+    FluxionRHIBufferHandle visibleStaging;
+    FluxionRHIBufferHandle visibleStorage;
+
     // Whether the rows have ever been copied across. A buffer nobody has
     // written yet is in the state it was created in, not in the one the
     // last upload left it in -- and a barrier that claims otherwise is
@@ -126,6 +134,10 @@ typedef struct FluxionGPUSceneRecord
     FluxionRHIBufferHandle indirectBuffer;
     FluxionRHIBufferHandle batchUniformBuffer;
     u32 batchCapacity;
+
+    // What this frame can see, and how many objects survived it.
+    FluxionGPUSceneCullDesc cull;
+    u32 visibleCount;
 } FluxionGPUSceneRecord;
 
 static FluxionGPUSceneRecord s_scenes[FLUXION_GPU_SCENE_MAX_SCENES];
@@ -144,8 +156,12 @@ static void Fluxion_GPUSceneInternal_DestroyObjectBuffers(FluxionGPUSceneRecord*
 {
     if (FLUXION_HANDLE_IS_VALID(record->objectStaging)) Fluxion_RHI_DestroyBuffer(record->objectStaging);
     if (FLUXION_HANDLE_IS_VALID(record->objectStorage)) Fluxion_RHI_DestroyBuffer(record->objectStorage);
+    if (FLUXION_HANDLE_IS_VALID(record->visibleStaging)) Fluxion_RHI_DestroyBuffer(record->visibleStaging);
+    if (FLUXION_HANDLE_IS_VALID(record->visibleStorage)) Fluxion_RHI_DestroyBuffer(record->visibleStorage);
     record->objectStaging = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->objectStorage = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->visibleStaging = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->visibleStorage = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
 }
 
 static bool Fluxion_GPUSceneInternal_MakeObjectBuffers(FluxionGPUSceneRecord* record, u32 capacity)
@@ -169,18 +185,36 @@ static bool Fluxion_GPUSceneInternal_MakeObjectBuffers(FluxionGPUSceneRecord* re
     storageDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
     storageDesc.debugName = "Fluxion.GPUScene.ObjectStorage";
 
+    // The visible list: one index per row at most, since in the worst
+    // case everything is seen.
+    FluxionRHIBufferDesc visibleStagingDesc = stagingDesc;
+    visibleStagingDesc.size = (usize)capacity * sizeof(u32);
+    visibleStagingDesc.debugName = "Fluxion.GPUScene.VisibleStaging";
+
+    FluxionRHIBufferDesc visibleStorageDesc = storageDesc;
+    visibleStorageDesc.size = (usize)capacity * sizeof(u32);
+    visibleStorageDesc.debugName = "Fluxion.GPUScene.VisibleStorage";
+
     const FluxionRHIBufferHandle staging = Fluxion_RHI_CreateBuffer(record->device, &stagingDesc);
     const FluxionRHIBufferHandle storage = Fluxion_RHI_CreateBuffer(record->device, &storageDesc);
-    if (!FLUXION_HANDLE_IS_VALID(staging) || !FLUXION_HANDLE_IS_VALID(storage))
+    const FluxionRHIBufferHandle visibleStaging = Fluxion_RHI_CreateBuffer(record->device, &visibleStagingDesc);
+    const FluxionRHIBufferHandle visibleStorage = Fluxion_RHI_CreateBuffer(record->device, &visibleStorageDesc);
+
+    if (!FLUXION_HANDLE_IS_VALID(staging) || !FLUXION_HANDLE_IS_VALID(storage) ||
+        !FLUXION_HANDLE_IS_VALID(visibleStaging) || !FLUXION_HANDLE_IS_VALID(visibleStorage))
     {
         if (FLUXION_HANDLE_IS_VALID(staging)) Fluxion_RHI_DestroyBuffer(staging);
         if (FLUXION_HANDLE_IS_VALID(storage)) Fluxion_RHI_DestroyBuffer(storage);
+        if (FLUXION_HANDLE_IS_VALID(visibleStaging)) Fluxion_RHI_DestroyBuffer(visibleStaging);
+        if (FLUXION_HANDLE_IS_VALID(visibleStorage)) Fluxion_RHI_DestroyBuffer(visibleStorage);
         return false;
     }
 
     Fluxion_GPUSceneInternal_DestroyObjectBuffers(record);
     record->objectStaging = staging;
     record->objectStorage = storage;
+    record->visibleStaging = visibleStaging;
+    record->visibleStorage = visibleStorage;
     record->objectCapacity = capacity;
     record->objectStorageWritten = false;
     return true;
@@ -311,6 +345,44 @@ static void Fluxion_GPUSceneInternal_WorldSphere(FluxionMeshBufferHandle mesh, c
     *outRadius = sqrtf(extent.x * extent.x + extent.y * extent.y + extent.z * extent.z) * longestAxis;
 }
 
+// Whether this frame draws this object at all.
+//
+// THREE TESTS, cheapest first: the layers it belongs to, then how far
+// away it is, then whether it is in front of the eye at all. Each one is
+// a whole object dropped before anything is uploaded or drawn -- which
+// is the only kind of work that costs nothing.
+//
+// An object with no bounds (a mesh whose extents nobody gave) is always
+// drawn: not knowing where something is, is not a reason to decide it is
+// elsewhere.
+static bool Fluxion_GPUSceneInternal_IsVisible(const FluxionGPUSceneRecord* record, const FluxionGPUSceneEntry* entry,
+                                               const FluxionFrustumPlanes* frustum)
+{
+    if (!record->cull.enabled) return true;
+
+    const u32 viewLayers = record->cull.layerMask != 0 ? record->cull.layerMask : 0xFFFFFFFFu;
+    const u32 objectLayers = entry->layerMask != 0 ? entry->layerMask : 0xFFFFFFFFu;
+    if ((viewLayers & objectLayers) == 0) return false;
+
+    if (entry->boundsRadius <= 0.0f) return true;
+
+    if (record->cull.cullDistance > 0.0f)
+    {
+        const f32 dx = entry->boundsCentre.x - record->cull.cameraPosition.x;
+        const f32 dy = entry->boundsCentre.y - record->cull.cameraPosition.y;
+        const f32 dz = entry->boundsCentre.z - record->cull.cameraPosition.z;
+
+        // Measured to the NEAR SIDE of the sphere, not to its centre: a
+        // large object whose centre is past the limit may still have
+        // half of it in view, and dropping that is a wall vanishing
+        // while you walk towards it.
+        const f32 distance = sqrtf(dx * dx + dy * dy + dz * dz) - entry->boundsRadius;
+        if (distance > record->cull.cullDistance) return false;
+    }
+
+    return Fluxion_Frustum_TouchesSphere(frustum, entry->boundsCentre, entry->boundsRadius);
+}
+
 // --- The API --------------------------------------------------------------
 
 FluxionGPUSceneHandle Fluxion_GPUScene_Create(FluxionRHIDeviceHandle device)
@@ -339,6 +411,8 @@ FluxionGPUSceneHandle Fluxion_GPUScene_Create(FluxionRHIDeviceHandle device)
     // picture: it is a crash somewhere else entirely.
     record->objectStaging = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->objectStorage = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->visibleStaging = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->visibleStorage = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->indirectBuffer = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->batchUniformBuffer = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
 
@@ -385,6 +459,8 @@ void Fluxion_GPUScene_Destroy(FluxionGPUSceneHandle scene)
     // must not look like it holds buffer zero.
     record->objectStaging = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->objectStorage = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->visibleStaging = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->visibleStorage = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->indirectBuffer = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->batchUniformBuffer = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
 }
@@ -406,10 +482,34 @@ void Fluxion_GPUScene_Begin(FluxionGPUSceneHandle scene)
 
     record->entryCount = 0;
     record->batchCount = 0;
+    record->visibleCount = 0;
+
+    // A frame nobody tells about its camera draws everything. That is
+    // not a fallback, it is what a test or a tool asks for.
+    memset(&record->cull, 0, sizeof(record->cull));
+}
+
+void Fluxion_GPUScene_SetCulling(FluxionGPUSceneHandle scene, const FluxionGPUSceneCullDesc* cull)
+{
+    FluxionGPUSceneRecord* record = Fluxion_GPUSceneInternal_Resolve(scene);
+    if (record == NULL || cull == NULL) return;
+    record->cull = *cull;
+}
+
+u32 Fluxion_GPUScene_GetVisibleCount(FluxionGPUSceneHandle scene)
+{
+    const FluxionGPUSceneRecord* record = Fluxion_GPUSceneInternal_Resolve(scene);
+    return record != NULL ? record->visibleCount : 0;
 }
 
 bool Fluxion_GPUScene_Add(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
                           FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform)
+{
+    return Fluxion_GPUScene_AddLayered(scene, mesh, material, pipeline, transform, 0xFFFFFFFFu);
+}
+
+bool Fluxion_GPUScene_AddLayered(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
+                                 FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, u32 layerMask)
 {
     FluxionGPUSceneRecord* record = Fluxion_GPUSceneInternal_Resolve(scene);
     if (record == NULL) return false;
@@ -434,6 +534,7 @@ bool Fluxion_GPUScene_Add(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle m
     // above are worked out from the matrix as it arrived, because that
     // is the one the arithmetic is written for.
     entry->model = Fluxion_Mat4_Transposed(world);
+    entry->layerMask = layerMask;
     return true;
 }
 
@@ -572,8 +673,37 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
         batch->boundsRadius = entry->boundsRadius;
     }
 
+    // WHAT IS ACTUALLY DRAWN, decided here, one object at a time.
+    //
+    // The rows above hold everything; this list holds the ones this
+    // frame can see, gathered so that each batch's survivors sit
+    // together. A batch that lost every object keeps its rows and draws
+    // none of them.
+    const FluxionFrustumPlanes frustum = Fluxion_Mat4_FrustumPlanes(record->cull.viewProjection);
+
+    u32* visible = (u32*)Fluxion_RHI_MapBuffer(record->visibleStaging);
+    if (visible == NULL) return;
+
+    record->visibleCount = 0;
+    for (u32 batchIndex = 0; batchIndex < record->batchCount; ++batchIndex)
+    {
+        FluxionGPUSceneBatch* batch = &record->batches[batchIndex];
+        batch->firstVisible = record->visibleCount;
+        batch->visibleCount = 0;
+
+        for (u32 i = 0; i < batch->objectCount; ++i)
+        {
+            const u32 row = batch->firstObject + i;
+            if (!Fluxion_GPUSceneInternal_IsVisible(record, &record->entries[record->order[row]], &frustum)) continue;
+
+            visible[record->visibleCount++] = row;
+            ++batch->visibleCount;
+        }
+    }
+    Fluxion_RHI_UnmapBuffer(record->visibleStaging);
+
     // One command per batch, and one uniform slice saying where that
-    // batch's rows begin.
+    // batch's slice of the visible list begins.
     FluxionRHIDrawIndexedIndirectCommand* commands =
         (FluxionRHIDrawIndexedIndirectCommand*)Fluxion_RHI_MapBuffer(record->indirectBuffer);
     u8* uniforms = (u8*)Fluxion_RHI_MapBuffer(record->batchUniformBuffer);
@@ -599,7 +729,7 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
         }
 
         commands[i].indexCount = indexCount;
-        commands[i].instanceCount = batch->objectCount;
+        commands[i].instanceCount = batch->visibleCount;
         commands[i].firstIndex = 0;
         commands[i].vertexOffset = 0;
 
@@ -610,7 +740,7 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
         // same on every backend.
         commands[i].firstInstance = 0;
 
-        FluxionVec4 params = { (f32)batch->firstObject, 0.0f, 0.0f, 0.0f };
+        FluxionVec4 params = { (f32)batch->firstVisible, 0.0f, 0.0f, 0.0f };
         memcpy(uniforms + (usize)i * FLUXION_GPU_SCENE_BATCH_UNIFORM_STRIDE, &params, sizeof(params));
     }
 
@@ -624,7 +754,7 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
     {
         for (u32 i = 0; i < record->batchCount; ++i)
         {
-            FluxionRHIBindGroupEntry entries[2];
+            FluxionRHIBindGroupEntry entries[3];
             memset(entries, 0, sizeof(entries));
 
             entries[0].binding = 0;
@@ -644,10 +774,17 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
             // rather than by byte, and it has no other way to find out.
             entries[1].bufferElementStride = (u32)sizeof(FluxionGPUSceneObject);
 
+            entries[2].binding = 2;
+            entries[2].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+            entries[2].buffer = record->visibleStorage;
+            entries[2].bufferOffset = 0;
+            entries[2].bufferSize = 0;
+            entries[2].bufferElementStride = (u32)sizeof(u32);
+
             FluxionRHIBindGroupDesc bindGroupDesc;
             bindGroupDesc.layout = objectLayout;
             bindGroupDesc.entries = entries;
-            bindGroupDesc.entryCount = 2;
+            bindGroupDesc.entryCount = 3;
 
             record->batchBindGroups[i] = Fluxion_RHI_CreateBindGroup(record->device, &bindGroupDesc);
         }
@@ -673,6 +810,21 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
 
     Fluxion_RHI_CommandList_CopyBuffer(commandList, record->objectStaging, 0, record->objectStorage, 0,
                                        (usize)record->entryCount * sizeof(FluxionGPUSceneObject));
+
+    if (record->visibleCount > 0)
+    {
+        FluxionRHIBarrier visibleToCopy = { noTexture, record->visibleStorage,
+                                            record->objectStorageWritten ? FLUXION_RHI_RESOURCE_STATE_SHADER_READ : FLUXION_RHI_RESOURCE_STATE_COMMON,
+                                            FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
+        Fluxion_RHI_CommandList_Barrier(commandList, &visibleToCopy, 1);
+
+        Fluxion_RHI_CommandList_CopyBuffer(commandList, record->visibleStaging, 0, record->visibleStorage, 0,
+                                           (usize)record->visibleCount * sizeof(u32));
+
+        FluxionRHIBarrier visibleToRead = { noTexture, record->visibleStorage,
+                                            FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+        Fluxion_RHI_CommandList_Barrier(commandList, &visibleToRead, 1);
+    }
 
     FluxionRHIBarrier toRead = { noTexture, record->objectStorage,
                                  FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
@@ -708,6 +860,17 @@ FluxionRHIBufferHandle Fluxion_GPUScene_GetObjectBuffer(FluxionGPUSceneHandle sc
         return invalid;
     }
     return record->objectStorage;
+}
+
+FluxionRHIBufferHandle Fluxion_GPUScene_GetVisibleBuffer(FluxionGPUSceneHandle scene)
+{
+    const FluxionGPUSceneRecord* record = Fluxion_GPUSceneInternal_Resolve(scene);
+    if (record == NULL)
+    {
+        FluxionRHIBufferHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+        return invalid;
+    }
+    return record->visibleStorage;
 }
 
 FluxionRHIBufferHandle Fluxion_GPUScene_GetIndirectBuffer(FluxionGPUSceneHandle scene)

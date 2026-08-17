@@ -181,6 +181,13 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
         const FluxionGPUSceneBatch* batch = Fluxion_GPUScene_GetBatch(renderer->gpuScene, i);
         if (batch == NULL) continue;
 
+        // A batch whose every object was culled: it still holds its
+        // rows, and it draws none of them. Skipped here rather than
+        // submitted with zero instances -- a draw call that draws
+        // nothing is still a draw call, and the count below is a number
+        // somebody reads.
+        if (batch->visibleCount == 0) continue;
+
         FluxionRHIBufferHandle vertexBuffer, indexBuffer;
         u32 vertexCount, indexCount;
         bool use16BitIndices;

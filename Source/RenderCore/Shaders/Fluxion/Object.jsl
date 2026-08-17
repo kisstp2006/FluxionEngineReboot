@@ -66,7 +66,21 @@ struct FluxionObject
 
 [Buffer(Object)] FluxionObject objects;
 
-// x: which object in the list this draw's first instance is.
+// WHICH objects this frame actually draws, and in what order.
+//
+// A draw's instances used to be a run of rows: instance zero was row
+// `first`, instance one was row `first + 1`. Once something decides that
+// an object is not seen, they are not a run any more -- the ones that
+// survived are scattered through the list. This says where each of them
+// went.
+//
+// One indirection, and the same one whether the deciding happened on the
+// processor or in a compute shader. That is the whole reason it is here
+// rather than in one of the two paths: a second way of finding a row
+// would be a second thing to keep in step.
+[Buffer(Object)] int visibleObjects;
+
+// x: where in the list above this draw's first instance sits.
 //
 // A whole four-component vector to carry one number, and deliberately:
 // every other engine-written uniform here is one too, because that is
@@ -82,7 +96,7 @@ struct FluxionObject
 // sentence can be true in both target languages at once.
 Matrix4x4 FluxionObjectModel()
 {
-    return objects[int(objectParams.x) + InstanceIndex].model;
+    return objects[visibleObjects[int(objectParams.x) + InstanceIndex]].model;
 }
 
 #endif

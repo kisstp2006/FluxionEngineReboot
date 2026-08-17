@@ -2169,8 +2169,9 @@ int main(int argc, char** argv)
                 ? (f64)(extractionEnd - extractionStart) * 1000.0 / (f64)ticksPerSecond
                 : 0.0;
 
-            FLUXION_LOG_INFO("ForwardRendererDemo", "%u objects -> %u draw calls; extracting them took %.3f ms.",
-                renderWorld.objectCount, Fluxion_Renderer_GetLastDrawCallCount(renderer), extractionMs);
+            FLUXION_LOG_INFO("ForwardRendererDemo", "%u objects -> %u seen -> %u draw calls; extracting them took %.3f ms.",
+                renderWorld.objectCount, Fluxion_Renderer_GetVisibleObjectCount(renderer),
+                Fluxion_Renderer_GetLastDrawCallCount(renderer), extractionMs);
         }
 
         // The render graph's own compiled barrier list ends the backbuffer

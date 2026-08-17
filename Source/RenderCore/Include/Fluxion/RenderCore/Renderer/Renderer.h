@@ -166,6 +166,15 @@ void* Fluxion_Renderer_GetForwardOpaquePassUserData(FluxionRendererHandle render
 // that from outside a pass's own Execute callback.
 u32 Fluxion_Renderer_GetLastDrawCallCount(FluxionRendererHandle renderer);
 
+// How many of the frame's objects survived the cull.
+//
+// Beside the draw-call count rather than instead of it, because the two
+// answer different questions: this one says how much the culling threw
+// away, that one says how much the batching saved. A frame that drew
+// everything in one call and a frame that culled everything both have a
+// draw-call count of one.
+u32 Fluxion_Renderer_GetVisibleObjectCount(FluxionRendererHandle renderer);
+
 #ifdef __cplusplus
 }
 #endif
