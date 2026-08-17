@@ -388,6 +388,28 @@ void Fluxion_RHIVulkan_CommandListBeginRendering(FluxionRHICommandListHandle com
     cl->insideRendering = true;
 }
 
+void Fluxion_RHIVulkan_CommandListSetViewport(FluxionRHICommandListHandle commandList, f32 x, f32 y, f32 width, f32 height, f32 minDepth, f32 maxDepth)
+{
+    FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);
+    if (cl == nullptr) return;
+
+    // Flipped the same way BeginRendering flips its default, and for the
+    // same reason -- so a rectangle counted from the top means the same
+    // here as on the other backends. The origin moves to the BOTTOM of
+    // the requested rectangle, not of the target.
+    VkViewport viewport = { x, y + height, width, -height, minDepth, maxDepth };
+    vkCmdSetViewport(cl->commandBuffer, 0, 1, &viewport);
+}
+
+void Fluxion_RHIVulkan_CommandListSetScissor(FluxionRHICommandListHandle commandList, i32 x, i32 y, u32 width, u32 height)
+{
+    FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);
+    if (cl == nullptr) return;
+
+    VkRect2D scissor = { { x, y }, { width, height } };
+    vkCmdSetScissor(cl->commandBuffer, 0, 1, &scissor);
+}
+
 void Fluxion_RHIVulkan_CommandListEndRendering(FluxionRHICommandListHandle commandList)
 {
     FluxionRHIVulkanCommandList* cl = Fluxion_RHIVulkan_RequireRecording(commandList);
@@ -553,7 +575,14 @@ void Fluxion_RHIVulkan_CommandListCopyTextureToBuffer(FluxionRHICommandListHandl
     region.bufferRowLength = formatInfo.blockBytes != 0
                                  ? (u32)(alignedRowBytes / formatInfo.blockBytes) * formatInfo.blockWidth
                                  : 0;
-    region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mipLevel, arrayLayer, 1 };
+    // Which part of the image is being copied, and a depth texture has a
+    // different one. Reading one back is what a shadow map needs, and
+    // asking for the colour part of an image that has none is refused
+    // outright rather than answered with anything.
+    const bool isDepth = srcState->format == VK_FORMAT_D32_SFLOAT || srcState->format == VK_FORMAT_D24_UNORM_S8_UINT;
+    const VkImageAspectFlags aspect = isDepth ? (VkImageAspectFlags)VK_IMAGE_ASPECT_DEPTH_BIT
+                                              : (VkImageAspectFlags)VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource = { aspect, mipLevel, arrayLayer, 1 };
     region.imageExtent = { width, height, 1 };
     vkCmdCopyImageToBuffer(cl->commandBuffer, srcState->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstState->buffer, 1, &region);
 }

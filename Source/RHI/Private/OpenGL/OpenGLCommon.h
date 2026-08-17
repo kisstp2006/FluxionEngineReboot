@@ -84,6 +84,10 @@
         WINGDIAPI void APIENTRY glBlendFunc(GLenum sfactor, GLenum dfactor);
         WINGDIAPI void APIENTRY glViewport(GLint x, GLint y, GLsizei width, GLsizei height);
         WINGDIAPI void APIENTRY glScissor(GLint x, GLint y, GLsizei width, GLsizei height);
+        // The double-argument form, not glDepthRangef: this one is GL 1.0
+        // and exported by opengl32.lib like everything else here, while
+        // the float form arrived with GL 4.1.
+        WINGDIAPI void APIENTRY glDepthRange(GLdouble nearValue, GLdouble farValue);
         WINGDIAPI void APIENTRY glClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
         WINGDIAPI void APIENTRY glClear(GLbitfield mask);
         WINGDIAPI void APIENTRY glGetIntegerv(GLenum pname, GLint* params);
@@ -383,6 +387,8 @@ void Fluxion_RHIOpenGL_CommandListBegin(FluxionRHICommandListHandle commandList)
 void Fluxion_RHIOpenGL_CommandListEnd(FluxionRHICommandListHandle commandList);
 void Fluxion_RHIOpenGL_CommandListBeginRendering(FluxionRHICommandListHandle commandList, const FluxionRHIRenderingDesc* desc);
 void Fluxion_RHIOpenGL_CommandListEndRendering(FluxionRHICommandListHandle commandList);
+void Fluxion_RHIOpenGL_CommandListSetViewport(FluxionRHICommandListHandle commandList, f32 x, f32 y, f32 width, f32 height, f32 minDepth, f32 maxDepth);
+void Fluxion_RHIOpenGL_CommandListSetScissor(FluxionRHICommandListHandle commandList, i32 x, i32 y, u32 width, u32 height);
 void Fluxion_RHIOpenGL_CommandListSetPipeline(FluxionRHICommandListHandle commandList, FluxionRHIPipelineHandle pipeline);
 void Fluxion_RHIOpenGL_CommandListSetVertexBuffer(FluxionRHICommandListHandle commandList, u32 slot, FluxionRHIBufferHandle buffer, usize offset);
 void Fluxion_RHIOpenGL_CommandListSetIndexBuffer(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle buffer, usize offset, bool use16BitIndices);

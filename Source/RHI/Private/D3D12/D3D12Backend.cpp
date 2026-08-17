@@ -490,6 +490,8 @@ extern void Fluxion_RHID3D12_CommandListBegin(FluxionRHICommandListHandle);
 extern void Fluxion_RHID3D12_CommandListEnd(FluxionRHICommandListHandle);
 extern void Fluxion_RHID3D12_CommandListBeginRendering(FluxionRHICommandListHandle, const FluxionRHIRenderingDesc*);
 extern void Fluxion_RHID3D12_CommandListEndRendering(FluxionRHICommandListHandle);
+extern void Fluxion_RHID3D12_CommandListSetViewport(FluxionRHICommandListHandle, f32, f32, f32, f32, f32, f32);
+extern void Fluxion_RHID3D12_CommandListSetScissor(FluxionRHICommandListHandle, i32, i32, u32, u32);
 extern void Fluxion_RHID3D12_CommandListSetPipeline(FluxionRHICommandListHandle, FluxionRHIPipelineHandle);
 extern void Fluxion_RHID3D12_CommandListSetVertexBuffer(FluxionRHICommandListHandle, u32, FluxionRHIBufferHandle, usize);
 extern void Fluxion_RHID3D12_CommandListSetIndexBuffer(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, bool);
@@ -560,6 +562,8 @@ static const FluxionRHIBackendVTable s_d3d12VTable = {
     Fluxion_RHID3D12_CommandListEnd,
     Fluxion_RHID3D12_CommandListBeginRendering,
     Fluxion_RHID3D12_CommandListEndRendering,
+    Fluxion_RHID3D12_CommandListSetViewport,
+    Fluxion_RHID3D12_CommandListSetScissor,
     Fluxion_RHID3D12_CommandListSetPipeline,
     Fluxion_RHID3D12_CommandListSetVertexBuffer,
     Fluxion_RHID3D12_CommandListSetIndexBuffer,

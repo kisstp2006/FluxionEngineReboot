@@ -213,10 +213,24 @@ void Fluxion_RHIOpenGL_CommandListSetBindGroup(FluxionRHICommandListHandle comma
             {
                 FluxionRHIOpenGLSampler* samplerState = Fluxion_RHIOpenGL_ResolveSampler(entry->sampler);
                 GLuint name = samplerState != nullptr ? samplerState->name : 0;
-                if (cache->boundSampler[slot] != name)
+
+                // ONTO THE TEXTURE'S UNIT, not its own. A texture and its
+                // sampler are two bindings everywhere else and one object
+                // here, and the shader this compiles to names the pair by
+                // the TEXTURE's number -- so a sampler object left on its
+                // own unit is a sampler nothing reads, and the texture is
+                // sampled by whatever parameters it carries itself.
+                //
+                // Harmless for an ordinary texture, which carries the same
+                // parameters. Not harmless for a shadow map: comparison
+                // lives on the sampler alone, and a depth texture read by
+                // a comparison sampler that has comparison switched off is
+                // undefined -- which the driver says out loud.
+                const u32 pairedSlot = entry->binding > 0 ? slot - 1 : slot;
+                if (cache->boundSampler[pairedSlot] != name)
                 {
-                    glBindSampler(slot, name);
-                    cache->boundSampler[slot] = name;
+                    glBindSampler(pairedSlot, name);
+                    cache->boundSampler[pairedSlot] = name;
                 }
                 break;
             }

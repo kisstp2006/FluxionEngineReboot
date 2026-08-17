@@ -118,9 +118,103 @@ float SpotAttenuation(Vector3 lightDirection, Vector3 toSurface, float innerCos,
     return Square(t) * (3.0 - 2.0 * t);
 }
 
+// How much of one shadow's light reaches this point.
+//
+// One means all of it. A point outside what this shadow recorded is lit,
+// not dark: nothing was written there, so nothing is known to stand in
+// the way -- and guessing dark would put a black slab wherever a shadow
+// map ends.
+float ShadowFactor(FluxionShadow shadow, Vector3 P, Vector3 N)
+{
+    // Moved along the normal before it is looked up. The depth was
+    // recorded at the atlas's resolution and is being tested against a
+    // surface sampled at the screen's, and the two disagree by up to a
+    // texel -- moving the lookup out of the surface is what stops that
+    // disagreement from reading as the surface shadowing itself.
+    Vector3 offsetP = P + N * shadow.bias.y;
+    Vector4 p = Vector4(offsetP.x, offsetP.y, offsetP.z, 1.0);
+
+    Vector4 clip = Vector4(dot(shadow.lightRow0, p), dot(shadow.lightRow1, p),
+                           dot(shadow.lightRow2, p), dot(shadow.lightRow3, p));
+
+    // Behind the light. A perspective divide by this would fold the point
+    // round to somewhere in front, where it would shadow something real.
+    if (clip.w <= 0.0)
+    {
+        return 1.0;
+    }
+
+    Vector3 ndc = clip.xyz / clip.w;
+    if (ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z > 1.0)
+    {
+        return 1.0;
+    }
+
+    // Clip space counts its second axis up the picture and a shadow
+    // rectangle counts rows down it, so the two are opposite here. What
+    // that rectangle then means on the device is shadowAtlasParams' job.
+    float u = ndc.x * 0.5 + 0.5;
+    float v = 0.5 - ndc.y * 0.5;
+
+    float atlasU = shadow.atlasRect.x + u * shadow.atlasRect.z;
+    float atlasV = shadow.atlasRect.y + v * shadow.atlasRect.w;
+    atlasV = shadowAtlasParams.y * atlasV + shadowAtlasParams.z;
+
+    // Pulled towards the light before the comparison, for the other half
+    // of the same disagreement the normal offset above addresses.
+    float reference = ndc.z - shadow.bias.x;
+    return textureCompare(shadowAtlas, Vector2(atlasU, atlasV), reference);
+}
+
+// How much of one light reaches this point, across all of its shadows.
+//
+// A light may have several, ordered near to far and next to each other in
+// the list -- the sun's cascades, where each covers a share of the
+// distance at its own resolution. The nearest one that reaches this far
+// is the sharpest that has anything to say about it.
+float EvaluateShadow(int lightIndex, Vector3 P, Vector3 N, float viewDistance)
+{
+    int shadowCount = int(lightParams.y);
+
+    // Walked backwards, with the last match kept, so what comes out is
+    // the LOWEST index that both belongs to this light and reaches this
+    // far -- which, given the ordering above, is the nearest cascade
+    // covering the point.
+    int chosen = -1;
+    for (int i = shadowCount - 1; i >= 0; i = i - 1)
+    {
+        if (int(shadows[i].range.x) == lightIndex && viewDistance <= shadows[i].range.y)
+        {
+            chosen = i;
+        }
+    }
+
+    // Past the last cascade, or a light that casts nothing.
+    if (chosen < 0)
+    {
+        return 1.0;
+    }
+
+    float factor = ShadowFactor(shadows[chosen], P, N);
+
+    // Two cascades meeting at a hard line is the thing a viewer notices
+    // about cascades at all, because the two sides of it are shadows of
+    // different sharpness. Handed over across a band instead, if this one
+    // was given a band and there is another of the same light after it.
+    float band = shadows[chosen].range.z;
+    int next = chosen + 1;
+    if (band > 0.0 && next < shadowCount && int(shadows[next].range.x) == lightIndex)
+    {
+        float handover = Saturate((viewDistance - (shadows[chosen].range.y - band)) / band);
+        factor = factor + (ShadowFactor(shadows[next], P, N) - factor) * handover;
+    }
+
+    return factor;
+}
+
 // What one light of any kind sends towards the eye from this point.
 Vector3 EvaluateOneLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 P, FluxionLight light,
-                         Vector3 energyCompensation)
+                         int lightIndex, float viewDistance, Vector3 energyCompensation)
 {
     // The way the light travels, and the way back towards it. The
     // reflectance model wants the second; the cone below wants the first.
@@ -153,7 +247,16 @@ Vector3 EvaluateOneLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 P, F
         return Vector3(0.0, 0.0, 0.0);
     }
 
-    return EvaluateDirectionalLight(surface, N, V, L, light.color.xyz * attenuation, energyCompensation);
+    // Asked after the falloff and before the reflectance: a light that
+    // does not reach here needs no shadow looked up, and one that is
+    // fully blocked needs no reflectance worked out.
+    float shadow = EvaluateShadow(lightIndex, P, N, viewDistance);
+    if (shadow <= 0.0)
+    {
+        return Vector3(0.0, 0.0, 0.0);
+    }
+
+    return EvaluateDirectionalLight(surface, N, V, L, light.color.xyz * attenuation, energyCompensation) * shadow;
 }
 
 // What the surroundings send to this surface.
@@ -242,10 +345,17 @@ Vector3 EvaluateLighting(SurfaceData surface, Vector3 N, Vector3 P)
     // Every light in the frame's list. No cap here and none in the
     // buffer: what makes many lights affordable is the falloff reaching
     // zero, not a number written into a shader.
+    // How far out the point is, which is what picks a cascade. Straight
+    // distance from the eye rather than depth along its axis: it needs no
+    // second vector in the frame constants, and where the two differ --
+    // out at the corners of the view -- it picks the FARTHER cascade,
+    // which always covers more than the nearer one would have.
+    float viewDistance = length(cameraPosition.xyz - P);
+
     int lightCount = int(lightParams.x);
     for (int i = 0; i < lightCount; i = i + 1)
     {
-        color = color + EvaluateOneLight(surface, N, V, P, lights[i], energyCompensation);
+        color = color + EvaluateOneLight(surface, N, V, P, lights[i], i, viewDistance, energyCompensation);
     }
 
     // Two separate sources, not one written twice. The flat ambient is a

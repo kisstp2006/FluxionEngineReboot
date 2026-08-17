@@ -230,6 +230,12 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     if (FLUXION_HANDLE_IS_VALID(shadowView)) Fluxion_RHI_DestroyTextureView(shadowView);
     if (FLUXION_HANDLE_IS_VALID(shadowMap)) Fluxion_RHI_DestroyTexture(shadowMap);
 
+    // Given back before the device goes, not after. Destroying an object
+    // only retires it; the slot it holds in this backend's pool comes
+    // free here -- and a device dropped with objects still retired keeps
+    // those slots for the rest of the run, which the NEXT test in this
+    // binary is the one to discover.
+    Fluxion_RHI_Device_CollectGarbage(device);
     Fluxion_RHI_DestroyDevice(device);
     Fluxion_RHI_DestroyInstance(instance);
 }

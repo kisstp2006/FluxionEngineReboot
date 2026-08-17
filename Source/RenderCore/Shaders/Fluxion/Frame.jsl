@@ -71,7 +71,7 @@
 // survives and those are the ones that go.
 [Uniform(Frame)] Vector4 ambientColor;
 
-// x: how many lights the list below holds. yzw unused.
+// x: how many lights the list below holds. y: how many shadows. zw unused.
 //
 // A count rather than a terminator: a shader cannot ask a buffer how long
 // it is on every backend, and a loop that ran until it found a zeroed
@@ -85,6 +85,18 @@
 //    applied here, zero if it applies its own.
 // w: unused.
 [Uniform(Frame)] Vector4 toneMapping;
+
+// x: how wide one texel of the shadow atlas is, in atlas coordinates.
+//
+// yz: the atlas's second coordinate, as a scale and an offset applied
+// after a tile's rectangle. Every shadow rectangle in this engine counts
+// rows DOWNWARDS from the top, which is how the shadow pass's viewport
+// places them; one backend then reads its texture rows the other way up,
+// and this pair is the single place that difference is written down --
+// (1, 0) where the two agree, (-1, 1) where they do not.
+//
+// w: unused.
+[Uniform(Frame)] Vector4 shadowAtlasParams;
 
 // One light, packed.
 //
@@ -145,6 +157,49 @@ struct FluxionLight
 // by a compute pass once per view, from nothing -- it depends on no sky.
 [Texture(Frame)] Texture2D dfgTable;
 
+// Every shadow in the frame, in one depth texture cut into tiles.
+//
+// Read through a comparison sampler, so what comes back is not a depth
+// but an answer: how much of the light got here. The hardware does the
+// comparison as part of the fetch, which is what lets it filter the
+// ANSWERS rather than the depths -- averaging depths across a shadow's
+// edge gives a number no surface was ever at.
+[Texture(Frame)] Texture2DShadow shadowAtlas;
+
+// One shadow: where its light looks from, and where in the atlas the
+// answer lives.
+//
+// Rows rather than a matrix, and everything else in fours, for the same
+// reason FluxionLight is packed by hand: four-component vectors are the
+// one shape both shading languages lay out identically.
+struct FluxionShadow
+{
+    // The light's view-projection, a row at a time.
+    Vector4 lightRow0;
+    Vector4 lightRow1;
+    Vector4 lightRow2;
+    Vector4 lightRow3;
+
+    // xy the corner, zw the size, in atlas coordinates counting rows
+    // downwards -- see shadowAtlasParams above.
+    Vector4 atlasRect;
+
+    // x: which light in the list above this belongs to.
+    // y: how far from the eye it is the one to read, so that a light's
+    //    shadows can be ordered near to far and each cover its own share.
+    // z: how wide the handover to the next one is at that far edge. Zero
+    //    means a hard change, which is visible as a line across the floor.
+    // w: unused.
+    Vector4 range;
+
+    // x: how far along the light's own axis to move the comparison, and
+    // y: how far along the surface normal to move the point looked up.
+    // Both undo the same thing from different sides: a depth recorded at
+    // one resolution, tested against a surface sampled at another, has a
+    // surface shadowing itself in stripes. zw unused.
+    Vector4 bias;
+};
+
 // The lights this frame is lit by.
 //
 // A buffer rather than an array in the block above: an array would need a
@@ -167,5 +222,10 @@ struct FluxionLight
 // so what a surface reads out of these is irradiance, in the same units as
 // every light in the scene.
 [Buffer(Frame)] Vector4 irradianceSH;
+
+// The shadows this frame holds, one light's cascades next to each other
+// and ordered near to far. A buffer for the same reason the lights are
+// one: what a scene needs is a budget rather than a number compiled in.
+[Buffer(Frame)] FluxionShadow shadows;
 
 #endif

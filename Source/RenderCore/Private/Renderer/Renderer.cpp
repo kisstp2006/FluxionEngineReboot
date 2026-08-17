@@ -414,6 +414,17 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     renderer->environmentScratchBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->prefilterFailed = false;
 
+    renderer->shadowProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->shadowPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->shadowGlobalLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    for (u32 i = 0; i < FLUXION_RENDER_VIEW_MAX_SHADOWS; ++i)
+    {
+        renderer->shadowGlobalBindGroups[i] = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
+    renderer->shadowMatrixBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->shadowPipelineBuilt = false;
+    renderer->shadowFailed = false;
+
     // What a caller that never says otherwise gets. It is a guess, and it
     // is why saying so exists: a frame drawn into a colour attachment of
     // any other format needs the pipeline rebuilt against that one.
@@ -434,6 +445,15 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
         FLUXION_LOG_ERROR("Renderer", "Failed to register \"ForwardOpaquePass\" (already registered? Only one FluxionRenderer instance is supported at a time)");
     }
 
+    FluxionRenderGraphPassType shadowPassType;
+    shadowPassType.name = "ShadowPass";
+    shadowPassType.setup = FluxionShadowPass_Setup;
+    shadowPassType.execute = FluxionShadowPass_Execute;
+    if (!Fluxion_RenderGraphPassRegistry_Register(&shadowPassType))
+    {
+        FLUXION_LOG_ERROR("Renderer", "Failed to register \"ShadowPass\" (already registered? Only one FluxionRenderer instance is supported at a time)");
+    }
+
     FluxionRendererHandle handle = { index, generation };
     return handle;
 }
@@ -451,8 +471,10 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
     FluxionRendererInternal_Skybox_Destroy(renderer);
     FluxionRendererInternal_Irradiance_Destroy(renderer);
     FluxionRendererInternal_Prefilter_Destroy(renderer);
+    FluxionRendererInternal_Shadow_Destroy(renderer);
 
     Fluxion_RenderGraphPassRegistry_Unregister("ForwardOpaquePass");
+    Fluxion_RenderGraphPassRegistry_Unregister("ShadowPass");
 
     if (FLUXION_HANDLE_IS_VALID(renderer->objectBuffer))
     {

@@ -305,6 +305,21 @@ bool Fluxion_RHIOpenGL_CreateContext(FluxionRHIOpenGLDevice* deviceState, bool e
     glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &programBinaryFormats);
     deviceState->hasProgramBinary = programBinaryFormats > 0;
 
+    // ONE clip convention for every backend, chosen here because this is
+    // the only one that can be told.
+    //
+    // This language's own default puts clip depth in -1..1, while D3D12
+    // and Vulkan take 0..1 and discard anything below zero. A projection
+    // matrix written for one of those is silently wrong on the other --
+    // measurably so: a surface halfway along a light's depth range read
+    // back at the near plane on two backends out of three, with the near
+    // half of the range clipped away. So every matrix in this engine is
+    // written for 0..1, and this call brings the third backend to it.
+    //
+    // Core since 4.5, which this backend already requires for direct
+    // state access.
+    if (glClipControl != nullptr) glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+
     return true;
 }
 
@@ -435,6 +450,21 @@ bool Fluxion_RHIOpenGL_CreateContext(FluxionRHIOpenGLDevice* deviceState, bool e
     GLint programBinaryFormats = 0;
     glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &programBinaryFormats);
     deviceState->hasProgramBinary = programBinaryFormats > 0;
+
+    // ONE clip convention for every backend, chosen here because this is
+    // the only one that can be told.
+    //
+    // This language's own default puts clip depth in -1..1, while D3D12
+    // and Vulkan take 0..1 and discard anything below zero. A projection
+    // matrix written for one of those is silently wrong on the other --
+    // measurably so: a surface halfway along a light's depth range read
+    // back at the near plane on two backends out of three, with the near
+    // half of the range clipped away. So every matrix in this engine is
+    // written for 0..1, and this call brings the third backend to it.
+    //
+    // Core since 4.5, which this backend already requires for direct
+    // state access.
+    if (glClipControl != nullptr) glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 
     return true;
 }

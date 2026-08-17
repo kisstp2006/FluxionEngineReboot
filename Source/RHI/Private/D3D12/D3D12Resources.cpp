@@ -228,7 +228,12 @@ FluxionRHITextureHandle Fluxion_RHID3D12_CreateTexture(FluxionRHIDeviceHandle de
     resourceDesc.Height = desc->height;
     resourceDesc.DepthOrArraySize = (UINT16)(desc->depth > 1 ? desc->depth : (desc->arrayLayers > 1 ? desc->arrayLayers : 1));
     resourceDesc.MipLevels = (UINT16)desc->mipLevels;
-    resourceDesc.Format = format;
+    // Without a type when it is both drawn into as depth and read as a
+    // texture -- see Fluxion_RHID3D12_DepthAsTypeless. The views below
+    // each name the way they read it.
+    const bool depthAndSampled = (desc->usageFlags & FLUXION_RHI_TEXTURE_USAGE_DEPTH_STENCIL) != 0 &&
+                                 (desc->usageFlags & FLUXION_RHI_TEXTURE_USAGE_SAMPLED) != 0;
+    resourceDesc.Format = depthAndSampled ? Fluxion_RHID3D12_DepthAsTypeless(format) : format;
     resourceDesc.SampleDesc.Count = desc->sampleCount > 0 ? desc->sampleCount : 1;
     resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     if (desc->usageFlags & FLUXION_RHI_TEXTURE_USAGE_RENDER_TARGET) resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;

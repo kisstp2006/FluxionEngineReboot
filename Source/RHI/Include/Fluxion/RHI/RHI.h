@@ -177,6 +177,23 @@ typedef struct FluxionRHIRenderingDesc
 void Fluxion_RHI_CommandList_BeginRendering(FluxionRHICommandListHandle commandList, const FluxionRHIRenderingDesc* desc);
 void Fluxion_RHI_CommandList_EndRendering(FluxionRHICommandListHandle commandList);
 
+// The part of the target that draws land in, and the part that survives.
+//
+// BeginRendering already sets both to the whole render area, which is
+// what almost every caller wants -- these are for the one that does not:
+// several things drawn into DIFFERENT PARTS of one texture, from one
+// BeginRendering. A shadow atlas is exactly that, and doing it by
+// beginning a render per tile would be a pass each instead.
+//
+// Valid only between BeginRendering and EndRendering, and only until the
+// next BeginRendering, which puts the defaults back.
+//
+// The depth range is 0..1 on every backend here. Y counts down from the
+// top on all of them too -- the Vulkan backend flips its own viewport to
+// make that true, so a rectangle means the same thing everywhere.
+void Fluxion_RHI_CommandList_SetViewport(FluxionRHICommandListHandle commandList, f32 x, f32 y, f32 width, f32 height, f32 minDepth, f32 maxDepth);
+void Fluxion_RHI_CommandList_SetScissor(FluxionRHICommandListHandle commandList, i32 x, i32 y, u32 width, u32 height);
+
 void Fluxion_RHI_CommandList_SetPipeline(FluxionRHICommandListHandle commandList, FluxionRHIPipelineHandle pipeline);
 void Fluxion_RHI_CommandList_SetVertexBuffer(FluxionRHICommandListHandle commandList, u32 slot, FluxionRHIBufferHandle buffer, usize offset);
 void Fluxion_RHI_CommandList_SetIndexBuffer(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle buffer, usize offset, bool use16BitIndices);

@@ -482,7 +482,7 @@ Rgb RenderOne(TestContext* ctx, LightingRig& rig, const Configuration& configura
     Fluxion_RHI_CommandList_Begin(cmd);
 
     // Inside the recording, before anything draws with this view.
-    Fluxion_RenderView_UploadLights(view, cmd);
+    Fluxion_RenderView_UploadLighting(view, cmd);
 
     // Unconditional, and load-bearing even for the checks with no
     // environment of their own: the surfaces READ the nine coefficients

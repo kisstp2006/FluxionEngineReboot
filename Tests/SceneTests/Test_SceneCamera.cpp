@@ -129,12 +129,13 @@ void TheProjectionMapsThePlanesWhereItSays(TestContext& ctx)
     FluxionMat4 projection = Fluxion_Mat4_Identity();
     TEST_CHECK(ctx, Fluxion_Scene_GatherCamera(scene, 1.0f, &view, &projection));
 
-    // A point on the near plane (z = -near) comes out at depth -1 after
-    // the divide; the far plane at +1. The numbers, not the shape: this
-    // is the convention every backend's viewport transform assumes.
+    // A point on the near plane (z = -near) comes out at depth 0 after
+    // the divide; the far plane at 1. The numbers, not the shape: under
+    // the other convention two of the three backends discard everything
+    // in the near half of the range, and say nothing about it.
     const f32 nearClip = projection.m[2][2] * -1.0f + projection.m[2][3];
     const f32 nearW = projection.m[3][2] * -1.0f;
-    TEST_CHECK(ctx, Near(nearClip / nearW, -1.0f, 0.001f));
+    TEST_CHECK(ctx, Near(nearClip / nearW, 0.0f, 0.001f));
 
     const f32 farClip = projection.m[2][2] * -10.0f + projection.m[2][3];
     const f32 farW = projection.m[3][2] * -10.0f;

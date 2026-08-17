@@ -159,14 +159,21 @@ FluxionRHICommandListHandle Fluxion_RHID3D12_CreateCommandList(FluxionRHIDeviceH
     if (deviceState == nullptr) return invalid;
 
     u32 index, generation;
-    if (!Fluxion_RHID3D12_PoolAllocate(s_commandListSlots, FLUXION_RHI_D3D12_MAX_COMMAND_LISTS, &index, &generation)) return invalid;
+    if (!Fluxion_RHID3D12_PoolAllocate(s_commandListSlots, FLUXION_RHI_D3D12_MAX_COMMAND_LISTS, &index, &generation))
+    {
+        FLUXION_LOG_ERROR("RHI.D3D12", "CreateCommandList: the pool of %d is full.", (int)FLUXION_RHI_D3D12_MAX_COMMAND_LISTS);
+        return invalid;
+    }
 
     FluxionRHID3D12CommandList* cl = &s_commandLists[index];
     *cl = FluxionRHID3D12CommandList{};
     cl->queueType = type;
 
-    if (FAILED(deviceState->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cl->allocator))))
+    const HRESULT allocatorResult = deviceState->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cl->allocator));
+    if (FAILED(allocatorResult))
     {
+        FLUXION_LOG_ERROR("RHI.D3D12", "CreateCommandAllocator failed (0x%08lX), removal reason 0x%08lX.",
+                          (unsigned long)allocatorResult, (unsigned long)deviceState->device->GetDeviceRemovedReason());
         Fluxion_RHID3D12_PoolFree(s_commandListSlots, FLUXION_RHI_D3D12_MAX_COMMAND_LISTS, index, generation);
         return invalid;
     }
@@ -285,6 +292,24 @@ void Fluxion_RHID3D12_CommandListBeginRendering(FluxionRHICommandListHandle comm
     cl->list->RSSetScissorRects(1, &scissor);
 
     cl->insideRendering = true;
+}
+
+void Fluxion_RHID3D12_CommandListSetViewport(FluxionRHICommandListHandle commandList, f32 x, f32 y, f32 width, f32 height, f32 minDepth, f32 maxDepth)
+{
+    FluxionRHID3D12CommandList* cl = Fluxion_RHID3D12_RequireRecording(commandList);
+    if (cl == nullptr) return;
+
+    D3D12_VIEWPORT viewport = { x, y, width, height, minDepth, maxDepth };
+    cl->list->RSSetViewports(1, &viewport);
+}
+
+void Fluxion_RHID3D12_CommandListSetScissor(FluxionRHICommandListHandle commandList, i32 x, i32 y, u32 width, u32 height)
+{
+    FluxionRHID3D12CommandList* cl = Fluxion_RHID3D12_RequireRecording(commandList);
+    if (cl == nullptr) return;
+
+    D3D12_RECT scissor = { (LONG)x, (LONG)y, (LONG)(x + (i32)width), (LONG)(y + (i32)height) };
+    cl->list->RSSetScissorRects(1, &scissor);
 }
 
 void Fluxion_RHID3D12_CommandListEndRendering(FluxionRHICommandListHandle commandList)

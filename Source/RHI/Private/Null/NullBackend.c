@@ -414,6 +414,19 @@ static void Fluxion_RHI_Null_CommandListBeginRendering(FluxionRHICommandListHand
     s_commandListState[commandList.index].insideRendering = true;
 }
 
+static void Fluxion_RHI_Null_CommandListSetViewport(FluxionRHICommandListHandle commandList, f32 x, f32 y, f32 width, f32 height, f32 minDepth, f32 maxDepth)
+{
+    FLUXION_UNUSED(commandList); FLUXION_UNUSED(x); FLUXION_UNUSED(y);
+    FLUXION_UNUSED(width); FLUXION_UNUSED(height);
+    FLUXION_UNUSED(minDepth); FLUXION_UNUSED(maxDepth);
+}
+
+static void Fluxion_RHI_Null_CommandListSetScissor(FluxionRHICommandListHandle commandList, i32 x, i32 y, u32 width, u32 height)
+{
+    FLUXION_UNUSED(commandList); FLUXION_UNUSED(x); FLUXION_UNUSED(y);
+    FLUXION_UNUSED(width); FLUXION_UNUSED(height);
+}
+
 static void Fluxion_RHI_Null_CommandListEndRendering(FluxionRHICommandListHandle commandList)
 {
     if (!Fluxion_RHI_Null_RequireRecording(commandList, "EndRendering")) return;
@@ -948,6 +961,8 @@ static const FluxionRHIBackendVTable s_nullVTable = {
     Fluxion_RHI_Null_CommandListEnd,
     Fluxion_RHI_Null_CommandListBeginRendering,
     Fluxion_RHI_Null_CommandListEndRendering,
+    Fluxion_RHI_Null_CommandListSetViewport,
+    Fluxion_RHI_Null_CommandListSetScissor,
     Fluxion_RHI_Null_CommandListSetPipeline,
     Fluxion_RHI_Null_CommandListSetVertexBuffer,
     Fluxion_RHI_Null_CommandListSetIndexBuffer,

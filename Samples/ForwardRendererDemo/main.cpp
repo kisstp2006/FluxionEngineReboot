@@ -1530,7 +1530,7 @@ int main(int argc, char** argv)
         // Inside the recording, before anything draws with this view: the
         // buffer a shader reads is GPU-only, so the list reaches it as a
         // recorded copy rather than as a write.
-        Fluxion_RenderView_UploadLights(frameView, cmd);
+        Fluxion_RenderView_UploadLighting(frameView, cmd);
 
         // The sky into the nine numbers the surfaces read. Does nothing
         // on a frame whose environment did not change, which is every

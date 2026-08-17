@@ -146,6 +146,8 @@
     X(PFNGLDRAWELEMENTSINDIRECTPROC, glDrawElementsIndirect) \
     X(PFNGLDISPATCHCOMPUTEPROC, glDispatchCompute) \
     X(PFNGLMEMORYBARRIERPROC, glMemoryBarrier) \
+    /* Clip control -- see CreateContext for why this backend sets it */ \
+    X(PFNGLCLIPCONTROLPROC, glClipControl) \
     /* Queries */ \
     X(PFNGLGENQUERIESPROC, glGenQueries) \
     X(PFNGLDELETEQUERIESPROC, glDeleteQueries) \

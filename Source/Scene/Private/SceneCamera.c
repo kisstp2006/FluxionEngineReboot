@@ -85,9 +85,15 @@ bool Fluxion_SceneCamera_EnsureRegistered(void)
     return Fluxion_Reflection_RegisterType(&s_cameraType);
 }
 
-// The standard perspective matrix, depth mapped to the -1..1 range the
-// viewport transform and every backend here already agree on. Moved from
-// the sample verbatim, so nothing changes on screen.
+// The standard perspective matrix, depth mapped to 0..1.
+//
+// ZERO AT THE NEAR PLANE, ONE AT THE FAR ONE, which is what two of the
+// three backends here take natively and what the third is told to take
+// (see the OpenGL backend's clip control). The other convention, -1..1,
+// is what this matrix used to produce -- and on a backend expecting
+// 0..1 it threw away everything in the near half of the range, which
+// does not look like an error, only like less precision than there
+// should be.
 static FluxionMat4 Fluxion_SceneCamera_Perspective(f32 fovYRadians, f32 aspect, f32 nearPlane, f32 farPlane)
 {
     FluxionMat4 m;
@@ -96,8 +102,8 @@ static FluxionMat4 Fluxion_SceneCamera_Perspective(f32 fovYRadians, f32 aspect, 
     const f32 f = 1.0f / tanf(fovYRadians * 0.5f);
     m.m[0][0] = f / aspect;
     m.m[1][1] = f;
-    m.m[2][2] = (farPlane + nearPlane) / (nearPlane - farPlane);
-    m.m[2][3] = (2.0f * farPlane * nearPlane) / (nearPlane - farPlane);
+    m.m[2][2] = farPlane / (nearPlane - farPlane);
+    m.m[2][3] = (farPlane * nearPlane) / (nearPlane - farPlane);
     m.m[3][2] = -1.0f;
     return m;
 }

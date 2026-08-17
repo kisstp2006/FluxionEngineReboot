@@ -61,6 +61,12 @@ struct FluxionRHIOpenGLCommandListState
     bool insideRendering = false;
     u32 currentPipelineIndex = FLUXION_HANDLE_INVALID_INDEX;
     GLuint currentFBO = 0; // 0 while not inside rendering, or while bound to the default framebuffer
+
+    // The height BeginRendering was given, kept because SetViewport needs
+    // it: this backend counts Y up from the bottom while the contract
+    // counts it down from the top, and turning one into the other needs
+    // to know how tall the whole thing is.
+    u32 renderHeight = 0;
     bool use16BitIndices = false;
 };
 
@@ -231,6 +237,30 @@ void Fluxion_RHIOpenGL_CommandListBeginRendering(FluxionRHICommandListHandle com
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, (GLsizei)desc->width, (GLsizei)desc->height);
     s_commandListState[commandList.index].currentFBO = fbo;
+    s_commandListState[commandList.index].renderHeight = desc->height;
+}
+
+void Fluxion_RHIOpenGL_CommandListSetViewport(FluxionRHICommandListHandle commandList, f32 x, f32 y, f32 width, f32 height, f32 minDepth, f32 maxDepth)
+{
+    if (!Fluxion_RHIOpenGL_RequireRecording(commandList, "SetViewport")) return;
+
+    // Turned upside down, because the contract counts Y from the top and
+    // this backend counts it from the bottom. Everything else here is
+    // already written to that contract -- see the Vulkan backend, which
+    // flips for the same reason -- so the flip belongs in one place
+    // rather than in every caller.
+    const f32 fromBottom = (f32)s_commandListState[commandList.index].renderHeight - y - height;
+    glViewport((GLint)x, (GLint)fromBottom, (GLsizei)width, (GLsizei)height);
+    glDepthRange((GLdouble)minDepth, (GLdouble)maxDepth);
+}
+
+void Fluxion_RHIOpenGL_CommandListSetScissor(FluxionRHICommandListHandle commandList, i32 x, i32 y, u32 width, u32 height)
+{
+    if (!Fluxion_RHIOpenGL_RequireRecording(commandList, "SetScissor")) return;
+
+    const i32 fromBottom = (i32)s_commandListState[commandList.index].renderHeight - y - (i32)height;
+    glEnable(GL_SCISSOR_TEST);
+    glScissor((GLint)x, (GLint)fromBottom, (GLsizei)width, (GLsizei)height);
 }
 
 void Fluxion_RHIOpenGL_CommandListEndRendering(FluxionRHICommandListHandle commandList)
@@ -239,6 +269,11 @@ void Fluxion_RHIOpenGL_CommandListEndRendering(FluxionRHICommandListHandle comma
     FLUXION_ASSERT_MSG(s_commandListState[commandList.index].insideRendering, "Fluxion RHI OpenGL backend: EndRendering called without a matching BeginRendering");
     s_commandListState[commandList.index].insideRendering = false;
 
+    // Off again, so a later pass that never asked for one is not quietly
+    // clipped by whatever the last one set. Scissor is enabled only by
+    // SetScissor and only until here.
+    glDisable(GL_SCISSOR_TEST);
+
     GLuint fbo = s_commandListState[commandList.index].currentFBO;
     if (fbo != 0)
     {
@@ -246,6 +281,7 @@ void Fluxion_RHIOpenGL_CommandListEndRendering(FluxionRHICommandListHandle comma
         glDeleteFramebuffers(1, &fbo);
     }
     s_commandListState[commandList.index].currentFBO = 0;
+    s_commandListState[commandList.index].renderHeight = 0;
 }
 
 // --- Pipeline / vertex-input state -------------------------------------------

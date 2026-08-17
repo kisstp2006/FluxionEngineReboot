@@ -154,6 +154,47 @@ void Test_RenderView_Run(TestContext* ctx)
         Fluxion_RHI_DestroyTexture(skyTexture);
     }
 
+    // --- What fits in the atlas, and what is said about what does not ---
+    //
+    // The count that comes back is the whole report. A caller that asked
+    // for more shadows than there is room for gets the ones that fitted
+    // and a number smaller than it asked for -- never silence, and never
+    // a shadow that stops appearing without anything saying so.
+    {
+        u32 atlasSize = 0;
+        u32 tileSize = 0;
+        Fluxion_RenderView_GetShadowAtlasSize(view, &atlasSize, &tileSize);
+        TEST_CHECK(ctx, tileSize > 0 && atlasSize % tileSize == 0);
+
+        const u32 tilesAcross = atlasSize / tileSize;
+        const u32 capacity = tilesAcross * tilesAcross;
+
+        FluxionRenderViewShadow shadows[FLUXION_RENDER_VIEW_MAX_SHADOWS] = { 0 };
+        for (u32 i = 0; i < FLUXION_RENDER_VIEW_MAX_SHADOWS; ++i)
+        {
+            shadows[i].lightViewProjection = Fluxion_Mat4_Identity();
+            shadows[i].lightIndex = 0;
+
+            // Near to far, which is the order one light's cascades must
+            // be in for a surface to find the sharpest one covering it.
+            shadows[i].coverTo = 10.0f * (f32)(i + 1);
+        }
+
+        // As many as there are tiles: all of them fit.
+        const u32 fitted = Fluxion_RenderView_SetShadows(view, shadows, capacity);
+        TEST_CHECK(ctx, fitted == capacity);
+
+        // One more than there are tiles: the extra is reported missing
+        // rather than drawn over somebody else's.
+        if (capacity < FLUXION_RENDER_VIEW_MAX_SHADOWS)
+        {
+            TEST_CHECK(ctx, Fluxion_RenderView_SetShadows(view, shadows, capacity + 1) == capacity);
+        }
+
+        // None is a picture, not a fault.
+        TEST_CHECK(ctx, Fluxion_RenderView_SetShadows(view, NULL, 0) == 0);
+    }
+
     Fluxion_RenderView_Destroy(view);
     Fluxion_RenderTarget_Destroy(renderTarget);
     Fluxion_RHI_DestroyTextureView(colorView);

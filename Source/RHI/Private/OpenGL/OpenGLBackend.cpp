@@ -201,6 +201,17 @@ void Fluxion_RHIOpenGL_MapPixelTransferFormat(FluxionRHIFormat format, GLenum* o
             *outFormat = GL_RGB; *outType = GL_FLOAT; return;
         case FLUXION_RHI_FORMAT_R32G32_FLOAT:
             *outFormat = GL_RG; *outType = GL_FLOAT; return;
+
+        // Depth is its own channel here, not a red one. Reading a shadow
+        // map back is what needs this, and asking for GL_RED of a depth
+        // texture is refused -- which leaves the destination untouched,
+        // so what comes out is whatever was in it rather than an error
+        // anybody sees.
+        case FLUXION_RHI_FORMAT_D32_FLOAT:
+            *outFormat = GL_DEPTH_COMPONENT; *outType = GL_FLOAT; return;
+        case FLUXION_RHI_FORMAT_D24_UNORM_S8_UINT:
+            *outFormat = GL_DEPTH_STENCIL; *outType = GL_UNSIGNED_INT_24_8; return;
+
         default:
             // Said out loud rather than guessed at. Everything above is a
             // format this backend can move pixels for; anything else
@@ -454,6 +465,8 @@ static const FluxionRHIBackendVTable s_openglVTable = {
     Fluxion_RHIOpenGL_CommandListEnd,
     Fluxion_RHIOpenGL_CommandListBeginRendering,
     Fluxion_RHIOpenGL_CommandListEndRendering,
+    Fluxion_RHIOpenGL_CommandListSetViewport,
+    Fluxion_RHIOpenGL_CommandListSetScissor,
     Fluxion_RHIOpenGL_CommandListSetPipeline,
     Fluxion_RHIOpenGL_CommandListSetVertexBuffer,
     Fluxion_RHIOpenGL_CommandListSetIndexBuffer,

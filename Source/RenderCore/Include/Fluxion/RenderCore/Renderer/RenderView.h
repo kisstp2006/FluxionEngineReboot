@@ -157,6 +157,12 @@ typedef struct FluxionFrameConstants
     // zero or less meaning no tone mapping. z: one if the pass applies
     // the display's transfer function. w unused.
     FluxionVec4 toneMapping;
+
+    // x: how wide one shadow atlas texel is, in atlas coordinates. yz:
+    // that atlas's second coordinate, as a scale and an offset -- the one
+    // place the engine writes down that one backend stores texture rows
+    // the other way up. w unused.
+    FluxionVec4 shadowAtlasParams;
 } FluxionFrameConstants;
 
 // THE ORDER OF THE FIELDS ABOVE IS THE LAYOUT. It has to be the order
@@ -239,6 +245,59 @@ void Fluxion_RenderView_Destroy(FluxionRenderViewHandle view);
 // this view, and again whenever viewMatrix/projectionMatrix change.
 void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view);
 
+// How many shadows one view may hold at once. A budget rather than a
+// limit on lights: a light that finds no room casts none, which is said
+// rather than silently done -- see ShadowAtlas.h.
+#define FLUXION_RENDER_VIEW_MAX_SHADOWS 8
+
+// One shadow: a light, a matrix, and how far out it is the one to read.
+typedef struct FluxionRenderViewShadow
+{
+    // What takes the world into this light's clip space. See
+    // ShadowMatrices.h for where each kind of light's matrix comes from.
+    FluxionMat4 lightViewProjection;
+
+    // Which light in the last SetLights list this shadows.
+    u32 lightIndex;
+
+    // How far from the eye this one covers. A light with several -- the
+    // sun's cascades -- gives each a larger distance than the last, and
+    // a surface reads the nearest one that reaches it. Beyond the largest
+    // a light casts no shadow at all, which is what makes a cascade
+    // scheme affordable rather than a shadow map the size of the world.
+    f32 coverTo;
+
+    // How wide the handover to the next one is, in the same distance.
+    // Zero is a hard change, which shows up as a line across the ground.
+    f32 blendBand;
+
+    // Along the light's own axis, and along the surface normal. Both undo
+    // the same thing from different sides -- a depth recorded at one
+    // resolution and tested against a surface sampled at another has the
+    // surface shadowing itself in stripes.
+    f32 depthBias;
+    f32 normalBias;
+} FluxionRenderViewShadow;
+
+// The shadows this view draws, replacing whatever it had.
+//
+// Copied, and each is given a tile of the atlas here rather than at draw
+// time -- so a caller learns at once, from the returned count, how many
+// of them there was room for. One light's shadows must be next to each
+// other in the array and ordered near to far; that is what lets a surface
+// find the sharpest one covering it without searching the whole list.
+//
+// Passing zero is not a special case: a scene where nothing casts a
+// shadow is a picture rather than a fault, and the pass then does nothing
+// rather than drawing an empty atlas.
+u32 Fluxion_RenderView_SetShadows(FluxionRenderViewHandle view, const FluxionRenderViewShadow* shadows, u32 count);
+
+// How big this view's shadow atlas is, and how big one tile of it is,
+// both in texels. Asked rather than assumed: a caller that imports the
+// atlas into a render graph, or reads it back, needs the number the
+// engine actually used.
+void Fluxion_RenderView_GetShadowAtlasSize(FluxionRenderViewHandle view, u32* outAtlasSize, u32* outTileSize);
+
 // The lights this view is lit by, replacing whatever it had.
 //
 // Copied, so the caller's array need not outlive the call. The storage
@@ -260,16 +319,17 @@ void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRen
 void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHITextureViewHandle cubeView,
                                        FluxionRHISamplerHandle sampler, f32 intensity);
 
-// Records the copy that puts those lights where the GPU can read them.
+// Records the copies that put the lights and the shadows where the GPU
+// can read them.
 //
-// Separate from SetLights, and not hidden inside it, because it needs a
-// command list and SetLights does not. The buffer a shader reads lives in
+// Separate from the setters, and not hidden inside them, because it needs
+// a command list and they do not. The buffers a shader reads live in
 // memory only the GPU can see -- a buffer the CPU can write cannot also
 // be one this backend's structured views are allowed to describe -- so
 // there is a copy, and a copy is a recorded command.
 //
 // Call it inside a recording, before anything that draws with this view.
-void Fluxion_RenderView_UploadLights(FluxionRenderViewHandle view, FluxionRHICommandListHandle commandList);
+void Fluxion_RenderView_UploadLighting(FluxionRenderViewHandle view, FluxionRHICommandListHandle commandList);
 
 #ifdef __cplusplus
 }

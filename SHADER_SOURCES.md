@@ -518,3 +518,32 @@ What changed:       Written from the papers' equations against the DFG
 Licence doubt:      none
 ```
 
+### Shadows
+
+```
+Feature:            Light-space matrices for shadow maps
+Started from:       published algorithm only
+Repository URL:     none
+Licence:            n/a -- no code was read or copied
+Reference files:    Zhang, Sun, Xu, Lun, "Parallel-Split Shadow Maps for
+                    Large-scale Virtual Environments" (VRCIA 2006) for
+                    the blend of uniform and logarithmic cascade splits.
+                    Valient, "Stable Rendering of Cascaded Shadow Maps"
+                    (ShaderX6, 2008) for fitting a cascade to a bounding
+                    SPHERE and snapping its centre to whole shadow-map
+                    texels -- the two halves of why a shadow edge stops
+                    crawling as the camera moves. The orthographic and
+                    perspective forms themselves are the standard ones.
+                    The vkmerc cascade.glsl/cascade_debugger.frag named
+                    in the index above are study-only and were not read.
+Our implementation: Source/RenderCore/Private/Renderer/ShadowMatrices.c
+What changed:       This engine's own conventions throughout: depth to
+                    -1..1, matrices row-major with v' = Mv, and a light
+                    direction meaning THE WAY THE LIGHT TRAVELS -- so a
+                    light's view axis is its negation. The texel snapping
+                    is applied to the view matrix's translation rather
+                    than by moving the eye in world space, which is the
+                    same shift without building the frame twice.
+Licence doubt:      none
+```
+

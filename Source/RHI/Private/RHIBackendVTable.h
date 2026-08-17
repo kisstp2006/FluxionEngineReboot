@@ -73,6 +73,8 @@ typedef struct FluxionRHIBackendVTable
     void (*CommandListEnd)(FluxionRHICommandListHandle commandList);
     void (*CommandListBeginRendering)(FluxionRHICommandListHandle commandList, const FluxionRHIRenderingDesc* desc);
     void (*CommandListEndRendering)(FluxionRHICommandListHandle commandList);
+    void (*CommandListSetViewport)(FluxionRHICommandListHandle commandList, f32 x, f32 y, f32 width, f32 height, f32 minDepth, f32 maxDepth);
+    void (*CommandListSetScissor)(FluxionRHICommandListHandle commandList, i32 x, i32 y, u32 width, u32 height);
     void (*CommandListSetPipeline)(FluxionRHICommandListHandle commandList, FluxionRHIPipelineHandle pipeline);
     void (*CommandListSetVertexBuffer)(FluxionRHICommandListHandle commandList, u32 slot, FluxionRHIBufferHandle buffer, usize offset);
     void (*CommandListSetIndexBuffer)(FluxionRHICommandListHandle commandList, FluxionRHIBufferHandle buffer, usize offset, bool use16BitIndices);

@@ -63,6 +63,7 @@
 #include <Fluxion/RenderCore/Renderer/RenderTarget.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
 #include <Fluxion/RenderCore/Renderer/Renderer.h>
+#include <Fluxion/RenderCore/Renderer/ShadowAtlas.h>
 #include <Fluxion/RenderCore/Renderer/ShaderProgram.h>
 
 #ifdef __cplusplus
@@ -104,6 +105,14 @@ extern "C" {
 // smooth in both directions, which is what lets a modest table and a
 // bilinear read answer for every surface.
 #define FLUXION_RENDERER_DFG_SIZE 128
+
+// One depth texture for every shadow in the frame, cut into equal
+// tiles. Two by two at these numbers -- enough for the sun's four
+// cascades, which is what the sun needs and all it needs. Raising the
+// atlas is the one number to change; the allocator and everything above
+// it are told the size rather than assuming it.
+#define FLUXION_RENDERER_SHADOW_ATLAS_SIZE 2048
+#define FLUXION_RENDERER_SHADOW_TILE_SIZE 1024
 
 // One canonical, engine-owned bind-group-layout shape per FRAME/OBJECT
 // frequency, independent of any particular shader -- every RenderView
@@ -152,24 +161,39 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeFrameLay
     desc.entries[6].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
     desc.entries[6].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
+    // Every shadow in the frame, and the comparison sampler that turns a
+    // read of it into an answer rather than a depth.
+    desc.entries[7].binding = 7;
+    desc.entries[7].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    desc.entries[7].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entries[8].binding = 8;
+    desc.entries[8].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    desc.entries[8].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
     // A storage buffer rather than an array in the uniform block above.
     // An array would need a maximum written into the shader, and that
     // maximum would be a number somebody has to raise -- and raising it
     // costs every frame that does not use it, because a uniform block is
     // paid for whether it is full or not.
-    desc.entries[7].binding = 7;
-    desc.entries[7].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    desc.entries[7].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+    desc.entries[9].binding = 9;
+    desc.entries[9].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[9].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
     // The sky, as nine coefficients. A second storage buffer rather than
     // more fields in the block at binding 0, because a compute pass is
     // what fills it: a uniform buffer would have to be written from the
     // processor, and by then the numbers are already on the device.
-    desc.entries[8].binding = 8;
-    desc.entries[8].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    desc.entries[8].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+    desc.entries[10].binding = 10;
+    desc.entries[10].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[10].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
-    desc.entryCount = 9;
+    // Where each shadow's light looks from, and which tile holds it.
+    desc.entries[11].binding = 11;
+    desc.entries[11].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[11].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entryCount = 12;
     desc.debugName = "Fluxion.Renderer.FrameBindGroupLayout";
     return desc;
 }
@@ -312,6 +336,31 @@ typedef struct FluxionRenderer
     FluxionRHIBufferHandle environmentScratchBuffer;
 
     bool prefilterFailed;
+
+    // Drawing the world from a light. Its own program rather than the
+    // material's: this pass wants where a surface is and nothing about
+    // what it looks like.
+    FluxionShaderProgramHandle shadowProgram;
+    FluxionRHIPipelineHandle shadowPipeline;
+    FluxionRHIBindGroupLayoutHandle shadowGlobalLayout;
+
+    // One per slice of the buffer below, so which shadow a draw uses is
+    // settled by which group is bound rather than by rewriting the buffer
+    // between draws that share a command list.
+    FluxionRHIBindGroupHandle shadowGlobalBindGroups[FLUXION_RENDER_VIEW_MAX_SHADOWS];
+
+    // The light's matrix, written from the processor once per pass. Small
+    // enough to be a uniform buffer, and it has to be one: a shader reads
+    // it every vertex.
+    FluxionRHIBufferHandle shadowMatrixBuffer;
+
+    // The vertex layout the pipeline above was built for. A pipeline is
+    // built against one layout, so a mesh shaped differently needs
+    // another -- kept rather than rebuilt every draw.
+    FluxionRHIVertexLayout shadowVertexLayout;
+    bool shadowPipelineBuilt;
+
+    bool shadowFailed;
     FluxionRHIFormat skyboxColorFormat;
     FluxionRHIFormat skyboxDepthFormat;
 
@@ -386,6 +435,27 @@ bool FluxionRendererInternal_RenderView_TakeDfgWanted(FluxionRenderViewHandle vi
 // filled either way -- ask only on the way to filling it. The refill's
 // barriers must name the texture's real previous state.
 bool FluxionRendererInternal_RenderView_MarkPrefilteredFilled(FluxionRenderViewHandle view);
+
+// --- Drawing the world from a light -----------------------------------------
+
+// The registered "ShadowPass" render graph pass type; userData is the
+// same FluxionRenderer* the forward pass takes. It writes the depth
+// target named "ShadowPass.Atlas", which the caller imports from
+// FluxionRendererInternal_RenderView_GetShadowAtlasTexture.
+void FluxionShadowPass_Setup(FluxionRenderGraphBuilder* builder, void* userData);
+void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandList, void* userData);
+void FluxionRendererInternal_Shadow_Destroy(FluxionRenderer* renderer);
+
+// The view's atlas, and which part of it this frame's shadow occupies.
+FluxionRHITextureHandle FluxionRendererInternal_RenderView_GetShadowAtlasTexture(FluxionRenderViewHandle view);
+FluxionRHITextureViewHandle FluxionRendererInternal_RenderView_GetShadowAtlasView(FluxionRenderViewHandle view);
+
+// How many shadows this view draws this frame, and where each one goes.
+// False from the second when the index is past the count, in which case
+// nothing is written.
+u32 FluxionRendererInternal_RenderView_GetShadowCount(FluxionRenderViewHandle view);
+bool FluxionRendererInternal_RenderView_GetShadow(FluxionRenderViewHandle view, u32 index,
+                                                  FluxionMat4* outLightViewProjection, FluxionShadowAtlasTile* outTile);
 
 // True once, after the environment changed. Asking CLEARS it: the
 // projection is recorded in answer to this, and a flag left set would

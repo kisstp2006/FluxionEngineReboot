@@ -62,6 +62,8 @@ engine_embed_shader_library(
         Fluxion/Material.jsl
         Fluxion/Pass/Vertex.jsl
         Fluxion/Pass/IrradianceProject.jsl
+        Fluxion/Pass/ShadowDepth.jsl
+        Fluxion/Pass/ShadowDepthWrite.jsl
         Fluxion/Pass/SpecularPrefilter.jsl
         Fluxion/Pass/DfgIntegrate.jsl
         Fluxion/Pass/Forward.jsl

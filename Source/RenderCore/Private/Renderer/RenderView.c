@@ -103,6 +103,38 @@ typedef struct FluxionRenderViewRecord
     // backend forgives and another answers with garbage.
     bool prefilteredFilled;
 
+    // Every shadow in this frame, in one texture cut into tiles. Per
+    // view rather than per renderer because what a shadow has to cover
+    // depends on where this view is looking from.
+    FluxionRHITextureHandle shadowAtlasTexture;
+    FluxionRHITextureViewHandle shadowAtlasView;
+
+    // What the shadow pass draws this frame: a matrix per shadow and the
+    // tile each was given. Kept here as well as in the buffer below
+    // because the pass needs them untransposed and the shader does not
+    // need them at all until something is lit.
+    FluxionMat4 shadowMatrices[FLUXION_RENDER_VIEW_MAX_SHADOWS];
+    FluxionShadowAtlasTile shadowTiles[FLUXION_RENDER_VIEW_MAX_SHADOWS];
+    u32 shadowCount;
+
+    // The same shadows in the shape a shader reads, and the pair of
+    // buffers that get them there -- for the same reason the lights need
+    // a pair, see MakeLightStorage.
+    FluxionRHIBufferHandle shadowStaging;
+    FluxionRHIBufferHandle shadowStorage;
+
+    // Turns a read of the atlas into an answer rather than a depth. Made
+    // with the view and destroyed with it, like the environment's own.
+    FluxionRHISamplerHandle shadowSampler;
+
+    // Whether the atlas has been given a value yet. It is bound to every
+    // draw whether or not anything casts a shadow -- a shader cannot ask
+    // whether a texture is there -- so a view that never ran a shadow
+    // pass would otherwise have every surface reading a texture nothing
+    // had written, which one backend calls out and another answers with
+    // whatever was in the memory.
+    bool shadowAtlasPrepared;
+
     // Set when the environment changes, cleared once the projection has
     // been recorded. Without it the sky would be projected again on every
     // frame, for an answer that cannot have moved.
@@ -138,6 +170,19 @@ typedef struct FluxionRenderLightGPU
     f32 color[4];         // rgb colour-and-intensity, w cos(inner cone)
     f32 cone[4];          // x cos(outer cone), yzw spare
 } FluxionRenderLightGPU;
+
+// What one shadow looks like to a shader. Field for field the same as
+// FluxionShadow in Fluxion/Frame.jsl, and packed by hand for the same
+// reason the light above is.
+typedef struct FluxionRenderShadowGPU
+{
+    f32 lightRows[4][4]; // the light's view-projection, a row at a time
+    f32 atlasRect[4];    // xy corner, zw size, in atlas coordinates
+    f32 range[4];        // x which light, y how far it covers, z the handover band, w spare
+    f32 bias[4];         // x along the light's axis, y along the normal, zw spare
+} FluxionRenderShadowGPU;
+
+#define FLUXION_RENDER_VIEW_SHADOW_BYTES ((usize)FLUXION_RENDER_VIEW_MAX_SHADOWS * sizeof(FluxionRenderShadowGPU))
 
 // How many lights a view starts with room for. Not a limit -- the storage
 // grows -- only the point at which growing starts.
@@ -195,14 +240,17 @@ static FluxionRHIBindGroupHandle Fluxion_RenderViewInternal_MakeFrameBindGroup(F
                                                                                FluxionRHITextureViewHandle prefilteredView,
                                                                                FluxionRHITextureViewHandle dfgView,
                                                                                FluxionRHISamplerHandle tableSampler,
+                                                                               FluxionRHITextureViewHandle shadowAtlasView,
+                                                                               FluxionRHISamplerHandle shadowSampler,
                                                                                FluxionRHIBufferHandle lights, u32 lightCapacity,
-                                                                               FluxionRHIBufferHandle irradiance)
+                                                                               FluxionRHIBufferHandle irradiance,
+                                                                               FluxionRHIBufferHandle shadows)
 {
     const FluxionRHITextureViewHandle noView = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     const FluxionRHISamplerHandle noSampler = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     const FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
-    FluxionRHIBindGroupEntry entries[9];
+    FluxionRHIBindGroupEntry entries[12];
     memset(entries, 0, sizeof(entries));
 
     entries[0].binding = 0;
@@ -254,29 +302,51 @@ static FluxionRHIBindGroupHandle Fluxion_RenderViewInternal_MakeFrameBindGroup(F
     entries[6].sampler = tableSampler;
 
     entries[7].binding = 7;
-    entries[7].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    entries[7].buffer = lights;
-    entries[7].bufferSize = (usize)lightCapacity * sizeof(FluxionRenderLightGPU);
-    entries[7].textureView = noView;
+    entries[7].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    entries[7].buffer = noBuffer;
+    entries[7].textureView = shadowAtlasView;
     entries[7].sampler = noSampler;
+
+    // The comparison sampler, which is what makes a read of the atlas an
+    // answer rather than a depth.
+    entries[8].binding = 8;
+    entries[8].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    entries[8].buffer = noBuffer;
+    entries[8].textureView = noView;
+    entries[8].sampler = shadowSampler;
+
+    entries[9].binding = 9;
+    entries[9].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    entries[9].buffer = lights;
+    entries[9].bufferSize = (usize)lightCapacity * sizeof(FluxionRenderLightGPU);
+    entries[9].textureView = noView;
+    entries[9].sampler = noSampler;
 
     // How big one light is, said rather than assumed. A backend that
     // describes a buffer by element cannot work it out, and a wrong guess
     // reads the right memory in the wrong pieces.
-    entries[7].bufferElementStride = (u32)sizeof(FluxionRenderLightGPU);
+    entries[9].bufferElementStride = (u32)sizeof(FluxionRenderLightGPU);
 
-    entries[8].binding = 8;
-    entries[8].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    entries[8].buffer = irradiance;
-    entries[8].bufferSize = FLUXION_RENDER_VIEW_IRRADIANCE_BYTES;
-    entries[8].textureView = noView;
-    entries[8].sampler = noSampler;
-    entries[8].bufferElementStride = (u32)sizeof(FluxionVec4);
+    entries[10].binding = 10;
+    entries[10].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    entries[10].buffer = irradiance;
+    entries[10].bufferSize = FLUXION_RENDER_VIEW_IRRADIANCE_BYTES;
+    entries[10].textureView = noView;
+    entries[10].sampler = noSampler;
+    entries[10].bufferElementStride = (u32)sizeof(FluxionVec4);
+
+    entries[11].binding = 11;
+    entries[11].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    entries[11].buffer = shadows;
+    entries[11].bufferSize = FLUXION_RENDER_VIEW_SHADOW_BYTES;
+    entries[11].textureView = noView;
+    entries[11].sampler = noSampler;
+    entries[11].bufferElementStride = (u32)sizeof(FluxionRenderShadowGPU);
 
     FluxionRHIBindGroupDesc desc;
     desc.layout = layout;
     desc.entries = entries;
-    desc.entryCount = 9;
+    desc.entryCount = 12;
     return Fluxion_RHI_CreateBindGroup(device, &desc);
 }
 
@@ -408,10 +478,76 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     dfgViewDesc.arrayLayerCount = 1;
     const FluxionRHITextureViewHandle dfgView = Fluxion_RHI_CreateTextureView(device, &dfgViewDesc);
 
+    // One depth texture for every shadow this view draws. Sampled as
+    // well as drawn into -- the combination nothing in this engine asked
+    // a backend for before the comparison sampling arrived.
+    FluxionRHITextureDesc shadowDesc;
+    memset(&shadowDesc, 0, sizeof(shadowDesc));
+    shadowDesc.width = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+    shadowDesc.height = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+    shadowDesc.depth = 1;
+    shadowDesc.mipLevels = 1;
+    shadowDesc.arrayLayers = 1;
+    shadowDesc.sampleCount = 1;
+    shadowDesc.format = FLUXION_RHI_FORMAT_D32_FLOAT;
+    shadowDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_DEPTH_STENCIL | FLUXION_RHI_TEXTURE_USAGE_SAMPLED;
+    shadowDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
+    shadowDesc.debugName = "Fluxion.RenderView.ShadowAtlas";
+    const FluxionRHITextureHandle shadowAtlasTexture = Fluxion_RHI_CreateTexture(device, &shadowDesc);
+
+    FluxionRHITextureViewDesc shadowViewDesc;
+    memset(&shadowViewDesc, 0, sizeof(shadowViewDesc));
+    shadowViewDesc.texture = shadowAtlasTexture;
+    shadowViewDesc.format = shadowDesc.format;
+    shadowViewDesc.mipLevelCount = 1;
+    shadowViewDesc.arrayLayerCount = 1;
+    const FluxionRHITextureViewHandle shadowAtlasView = Fluxion_RHI_CreateTextureView(device, &shadowViewDesc);
+
+    // Reading the atlas asks a question -- "did the light get this far" --
+    // and the hardware answers it as part of the fetch. LESS_OR_EQUAL
+    // because depth counts up from the near plane: a surface at or in
+    // front of what was recorded is the one the light reached.
+    //
+    // Linear filtering on a comparison sampler averages the ANSWERS of
+    // the four texels round the point rather than their depths, which is
+    // the whole reason to ask the hardware instead of reading depths and
+    // comparing them here -- an average of depths is a number no surface
+    // was ever at.
+    FluxionRHISamplerDesc shadowSamplerDesc;
+    memset(&shadowSamplerDesc, 0, sizeof(shadowSamplerDesc));
+    shadowSamplerDesc.minFilter = FLUXION_RHI_FILTER_LINEAR;
+    shadowSamplerDesc.magFilter = FLUXION_RHI_FILTER_LINEAR;
+    shadowSamplerDesc.mipFilter = FLUXION_RHI_FILTER_NEAREST;
+    shadowSamplerDesc.addressModeU = FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+    shadowSamplerDesc.addressModeV = FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+    shadowSamplerDesc.addressModeW = FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+    shadowSamplerDesc.maxAnisotropy = 1.0f;
+    shadowSamplerDesc.compareEnable = true;
+    shadowSamplerDesc.compareOp = FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL;
+    shadowSamplerDesc.debugName = "Fluxion.RenderView.ShadowSampler";
+    const FluxionRHISamplerHandle shadowSampler = Fluxion_RHI_CreateSampler(device, &shadowSamplerDesc);
+
+    // Fixed at the most shadows a view may hold, rather than grown like
+    // the light list: the atlas caps how many there can be, so the buffer
+    // is already as big as it will ever need to be.
+    FluxionRHIBufferDesc shadowStagingDesc;
+    shadowStagingDesc.size = FLUXION_RENDER_VIEW_SHADOW_BYTES;
+    shadowStagingDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_TRANSFER_SRC;
+    shadowStagingDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
+    shadowStagingDesc.debugName = "Fluxion.RenderView.ShadowStaging";
+    const FluxionRHIBufferHandle shadowStaging = Fluxion_RHI_CreateBuffer(device, &shadowStagingDesc);
+
+    FluxionRHIBufferDesc shadowStorageDesc;
+    shadowStorageDesc.size = FLUXION_RENDER_VIEW_SHADOW_BYTES;
+    shadowStorageDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_STORAGE_BUFFER | FLUXION_RHI_BUFFER_USAGE_TRANSFER_DST;
+    shadowStorageDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
+    shadowStorageDesc.debugName = "Fluxion.RenderView.Shadows";
+    const FluxionRHIBufferHandle shadowStorage = Fluxion_RHI_CreateBuffer(device, &shadowStorageDesc);
+
     FluxionRHIBindGroupHandle frameBindGroup = Fluxion_RenderViewInternal_MakeFrameBindGroup(
         device, frameBindGroupLayout, frameConstantBuffer, defaultEnvironment, defaultSampler,
-        prefilteredView, dfgView, defaultSampler,
-        lightStorage, FLUXION_RENDER_VIEW_INITIAL_LIGHTS, irradianceBuffer);
+        prefilteredView, dfgView, defaultSampler, shadowAtlasView, shadowSampler,
+        lightStorage, FLUXION_RENDER_VIEW_INITIAL_LIGHTS, irradianceBuffer, shadowStorage);
 
     FluxionRenderViewRecord* record = &s_renderViews[index];
     u32 generation = record->generation;
@@ -451,6 +587,11 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     record->dfgTexture = dfgTexture;
     record->dfgView = dfgView;
     record->dfgWanted = true;
+    record->shadowAtlasTexture = shadowAtlasTexture;
+    record->shadowAtlasView = shadowAtlasView;
+    record->shadowSampler = shadowSampler;
+    record->shadowStaging = shadowStaging;
+    record->shadowStorage = shadowStorage;
 
     // A fresh view starts with the black cube, whose nine coefficients are
     // nine zeroes -- but the buffer has never been written, so what is in
@@ -483,6 +624,11 @@ void Fluxion_RenderView_Destroy(FluxionRenderViewHandle view)
     if (FLUXION_HANDLE_IS_VALID(record->prefilteredTexture)) Fluxion_RHI_DestroyTexture(record->prefilteredTexture);
     if (FLUXION_HANDLE_IS_VALID(record->dfgView)) Fluxion_RHI_DestroyTextureView(record->dfgView);
     if (FLUXION_HANDLE_IS_VALID(record->dfgTexture)) Fluxion_RHI_DestroyTexture(record->dfgTexture);
+    if (FLUXION_HANDLE_IS_VALID(record->shadowAtlasView)) Fluxion_RHI_DestroyTextureView(record->shadowAtlasView);
+    if (FLUXION_HANDLE_IS_VALID(record->shadowAtlasTexture)) Fluxion_RHI_DestroyTexture(record->shadowAtlasTexture);
+    if (FLUXION_HANDLE_IS_VALID(record->shadowSampler)) Fluxion_RHI_DestroySampler(record->shadowSampler);
+    if (FLUXION_HANDLE_IS_VALID(record->shadowStorage)) Fluxion_RHI_DestroyBuffer(record->shadowStorage);
+    if (FLUXION_HANDLE_IS_VALID(record->shadowStaging)) Fluxion_RHI_DestroyBuffer(record->shadowStaging);
     if (FLUXION_HANDLE_IS_VALID(record->lightStorage)) Fluxion_RHI_DestroyBuffer(record->lightStorage);
     if (FLUXION_HANDLE_IS_VALID(record->lightStaging)) Fluxion_RHI_DestroyBuffer(record->lightStaging);
     if (FLUXION_HANDLE_IS_VALID(record->frameBindGroup)) Fluxion_RHI_DestroyBindGroup(record->frameBindGroup);
@@ -544,6 +690,19 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
     constants.inverseViewProjection = Fluxion_Mat4_Transposed(constants.inverseViewProjection);
 
     constants.lightParams.x = (f32)record->lightCount;
+    constants.lightParams.y = (f32)record->shadowCount;
+
+    constants.shadowAtlasParams.x = 1.0f / (f32)FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+
+    // Every shadow rectangle in this engine counts rows downwards from
+    // the top, because that is how the shadow pass's viewport places them
+    // -- the RHI has one viewport convention on every backend. One
+    // backend then stores its texture rows the other way up, so a read of
+    // the atlas has to be turned over on the way in, and this pair is the
+    // only place that says so.
+    const bool rowsRunDownwards = Fluxion_RHI_GetDeviceBackendType(record->device) != FLUXION_RHI_BACKEND_OPENGL;
+    constants.shadowAtlasParams.y = rowsRunDownwards ? 1.0f : -1.0f;
+    constants.shadowAtlasParams.z = rowsRunDownwards ? 0.0f : 1.0f;
 
     void* mapped = Fluxion_RHI_MapBuffer(record->frameConstantBuffer);
     if (mapped != NULL)
@@ -576,7 +735,8 @@ void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRen
             record->device, record->frameBindGroupLayout, record->frameConstantBuffer,
             record->environmentView, record->environmentSampler,
             record->prefilteredView, record->dfgView, record->ownedEnvironmentSampler,
-            storage, capacity, record->irradianceBuffer);
+            record->shadowAtlasView, record->shadowSampler,
+            storage, capacity, record->irradianceBuffer, record->shadowStorage);
         if (!FLUXION_HANDLE_IS_VALID(group))
         {
             Fluxion_RHI_DestroyBuffer(storage);
@@ -677,7 +837,8 @@ void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHIT
         record->device, record->frameBindGroupLayout, record->frameConstantBuffer,
         wanted, wantedSampler,
         record->prefilteredView, record->dfgView, record->ownedEnvironmentSampler,
-        record->lightStorage, record->lightCapacity, record->irradianceBuffer);
+        record->shadowAtlasView, record->shadowSampler,
+        record->lightStorage, record->lightCapacity, record->irradianceBuffer, record->shadowStorage);
     if (!FLUXION_HANDLE_IS_VALID(group)) return;
 
     Fluxion_RHI_DestroyBindGroup(record->frameBindGroup);
@@ -785,17 +946,184 @@ bool FluxionRendererInternal_RenderView_MarkPrefilteredFilled(FluxionRenderViewH
     return wasFilled;
 }
 
-void Fluxion_RenderView_UploadLights(FluxionRenderViewHandle view, FluxionRHICommandListHandle commandList)
+void Fluxion_RenderView_GetShadowAtlasSize(FluxionRenderViewHandle view, u32* outAtlasSize, u32* outTileSize)
+{
+    FLUXION_UNUSED(view);
+    if (outAtlasSize != NULL) *outAtlasSize = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+    if (outTileSize != NULL) *outTileSize = FLUXION_RENDERER_SHADOW_TILE_SIZE;
+}
+
+FluxionRHITextureHandle FluxionRendererInternal_RenderView_GetShadowAtlasTexture(FluxionRenderViewHandle view)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL)
+    {
+        const FluxionRHITextureHandle none = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+        return none;
+    }
+    return record->shadowAtlasTexture;
+}
+
+FluxionRHITextureViewHandle FluxionRendererInternal_RenderView_GetShadowAtlasView(FluxionRenderViewHandle view)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL)
+    {
+        const FluxionRHITextureViewHandle none = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+        return none;
+    }
+    return record->shadowAtlasView;
+}
+
+u32 FluxionRendererInternal_RenderView_GetShadowCount(FluxionRenderViewHandle view)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return 0;
+    return record->shadowCount;
+}
+
+bool FluxionRendererInternal_RenderView_GetShadow(FluxionRenderViewHandle view, u32 index,
+                                                  FluxionMat4* outLightViewProjection, FluxionShadowAtlasTile* outTile)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL || index >= record->shadowCount) return false;
+
+    if (outLightViewProjection != NULL) *outLightViewProjection = record->shadowMatrices[index];
+    if (outTile != NULL) *outTile = record->shadowTiles[index];
+    return true;
+}
+
+u32 Fluxion_RenderView_SetShadows(FluxionRenderViewHandle view, const FluxionRenderViewShadow* shadows, u32 count)
+{
+    FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return 0;
+    if (count > 0 && shadows == NULL) return 0;
+
+    record->shadowCount = 0;
+    if (count == 0) return 0;
+
+    // One tile each, asked for as one batch. The allocator places the
+    // largest requests first and hands the answers back in the order they
+    // went in, so a request that found no room is visible here rather
+    // than discovered as a shadow that quietly stopped appearing.
+    FluxionShadowAtlasDesc atlas;
+    atlas.atlasSize = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+    atlas.tileSize = FLUXION_RENDERER_SHADOW_TILE_SIZE;
+
+    FluxionShadowAtlasRequest requests[FLUXION_RENDER_VIEW_MAX_SHADOWS];
+    FluxionShadowAtlasResult results[FLUXION_RENDER_VIEW_MAX_SHADOWS];
+
+    u32 requested = count < FLUXION_RENDER_VIEW_MAX_SHADOWS ? count : FLUXION_RENDER_VIEW_MAX_SHADOWS;
+    for (u32 i = 0; i < requested; ++i)
+    {
+        requests[i].tileCount = 1;
+        requests[i].tag = i;
+    }
+    Fluxion_ShadowAtlas_Allocate(&atlas, requests, requested, results);
+
+    FluxionRenderShadowGPU* mapped = (FluxionRenderShadowGPU*)Fluxion_RHI_MapBuffer(record->shadowStaging);
+    if (mapped == NULL) return 0;
+
+    u32 written = 0;
+    for (u32 i = 0; i < requested; ++i)
+    {
+        if (!results[i].fitted) continue;
+
+        const FluxionRenderViewShadow* shadow = &shadows[i];
+        const FluxionShadowAtlasTile tile = results[i].tiles[0];
+
+        record->shadowMatrices[written] = shadow->lightViewProjection;
+        record->shadowTiles[written] = tile;
+
+        FluxionRenderShadowGPU* out = &mapped[written];
+
+        // A row at a time, and no transpose: what the shader does with
+        // these is four dot products against a position, which is the
+        // matrix read exactly as it is written here.
+        for (u32 row = 0; row < 4; ++row)
+        {
+            for (u32 column = 0; column < 4; ++column)
+            {
+                out->lightRows[row][column] = shadow->lightViewProjection.m[row][column];
+            }
+        }
+
+        const FluxionVec4 rect = Fluxion_ShadowAtlas_TileRect(&atlas, tile);
+        out->atlasRect[0] = rect.x;
+        out->atlasRect[1] = rect.y;
+        out->atlasRect[2] = rect.z;
+        out->atlasRect[3] = rect.w;
+
+        out->range[0] = (f32)shadow->lightIndex;
+        out->range[1] = shadow->coverTo;
+        out->range[2] = shadow->blendBand;
+        out->range[3] = 0.0f;
+
+        out->bias[0] = shadow->depthBias;
+        out->bias[1] = shadow->normalBias;
+        out->bias[2] = 0.0f;
+        out->bias[3] = 0.0f;
+
+        ++written;
+    }
+
+    Fluxion_RHI_UnmapBuffer(record->shadowStaging);
+    record->shadowCount = written;
+    return written;
+}
+
+void Fluxion_RenderView_UploadLighting(FluxionRenderViewHandle view, FluxionRHICommandListHandle commandList)
 {
     FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
     if (record == NULL) return;
 
-    // Nothing to move, and nothing that needs moving: the count in the
-    // frame constants is zero, so no shader will read a byte of it.
-    if (record->lightCount == 0) return;
+    // Cleared to "nothing in front of anything", once, before any draw
+    // can read it. Everything is lit until a shadow pass says otherwise,
+    // which is the right answer for a view that has no shadows at all --
+    // and the only one that does not depend on what the memory held.
+    if (!record->shadowAtlasPrepared)
+    {
+        const FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
-    Fluxion_RHI_CommandList_CopyBuffer(commandList, record->lightStaging, 0, record->lightStorage, 0,
-                                       (usize)record->lightCount * sizeof(FluxionRenderLightGPU));
+        FluxionRHIBarrier toTarget = { record->shadowAtlasTexture, noBuffer,
+                                       FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE };
+        Fluxion_RHI_CommandList_Barrier(commandList, &toTarget, 1);
+
+        FluxionRHIRenderingAttachment depthAttachment;
+        memset(&depthAttachment, 0, sizeof(depthAttachment));
+        depthAttachment.view = record->shadowAtlasView;
+        depthAttachment.clear = true;
+        depthAttachment.clearColor[0] = 1.0f;
+
+        FluxionRHIRenderingDesc renderingDesc;
+        memset(&renderingDesc, 0, sizeof(renderingDesc));
+        renderingDesc.depthAttachment = &depthAttachment;
+        renderingDesc.width = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+        renderingDesc.height = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
+
+        Fluxion_RHI_CommandList_BeginRendering(commandList, &renderingDesc);
+        Fluxion_RHI_CommandList_EndRendering(commandList);
+
+        FluxionRHIBarrier toRead = { record->shadowAtlasTexture, noBuffer,
+                                     FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+        Fluxion_RHI_CommandList_Barrier(commandList, &toRead, 1);
+
+        record->shadowAtlasPrepared = true;
+    }
+
+    // Nothing to move, and nothing that needs moving: the counts in the
+    // frame constants are zero, so no shader will read a byte of either.
+    if (record->lightCount > 0)
+    {
+        Fluxion_RHI_CommandList_CopyBuffer(commandList, record->lightStaging, 0, record->lightStorage, 0,
+                                           (usize)record->lightCount * sizeof(FluxionRenderLightGPU));
+    }
+
+    if (record->shadowCount > 0)
+    {
+        Fluxion_RHI_CommandList_CopyBuffer(commandList, record->shadowStaging, 0, record->shadowStorage, 0,
+                                           (usize)record->shadowCount * sizeof(FluxionRenderShadowGPU));
+    }
 }
 
 bool FluxionRendererInternal_RenderView_Get(FluxionRenderViewHandle view, FluxionRenderTargetHandle* outRenderTarget, u32* outLayerMask, FluxionRHIBindGroupHandle* outFrameBindGroup)

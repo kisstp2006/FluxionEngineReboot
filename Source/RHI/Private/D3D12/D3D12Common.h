@@ -410,6 +410,29 @@ bool Fluxion_RHID3D12_DeviceIsFormatSupported(FluxionRHIDeviceHandle device, Flu
 
 DXGI_FORMAT Fluxion_RHID3D12_MapFormat(FluxionRHIFormat format);
 FluxionRHIFormat Fluxion_RHID3D12_MapFormatBack(DXGI_FORMAT format);
+
+// A depth texture that is also sampled -- a shadow map is the first this
+// engine has -- cannot be one format here. D3D12 refuses a shader
+// resource view over a depth format and a depth view over a colour one,
+// so the RESOURCE is created without a type and each view says how it is
+// being read. The other two backends take the depth format for both and
+// need none of this.
+//
+// Both return their argument unchanged for anything that is not depth,
+// so a caller does not have to ask first.
+inline DXGI_FORMAT Fluxion_RHID3D12_DepthAsTypeless(DXGI_FORMAT format)
+{
+    if (format == DXGI_FORMAT_D32_FLOAT) return DXGI_FORMAT_R32_TYPELESS;
+    if (format == DXGI_FORMAT_D24_UNORM_S8_UINT) return DXGI_FORMAT_R24G8_TYPELESS;
+    return format;
+}
+
+inline DXGI_FORMAT Fluxion_RHID3D12_DepthAsShaderRead(DXGI_FORMAT format)
+{
+    if (format == DXGI_FORMAT_D32_FLOAT) return DXGI_FORMAT_R32_FLOAT;
+    if (format == DXGI_FORMAT_D24_UNORM_S8_UINT) return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    return format;
+}
 D3D12_RESOURCE_STATES Fluxion_RHID3D12_MapResourceState(FluxionRHIResourceState state);
 
 // --- Sync (D3D12CommandList.cpp) --------------------------------------------

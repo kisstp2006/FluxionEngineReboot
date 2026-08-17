@@ -237,7 +237,12 @@ FluxionRHIBindGroupHandle Fluxion_RHID3D12_CreateBindGroup(FluxionRHIDeviceHandl
             if (textureState != nullptr)
             {
                 D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-                srvDesc.Format = Fluxion_RHID3D12_MapFormat(viewState->format);
+
+                // A shadow map's view names a depth format, which is not
+                // something a shader resource view may hold -- the
+                // resource behind it has no type at all for exactly this
+                // reason. See Fluxion_RHID3D12_DepthAsShaderRead.
+                srvDesc.Format = Fluxion_RHID3D12_DepthAsShaderRead(Fluxion_RHID3D12_MapFormat(viewState->format));
                 srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
                 // A cube map has no separate resource shape here -- it is

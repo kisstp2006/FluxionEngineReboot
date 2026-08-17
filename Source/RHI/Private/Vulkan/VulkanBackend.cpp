@@ -634,6 +634,8 @@ extern void Fluxion_RHIVulkan_CommandListBegin(FluxionRHICommandListHandle);
 extern void Fluxion_RHIVulkan_CommandListEnd(FluxionRHICommandListHandle);
 extern void Fluxion_RHIVulkan_CommandListBeginRendering(FluxionRHICommandListHandle, const FluxionRHIRenderingDesc*);
 extern void Fluxion_RHIVulkan_CommandListEndRendering(FluxionRHICommandListHandle);
+extern void Fluxion_RHIVulkan_CommandListSetViewport(FluxionRHICommandListHandle, f32, f32, f32, f32, f32, f32);
+extern void Fluxion_RHIVulkan_CommandListSetScissor(FluxionRHICommandListHandle, i32, i32, u32, u32);
 extern void Fluxion_RHIVulkan_CommandListSetPipeline(FluxionRHICommandListHandle, FluxionRHIPipelineHandle);
 extern void Fluxion_RHIVulkan_CommandListSetVertexBuffer(FluxionRHICommandListHandle, u32, FluxionRHIBufferHandle, usize);
 extern void Fluxion_RHIVulkan_CommandListSetIndexBuffer(FluxionRHICommandListHandle, FluxionRHIBufferHandle, usize, bool);
@@ -719,6 +721,8 @@ static const FluxionRHIBackendVTable s_vulkanVTable = {
     Fluxion_RHIVulkan_CommandListEnd,
     Fluxion_RHIVulkan_CommandListBeginRendering,
     Fluxion_RHIVulkan_CommandListEndRendering,
+    Fluxion_RHIVulkan_CommandListSetViewport,
+    Fluxion_RHIVulkan_CommandListSetScissor,
     Fluxion_RHIVulkan_CommandListSetPipeline,
     Fluxion_RHIVulkan_CommandListSetVertexBuffer,
     Fluxion_RHIVulkan_CommandListSetIndexBuffer,

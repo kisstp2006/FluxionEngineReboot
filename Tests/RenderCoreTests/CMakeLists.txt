@@ -54,6 +54,7 @@ engine_add_test(
         Test_MemoryDomains.c
         Test_RenderView.c
         Test_ShadowAtlas.c
+        Test_ShadowMatrices.c
         Test_RendererFrame.cpp
         Test_MeshAsset.cpp
         Test_ShaderLibrary.cpp
@@ -63,6 +64,7 @@ engine_add_test(
         Test_BlockCompressGPU.cpp
         Test_LightingGPU.cpp
         Test_ComparisonSamplingGPU.cpp
+        Test_ShadowPassGPU.cpp
         Test_Exposure.c
         Test_StandardMaterialCompiles.cpp
     DEPENDENCIES

@@ -260,6 +260,18 @@ void Fluxion_RHI_CommandList_EndRendering(FluxionRHICommandListHandle commandLis
     s_backend->CommandListEndRendering(commandList);
 }
 
+void Fluxion_RHI_CommandList_SetViewport(FluxionRHICommandListHandle commandList, f32 x, f32 y, f32 width, f32 height, f32 minDepth, f32 maxDepth)
+{
+    if (s_backend == NULL) return;
+    s_backend->CommandListSetViewport(commandList, x, y, width, height, minDepth, maxDepth);
+}
+
+void Fluxion_RHI_CommandList_SetScissor(FluxionRHICommandListHandle commandList, i32 x, i32 y, u32 width, u32 height)
+{
+    if (s_backend == NULL) return;
+    s_backend->CommandListSetScissor(commandList, x, y, width, height);
+}
+
 void Fluxion_RHI_CommandList_SetPipeline(FluxionRHICommandListHandle commandList, FluxionRHIPipelineHandle pipeline)
 {
     if (s_backend == NULL) return;
