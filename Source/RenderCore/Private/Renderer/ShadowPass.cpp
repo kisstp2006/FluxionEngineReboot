@@ -276,66 +276,88 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
 
     const f32 tileSize = (f32)FLUXION_RENDERER_SHADOW_TILE_SIZE;
 
-    for (u32 shadowIndex = 0; shadowIndex < shadowCount; ++shadowIndex)
+    // CASTERS OUTSIDE, SHADOWS INSIDE, which is the opposite of the way
+    // this reads. A shadow is a viewport and a bind group -- both cheap,
+    // both already made. A caster is a bind group BUILT HERE, and built
+    // once per shadow it appeared in when the loops were the other way
+    // round: eleven shadows in the sample, so eleven of the same object
+    // every frame. This way each caster costs one.
+    FluxionRHIPipelineHandle boundPipeline = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    for (u32 i = 0; i < renderer->packetCount; ++i)
     {
-        FluxionShadowAtlasTile tile;
-        if (!FluxionRendererInternal_RenderView_GetShadow(renderer->currentView, shadowIndex, nullptr, &tile)) continue;
+        const FluxionDrawPacket* packet = &renderer->packets[i];
 
-        // The viewport is what puts a shadow in its own corner of the
-        // atlas, and the scissor is what keeps it there: geometry outside
-        // the viewport is still clipped to the render area, not to the
-        // tile, so without this a caster would draw over its neighbour.
-        const f32 tileX = (f32)tile.x * tileSize;
-        const f32 tileY = (f32)tile.y * tileSize;
-        Fluxion_RHI_CommandList_SetViewport(commandList, tileX, tileY, tileSize, tileSize, 0.0f, 1.0f);
-        Fluxion_RHI_CommandList_SetScissor(commandList, (i32)tileX, (i32)tileY, FLUXION_RENDERER_SHADOW_TILE_SIZE, FLUXION_RENDERER_SHADOW_TILE_SIZE);
+        FluxionRHIBufferHandle vertexBuffer, indexBuffer;
+        u32 vertexCount, indexCount;
+        bool use16BitIndices;
+        FluxionRHIVertexLayout vertexLayout;
+        if (!FluxionRendererInternal_MeshBuffer_Get(packet->mesh, &vertexBuffer, &indexBuffer, &vertexCount, &indexCount, &use16BitIndices, &vertexLayout)) continue;
+        if (!EnsurePipeline(renderer, &vertexLayout)) break;
 
-        for (u32 i = 0; i < renderer->packetCount; ++i)
+        FluxionRHIBindGroupEntry objectEntry;
+        objectEntry.binding = 0;
+        objectEntry.type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
+        objectEntry.buffer = renderer->objectBuffer;
+        objectEntry.bufferOffset = packet->objectDataOffset;
+        objectEntry.bufferSize = sizeof(FluxionMat4);
+        objectEntry.textureView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        objectEntry.sampler = FluxionRHISamplerHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+        FluxionRHIBindGroupDesc objectBindGroupDesc;
+        objectBindGroupDesc.layout = renderer->objectBindGroupLayout;
+        objectBindGroupDesc.entries = &objectEntry;
+        objectBindGroupDesc.entryCount = 1;
+        FluxionRHIBindGroupHandle objectBindGroup = Fluxion_RHI_CreateBindGroup(renderer->device, &objectBindGroupDesc);
+
+        // Rebound only when EnsurePipeline above actually built another
+        // one, which happens when a mesh of a different shape turns up.
+        if (boundPipeline.index != renderer->shadowPipeline.index ||
+            boundPipeline.generation != renderer->shadowPipeline.generation)
         {
-            const FluxionDrawPacket* packet = &renderer->packets[i];
-
-            FluxionRHIBufferHandle vertexBuffer, indexBuffer;
-            u32 vertexCount, indexCount;
-            bool use16BitIndices;
-            FluxionRHIVertexLayout vertexLayout;
-            if (!FluxionRendererInternal_MeshBuffer_Get(packet->mesh, &vertexBuffer, &indexBuffer, &vertexCount, &indexCount, &use16BitIndices, &vertexLayout)) continue;
-            if (!EnsurePipeline(renderer, &vertexLayout)) break;
-
-            FluxionRHIBindGroupEntry objectEntry;
-            objectEntry.binding = 0;
-            objectEntry.type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
-            objectEntry.buffer = renderer->objectBuffer;
-            objectEntry.bufferOffset = packet->objectDataOffset;
-            objectEntry.bufferSize = sizeof(FluxionMat4);
-            objectEntry.textureView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
-            objectEntry.sampler = FluxionRHISamplerHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
-
-            FluxionRHIBindGroupDesc objectBindGroupDesc;
-            objectBindGroupDesc.layout = renderer->objectBindGroupLayout;
-            objectBindGroupDesc.entries = &objectEntry;
-            objectBindGroupDesc.entryCount = 1;
-            FluxionRHIBindGroupHandle objectBindGroup = Fluxion_RHI_CreateBindGroup(renderer->device, &objectBindGroupDesc);
-
-            // Groups bound only after SetPipeline: one backend's SetBindGroup
-            // needs a pipeline already bound to know which layout it belongs
-            // to, and silently does nothing without one.
             Fluxion_RHI_CommandList_SetPipeline(commandList, renderer->shadowPipeline);
+            boundPipeline = renderer->shadowPipeline;
+        }
+
+        Fluxion_RHI_CommandList_SetVertexBuffer(commandList, 0, vertexBuffer, 0);
+        if (FLUXION_HANDLE_IS_VALID(indexBuffer))
+        {
+            Fluxion_RHI_CommandList_SetIndexBuffer(commandList, indexBuffer, 0, use16BitIndices);
+        }
+
+        // Bound after the pipeline, always: one backend's SetBindGroup
+        // needs a pipeline already bound to know which layout it belongs
+        // to, and silently does nothing without one.
+        Fluxion_RHI_CommandList_SetBindGroup(commandList, FLUXION_RHI_BIND_GROUP_OBJECT, objectBindGroup);
+
+        for (u32 shadowIndex = 0; shadowIndex < shadowCount; ++shadowIndex)
+        {
+            FluxionShadowAtlasTile tile;
+            if (!FluxionRendererInternal_RenderView_GetShadow(renderer->currentView, shadowIndex, nullptr, &tile)) continue;
+
+            // The viewport is what puts a shadow in its own corner of the
+            // atlas, and the scissor is what keeps it there: geometry
+            // outside the viewport is still clipped to the render area
+            // rather than to the tile, so without this a caster would
+            // draw over its neighbour.
+            const f32 tileX = (f32)tile.x * tileSize;
+            const f32 tileY = (f32)tile.y * tileSize;
+            Fluxion_RHI_CommandList_SetViewport(commandList, tileX, tileY, tileSize, tileSize, 0.0f, 1.0f);
+            Fluxion_RHI_CommandList_SetScissor(commandList, (i32)tileX, (i32)tileY, FLUXION_RENDERER_SHADOW_TILE_SIZE, FLUXION_RENDERER_SHADOW_TILE_SIZE);
+
             Fluxion_RHI_CommandList_SetBindGroup(commandList, FLUXION_RHI_BIND_GROUP_GLOBAL, renderer->shadowGlobalBindGroups[shadowIndex]);
-            Fluxion_RHI_CommandList_SetBindGroup(commandList, FLUXION_RHI_BIND_GROUP_OBJECT, objectBindGroup);
-            Fluxion_RHI_CommandList_SetVertexBuffer(commandList, 0, vertexBuffer, 0);
 
             if (FLUXION_HANDLE_IS_VALID(indexBuffer))
             {
-                Fluxion_RHI_CommandList_SetIndexBuffer(commandList, indexBuffer, 0, use16BitIndices);
                 Fluxion_RHI_CommandList_DrawIndexed(commandList, indexCount, 1, 0, 0, 0);
             }
             else
             {
                 Fluxion_RHI_CommandList_Draw(commandList, vertexCount, 1, 0, 0);
             }
-
-            Fluxion_RHI_DestroyBindGroup(objectBindGroup);
         }
+
+        Fluxion_RHI_DestroyBindGroup(objectBindGroup);
     }
 
     Fluxion_RHI_CommandList_EndRendering(commandList);

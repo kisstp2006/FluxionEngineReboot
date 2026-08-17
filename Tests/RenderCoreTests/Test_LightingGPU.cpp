@@ -47,6 +47,7 @@
 #include <Fluxion/Foundation/Math.h>
 #include <Fluxion/RHI/RHI.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraph.h>
+#include <Fluxion/RenderCore/Renderer/ShadowMatrices.h>
 #include <Fluxion/RenderCore/RenderGraph/RenderGraphPassRegistry.h>
 #include <Fluxion/RenderCore/Renderer/Exposure.h>
 #include <Fluxion/RenderCore/Renderer/Material.h>
@@ -581,6 +582,9 @@ Configuration BaseConfiguration()
     configuration.sunColor[2] = 1.0f;
     return configuration;
 }
+
+// Defined at the end of this file, where the scene it needs is laid out.
+void CheckShadowsDarkenWhatTheyCover(TestContext* ctx, LightingRig& rig, const char* backendName);
 
 void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char* backendName)
 {
@@ -1247,9 +1251,287 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
         Fluxion_RHI_DestroyTexture(skyTexture);
     }
 
+    // Last, because it draws twice and wants the rig to itself.
+    CheckShadowsDarkenWhatTheyCover(ctx, rig, backendName);
+
     Fluxion_TextureDefaults_Shutdown();
     DestroyRig(rig);
     Fluxion_RenderGraphPassRegistry_Shutdown();
+}
+
+// --- A shadow, all the way through ------------------------------------------
+//
+// Every part of the shadow path has a check of its own: the depth lands
+// in the right tile (Test_ShadowPassGPU), a comparison sampler answers
+// (Test_ComparisonSamplingGPU), tiles become rectangles (Test_ShadowAtlas),
+// matrices and spheres are arithmetic (Test_ShadowMatrices). NONE OF THEM
+// SEES THE ANSWER. This one does: it draws a surface, puts something
+// between it and the light, and reads back whether the surface went dark.
+//
+// The one thing only this can catch is the parts disagreeing -- a tile
+// rectangle read upside down, a cube face numbered the other way, a
+// comparison that comes back inverted. Each of those leaves every other
+// check passing and the picture wrong.
+
+// A world matrix from a scale and a position, which is all this needs.
+FluxionMat4 PlaceAndScale(FluxionVec3 position, FluxionVec3 scale)
+{
+    FluxionMat4 m = Fluxion_Mat4_Identity();
+    m.m[0][0] = scale.x;
+    m.m[1][1] = scale.y;
+    m.m[2][2] = scale.z;
+    m.m[0][3] = position.x;
+    m.m[1][3] = position.y;
+    m.m[2][3] = position.z;
+    return m;
+}
+
+// The scene is laid out so that the answer does not depend on which way
+// a backend stores its rows: the occluder is a full-height slab, so its
+// shadow is a vertical band and EVERY row of the image crosses it.
+// Which column is which is the whole of what is read.
+constexpr f32 kShadowSceneHalfWidth = 2.0f;   // what the camera sees, each way
+constexpr f32 kOccluderCentre = -2.0f;        // far enough left to be off the shadow
+constexpr f32 kOccluderHalfWidth = 0.75f;
+constexpr f32 kOccluderHeight = 1.0f;         // one unit above the surface
+
+// How far the shadow is thrown sideways per unit of height. Larger than
+// the occluder is wide, which is what keeps the two apart on screen --
+// an occluder standing over its own shadow would make this check pass
+// for a shader that never sampled anything.
+constexpr f32 kSunSlide = 2.5f;
+
+// Read from the middle of the band and from clear ground beyond it. Both
+// are worked out from the layout above rather than written down, so a
+// change to it cannot leave these pointing at the wrong place.
+u32 ColumnOfWorldX(f32 worldX)
+{
+    const f32 ndc = worldX / kShadowSceneHalfWidth;
+    const f32 column = (ndc * 0.5f + 0.5f) * (f32)kSize;
+    if (column < 0.0f) return 0;
+    if (column >= (f32)kSize) return kSize - 1;
+    return (u32)column;
+}
+
+Rgb ReadTexel(const u8* mapped, u32 column, u32 row)
+{
+    const usize rowBytes = ((usize)kSize * 8 + FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT - 1) /
+                           FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT * FLUXION_RHI_TEXTURE_DATA_ROW_ALIGNMENT;
+    u16 texel[4];
+    std::memcpy(texel, mapped + (usize)row * rowBytes + (usize)column * 8, sizeof(texel));
+
+    Rgb result;
+    result.r = HalfBitsToFloat(texel[0]);
+    result.g = HalfBitsToFloat(texel[1]);
+    result.b = HalfBitsToFloat(texel[2]);
+    return result;
+}
+
+f32 Brightness(Rgb colour)
+{
+    return colour.r + colour.g + colour.b;
+}
+
+// Draws the two surfaces once, with the shadow either set or not, and
+// hands back what the two columns hold.
+void RenderShadowScene(TestContext* ctx, LightingRig& rig, FluxionMeshBufferHandle mesh, bool withShadow,
+                       f32* outUnderOccluder, f32* outBesideIt)
+{
+    *outUnderOccluder = 0.0f;
+    *outBesideIt = 0.0f;
+
+    FluxionMaterialHandle material = Fluxion_Material_Create(rig.device, rig.program);
+    if (!FLUXION_HANDLE_IS_VALID(material)) return;
+
+    Fluxion_Material_SetBaseColor(material, FluxionVec4{ 1.0f, 1.0f, 1.0f, 1.0f });
+    Fluxion_Material_SetMetallic(material, 0.0f);
+    Fluxion_Material_SetRoughness(material, 1.0f);
+    Fluxion_Material_SetReflectance(material, 0.5f);
+    Fluxion_Material_SetNormalScale(material, 1.0f);
+    Fluxion_Material_SetOcclusionStrength(material, 1.0f);
+
+    // Every map on the one-pixel default that changes nothing -- the
+    // same arrangement a material with no maps of its own really has.
+    Fluxion_Material_SetTextureSlot(material, FLUXION_MATERIAL_TEXTURE_BASE_COLOR, Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_WHITE), rig.sampler);
+    Fluxion_Material_SetTextureSlot(material, FLUXION_MATERIAL_TEXTURE_METALLIC_ROUGHNESS, Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_WHITE), rig.sampler);
+    Fluxion_Material_SetTextureSlot(material, FLUXION_MATERIAL_TEXTURE_NORMAL, Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_FLAT_NORMAL), rig.sampler);
+    Fluxion_Material_SetTextureSlot(material, FLUXION_MATERIAL_TEXTURE_OCCLUSION, Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_WHITE), rig.sampler);
+    Fluxion_Material_SetTextureSlot(material, FLUXION_MATERIAL_TEXTURE_EMISSIVE, Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_WHITE), rig.sampler);
+    Fluxion_Material_FlushDirty(material);
+
+    // Straight down the negative Z axis, without perspective: a slab of
+    // world maps to the image linearly, so a column is a position and
+    // nothing has to be undone to say which is which.
+    const FluxionVec3 towardsScene = { 0.0f, 0.0f, -1.0f };
+    const FluxionVec3 origin = { 0.0f, 0.0f, 0.0f };
+
+    FluxionRenderViewDesc viewDesc{};
+    viewDesc.viewMatrix = Fluxion_Mat4_Identity();
+    viewDesc.projectionMatrix = Fluxion_ShadowMatrices_Directional(towardsScene, origin, kShadowSceneHalfWidth, 0);
+    viewDesc.viewport.width = (f32)kSize;
+    viewDesc.viewport.height = (f32)kSize;
+    viewDesc.viewport.maxDepth = 1.0f;
+    viewDesc.scissor.width = kSize;
+    viewDesc.scissor.height = kSize;
+    viewDesc.renderTarget = rig.target;
+    viewDesc.layerMask = 0xFFFFFFFFu;
+    viewDesc.exposure = 1.0f;
+    FluxionRenderViewHandle view = Fluxion_RenderView_Create(rig.device, &viewDesc);
+
+    // One light, and nothing else -- no ambient and no sky. What is in
+    // shadow is then as near black as the arithmetic allows, and the
+    // comparison below has the whole range to work in.
+    FluxionRenderLight sun{};
+    sun.type = FLUXION_RENDER_LIGHT_DIRECTIONAL;
+    sun.direction = Fluxion_Vec3_Normalize(FluxionVec3{ kSunSlide, 0.0f, -kOccluderHeight });
+    sun.color = FluxionVec3{ 3.0f, 3.0f, 3.0f };
+    Fluxion_RenderView_SetLights(view, &sun, 1);
+
+    if (withShadow)
+    {
+        FluxionRenderViewShadow shadow{};
+        shadow.lightViewProjection = Fluxion_ShadowMatrices_Directional(sun.direction, origin, 4.0f, 0);
+        shadow.lightIndex = 0;
+        shadow.coverTo = 100.0f;
+        Fluxion_ShadowMatrices_DirectionalBias(4.0f, 512, &shadow.depthBias, &shadow.normalBias);
+        TEST_CHECK(ctx, Fluxion_RenderView_SetShadows(view, &shadow, 1) == 1);
+    }
+    else
+    {
+        Fluxion_RenderView_SetShadows(view, nullptr, 0);
+    }
+
+    Fluxion_RenderView_UpdateFrameConstants(view);
+
+    FluxionRHICommandListHandle cmd = Fluxion_RHI_CreateCommandList(rig.device, FLUXION_RHI_QUEUE_TYPE_GRAPHICS);
+    TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(cmd));
+    Fluxion_RHI_CommandList_Begin(cmd);
+
+    Fluxion_RenderView_UploadLighting(view, cmd);
+    Fluxion_Renderer_UpdateEnvironment(rig.renderer, view, cmd);
+
+    FluxionRenderGraph* graph = Fluxion_RenderGraph_Create(rig.device);
+    Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Color0", rig.color, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
+    Fluxion_RenderGraph_ImportTexture(graph, "ForwardOpaquePass.Depth", rig.depth, FLUXION_RHI_RESOURCE_STATE_UNDEFINED);
+    Fluxion_RenderGraph_ImportTexture(graph, FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE,
+        Fluxion_RenderView_GetShadowAtlasTexture(view), FLUXION_RHI_RESOURCE_STATE_SHADER_READ);
+    Fluxion_RenderGraph_AddPassFromRegistry(graph, "ShadowPass", Fluxion_Renderer_GetForwardOpaquePassUserData(rig.renderer));
+    Fluxion_RenderGraph_AddPassFromRegistry(graph, "ForwardOpaquePass", Fluxion_Renderer_GetForwardOpaquePassUserData(rig.renderer));
+
+    Fluxion_Renderer_BeginFrame(rig.renderer, view);
+
+    // Wider than the camera sees, so every pixel is surface -- there is
+    // no background for the check below to mistake for shadow.
+    const FluxionMat4 surface = PlaceAndScale(origin, FluxionVec3{ kShadowSceneHalfWidth * 1.5f, kShadowSceneHalfWidth * 1.5f, 1.0f });
+    Fluxion_Renderer_DrawMesh(rig.renderer, mesh, material, rig.pipeline, &surface);
+
+    // Full height, so its shadow crosses every row.
+    const FluxionMat4 occluder = PlaceAndScale(FluxionVec3{ kOccluderCentre, 0.0f, kOccluderHeight },
+                                               FluxionVec3{ kOccluderHalfWidth, kShadowSceneHalfWidth * 1.5f, 1.0f });
+    Fluxion_Renderer_DrawMesh(rig.renderer, mesh, material, rig.pipeline, &occluder);
+
+    TEST_CHECK(ctx, Fluxion_RenderGraph_Compile(graph));
+    Fluxion_RenderGraph_Execute(graph, cmd);
+    Fluxion_Renderer_EndFrame(rig.renderer, cmd);
+
+    const FluxionRHIBufferHandle noBuffer = Fluxion::Foundation::NoHandle<FluxionRHIBufferHandle>();
+    FluxionRHIBarrier toSource = { rig.color, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE };
+    Fluxion_RHI_CommandList_Barrier(cmd, &toSource, 1);
+    Fluxion_RHI_CommandList_CopyTextureToBuffer(cmd, rig.color, 0, 0, rig.readback, 0);
+    Fluxion_RHI_CommandList_End(cmd);
+
+    FluxionRHIFenceHandle fence = Fluxion_RHI_CreateFence(rig.device, false);
+    Fluxion_RHI_Queue_Submit(rig.queue, &cmd, 1, fence);
+    TEST_CHECK(ctx, Fluxion_RHI_WaitForFence(fence));
+
+    if (const u8* mapped = (const u8*)Fluxion_RHI_MapBuffer(rig.readback))
+    {
+        const u32 middleRow = kSize / 2;
+        *outUnderOccluder = Brightness(ReadTexel(mapped, ColumnOfWorldX(kOccluderCentre + kSunSlide * kOccluderHeight), middleRow));
+        *outBesideIt = Brightness(ReadTexel(mapped, kSize - 1, middleRow));
+        Fluxion_RHI_UnmapBuffer(rig.readback);
+    }
+
+    Fluxion_RenderGraph_Destroy(graph);
+    Fluxion_RHI_DestroyFence(fence);
+    Fluxion_RHI_DestroyCommandList(cmd);
+    Fluxion_RenderView_Destroy(view);
+    Fluxion_Material_Destroy(material);
+    Fluxion_RHI_Device_CollectGarbage(rig.device);
+}
+
+void CheckShadowsDarkenWhatTheyCover(TestContext* ctx, LightingRig& rig, const char* backendName)
+{
+    if (!rig.usable) return;
+
+    // Both windings, so whichever way the passes count a front face the
+    // surfaces are there for both of them -- the forward pass culls one
+    // way and the shadow pass deliberately culls the other.
+    const QuadVertex quad[4] = {
+        { { -1.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } },
+        { {  1.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
+        { {  1.0f,  1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+        { { -1.0f,  1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+    };
+    const u16 indices[12] = { 0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2 };
+
+    FluxionMeshBufferDesc meshDesc{};
+    meshDesc.vertexData = quad;
+    meshDesc.vertexDataSize = sizeof(quad);
+    meshDesc.indexData = indices;
+    meshDesc.indexDataSize = sizeof(indices);
+    meshDesc.use16BitIndices = true;
+    meshDesc.vertexLayout.attributes[0].location = 0;
+    meshDesc.vertexLayout.attributes[0].format = FLUXION_RHI_FORMAT_R32G32B32_FLOAT;
+    meshDesc.vertexLayout.attributes[0].offset = offsetof(QuadVertex, position);
+    meshDesc.vertexLayout.attributes[1].location = 1;
+    meshDesc.vertexLayout.attributes[1].format = FLUXION_RHI_FORMAT_R32G32B32_FLOAT;
+    meshDesc.vertexLayout.attributes[1].offset = offsetof(QuadVertex, normal);
+    meshDesc.vertexLayout.attributes[2].location = 2;
+    meshDesc.vertexLayout.attributes[2].format = FLUXION_RHI_FORMAT_R32G32B32A32_FLOAT;
+    meshDesc.vertexLayout.attributes[2].offset = offsetof(QuadVertex, tangent);
+    meshDesc.vertexLayout.attributes[3].location = 3;
+    meshDesc.vertexLayout.attributes[3].format = FLUXION_RHI_FORMAT_R32G32_FLOAT;
+    meshDesc.vertexLayout.attributes[3].offset = offsetof(QuadVertex, uv);
+    meshDesc.vertexLayout.attributeCount = 4;
+    meshDesc.vertexLayout.stride = sizeof(QuadVertex);
+    meshDesc.bounds = FluxionAABB{ FluxionVec3{ -1.0f, -1.0f, 0.0f }, FluxionVec3{ 1.0f, 1.0f, 0.0f } };
+    meshDesc.debugName = "LightingGPU.ShadowQuad";
+
+    FluxionMeshBufferHandle mesh = Fluxion_MeshBuffer_Create(rig.device, rig.queue, &meshDesc);
+    TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(mesh));
+    if (!FLUXION_HANDLE_IS_VALID(mesh)) return;
+
+    f32 shadowedUnder = 0.0f;
+    f32 shadowedBeside = 0.0f;
+    RenderShadowScene(ctx, rig, mesh, true, &shadowedUnder, &shadowedBeside);
+
+    f32 litUnder = 0.0f;
+    f32 litBeside = 0.0f;
+    RenderShadowScene(ctx, rig, mesh, false, &litUnder, &litBeside);
+
+    // The same scene, the same light, the same pixel -- the only
+    // difference is whether the view was given a shadow. Half is a wide
+    // margin on purpose: what is being checked is that a shadow happened
+    // at all, not how dark it came out.
+    TEST_CHECK(ctx, litUnder > 0.0f);
+    TEST_CHECK(ctx, shadowedUnder < litUnder * 0.5f);
+
+    // AND THAT IT HAPPENED IN ONE PLACE. Ground the occluder cannot
+    // reach must be untouched -- without this the check passes for a
+    // shadow that came out inside out, or for one whose rectangle
+    // covered the whole atlas.
+    TEST_CHECK(ctx, litBeside > 0.0f);
+    TEST_CHECK(ctx, shadowedBeside > litBeside * 0.9f);
+
+    if (shadowedUnder >= litUnder * 0.5f || shadowedBeside <= litBeside * 0.9f)
+    {
+        FLUXION_LOG_ERROR("RenderCoreTests",
+            "%s: in shadow %.4f (lit %.4f), beside it %.4f (lit %.4f).",
+            backendName, (double)shadowedUnder, (double)litUnder, (double)shadowedBeside, (double)litBeside);
+    }
+
+    Fluxion_MeshBuffer_Destroy(mesh);
 }
 
 } // namespace

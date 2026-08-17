@@ -52,6 +52,7 @@
 #include <Fluxion/Scene/Transform.h>
 #include <Fluxion/Scene/World.hpp>
 
+#include <atomic>
 #include <cstring>
 
 // What the scheduler decides, and what it must not be able to decide
@@ -67,25 +68,53 @@ namespace
 {
 
 // Where the systems write down that they ran, in the order they ran.
+//
+// THE COUNT IS ATOMIC BECAUSE THE THING BEING TESTED RUNS THESE IN
+// PARALLEL. Two systems with no edge between them are exactly what the
+// scheduler is free to run at once, and that is the point of it -- so
+// two Mark calls really do land together, and a plain `count++` loses
+// one of them: both read the same index, both write the same slot, and
+// a system that ran leaves no trace that it did.
+//
+// What that looked like was a test failing perhaps once in fifty, on the
+// check that a system with no edges ran at all, and only when the
+// machine was busy enough for the two to overlap.
 constexpr u32 kMaxMarks = 64;
 u32 g_marks[kMaxMarks];
-u32 g_markCount;
+std::atomic<u32> g_markCount;
 
 void ResetMarks()
 {
     std::memset(g_marks, 0, sizeof(g_marks));
-    g_markCount = 0;
+    g_markCount.store(0, std::memory_order_relaxed);
 }
 
 void Mark(u32 value)
 {
-    if (g_markCount < kMaxMarks) g_marks[g_markCount++] = value;
+    // The slot is claimed and then written, rather than written at a
+    // shared cursor: two systems claiming at once get different slots.
+    const u32 slot = g_markCount.fetch_add(1, std::memory_order_relaxed);
+    if (slot < kMaxMarks) g_marks[slot] = value;
+}
+
+// How many were actually recorded. The count above can run past the
+// array -- it is claimed before it is checked -- and reading that far
+// would walk off the end.
+u32 MarkCount()
+{
+    const u32 claimed = g_markCount.load(std::memory_order_relaxed);
+    return claimed < kMaxMarks ? claimed : kMaxMarks;
 }
 
 // Where a mark sits in the record, or kMaxMarks when it never ran.
+//
+// Only ever compared between systems that have an edge between them --
+// two the scheduler is free to run at once have no order for this to
+// report, and asking would be asking the wrong question.
 u32 PositionOf(u32 value)
 {
-    for (u32 i = 0; i < g_markCount; ++i) if (g_marks[i] == value) return i;
+    const u32 count = MarkCount();
+    for (u32 i = 0; i < count; ++i) if (g_marks[i] == value) return i;
     return kMaxMarks;
 }
 
