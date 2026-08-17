@@ -132,6 +132,22 @@ FluxionVec3 Fluxion_ShadowMatrices_CascadeSphere(FluxionVec3 cameraPosition, Flu
 // Writes nothing through a null pointer, so a caller may ask for one.
 void Fluxion_ShadowMatrices_DirectionalBias(f32 radius, u32 tileSize, f32* outDepthBias, f32* outNormalBias);
 
+// The same two offsets for a shadow that has a position: a spot, or one
+// face of a point light.
+//
+// Worked out at the far end of `range` and used everywhere, which makes
+// it the LARGEST the surface ever needs. A texel of one of these covers
+// more world the further from the light it is, so a bias that fitted
+// close up would stripe further out -- and the cost of the other choice
+// is a shadow that pulls slightly away from what casts it nearby, which
+// is the one of the two that stays out of the picture.
+//
+// The depth offset is more approximate than the sun's. A perspective
+// depth is not evenly spread across its range, so a single number in the
+// 0..1 the comparison works in cannot be right everywhere; the normal
+// offset carries most of the weight here for that reason.
+void Fluxion_ShadowMatrices_PerspectiveBias(f32 range, u32 tileSize, f32* outDepthBias, f32* outNormalBias);
+
 // A spot light's view-projection.
 //
 // The cone becomes the field of view, doubled: the angle names the

@@ -169,27 +169,38 @@ void Test_RenderView_Run(TestContext* ctx)
         const u32 tilesAcross = atlasSize / tileSize;
         const u32 capacity = tilesAcross * tilesAcross;
 
+        // A scene's worth of shapes at once: a sun's four cascades, a
+        // spot's single map, and two point lights' cubes. Each light's
+        // shadows next to each other, which is the contract a surface
+        // relies on to find them.
         FluxionRenderViewShadow shadows[FLUXION_RENDER_VIEW_MAX_SHADOWS] = { 0 };
-        for (u32 i = 0; i < FLUXION_RENDER_VIEW_MAX_SHADOWS; ++i)
-        {
-            shadows[i].lightViewProjection = Fluxion_Mat4_Identity();
-            shadows[i].lightIndex = 0;
+        const u32 perLight[3] = { 4, 6, 6 };
 
-            // Near to far, which is the order one light's cascades must
-            // be in for a surface to find the sharpest one covering it.
-            shadows[i].coverTo = 10.0f * (f32)(i + 1);
+        u32 offered = 0;
+        for (u32 light = 0; light < 3; ++light)
+        {
+            for (u32 i = 0; i < perLight[light] && offered < FLUXION_RENDER_VIEW_MAX_SHADOWS; ++i)
+            {
+                shadows[offered].lightViewProjection = Fluxion_Mat4_Identity();
+                shadows[offered].lightIndex = light;
+
+                // Near to far, which is the order one light's cascades
+                // must be in for a surface to find the sharpest one
+                // covering it.
+                shadows[offered].coverTo = 10.0f * (f32)(i + 1);
+                shadows[offered].cubeFaces = perLight[light] == 6;
+                ++offered;
+            }
         }
 
-        // As many as there are tiles: all of them fit.
-        const u32 fitted = Fluxion_RenderView_SetShadows(view, shadows, capacity);
-        TEST_CHECK(ctx, fitted == capacity);
-
-        // One more than there are tiles: the extra is reported missing
-        // rather than drawn over somebody else's.
-        if (capacity < FLUXION_RENDER_VIEW_MAX_SHADOWS)
-        {
-            TEST_CHECK(ctx, Fluxion_RenderView_SetShadows(view, shadows, capacity + 1) == capacity);
-        }
+        // The budget and the atlas are the same size on purpose, so a
+        // caller that stays inside the first is never refused by the
+        // second -- which is what makes the count below a check on the
+        // grouping rather than on the packing. What happens when a light
+        // does NOT fit is the allocator's answer, and Test_ShadowAtlas
+        // is where that is asked.
+        TEST_CHECK(ctx, offered == capacity);
+        TEST_CHECK(ctx, Fluxion_RenderView_SetShadows(view, shadows, offered) == offered);
 
         // None is a picture, not a fault.
         TEST_CHECK(ctx, Fluxion_RenderView_SetShadows(view, NULL, 0) == 0);

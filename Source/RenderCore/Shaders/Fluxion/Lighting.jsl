@@ -166,20 +166,78 @@ float ShadowFactor(FluxionShadow shadow, Vector3 P, Vector3 N)
     return textureCompare(shadowAtlas, Vector2(atlasU, atlasV), reference);
 }
 
+// Which of a cube's six maps a direction falls in.
+//
+// The largest component says which way it mostly points, and its sign
+// says which end -- the same order Fluxion_ShadowMatrices_PointFace
+// builds them in: +X, -X, +Y, -Y, +Z, -Z. A face picked in a different
+// order would look up a real depth from the wrong direction, which is a
+// shadow in the wrong place rather than no shadow.
+int CubeFaceOf(Vector3 direction)
+{
+    Vector3 size = abs(direction);
+
+    if (size.x >= size.y && size.x >= size.z)
+    {
+        if (direction.x > 0.0) { return 0; }
+        return 1;
+    }
+
+    if (size.y >= size.z)
+    {
+        if (direction.y > 0.0) { return 2; }
+        return 3;
+    }
+
+    if (direction.z > 0.0) { return 4; }
+    return 5;
+}
+
 // How much of one light reaches this point, across all of its shadows.
 //
-// A light may have several, ordered near to far and next to each other in
-// the list -- the sun's cascades, where each covers a share of the
-// distance at its own resolution. The nearest one that reaches this far
-// is the sharpest that has anything to say about it.
-float EvaluateShadow(int lightIndex, Vector3 P, Vector3 N, float viewDistance)
+// A light may have several, next to each other in the list, and there are
+// two reasons it might: the sun's cascades, each covering a share of the
+// distance from the eye at its own resolution, or a point light's six
+// faces, which cover directions rather than distances. Which of the two
+// this light is comes from the record itself.
+float EvaluateShadow(int lightIndex, Vector3 P, Vector3 N, Vector3 lightPosition, float viewDistance)
 {
     int shadowCount = int(lightParams.y);
 
-    // Walked backwards, with the last match kept, so what comes out is
-    // the LOWEST index that both belongs to this light and reaches this
-    // far -- which, given the ordering above, is the nearest cascade
-    // covering the point.
+    // Walked backwards with the last match kept, so this ends up at the
+    // LOWEST index belonging to this light -- the nearest cascade, or the
+    // first face of the cube.
+    int first = -1;
+    for (int i = shadowCount - 1; i >= 0; i = i - 1)
+    {
+        if (int(shadows[i].range.x) == lightIndex)
+        {
+            first = i;
+        }
+    }
+
+    if (first < 0)
+    {
+        return 1.0;
+    }
+
+    // A point light shines every way at once, so nothing about the eye
+    // decides which of its maps to read -- only where the surface is.
+    // The distance still matters for whether to read one at all: past
+    // what the light was given, it casts nothing.
+    if (shadows[first].range.w > 0.5)
+    {
+        if (viewDistance > shadows[first].range.y)
+        {
+            return 1.0;
+        }
+
+        int face = CubeFaceOf(P - lightPosition);
+        return ShadowFactor(shadows[first + face], P, N);
+    }
+
+    // Cascades: the nearest one that reaches this far is the sharpest
+    // that has anything to say about the point.
     int chosen = -1;
     for (int i = shadowCount - 1; i >= 0; i = i - 1)
     {
@@ -250,7 +308,7 @@ Vector3 EvaluateOneLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 P, F
     // Asked after the falloff and before the reflectance: a light that
     // does not reach here needs no shadow looked up, and one that is
     // fully blocked needs no reflectance worked out.
-    float shadow = EvaluateShadow(lightIndex, P, N, viewDistance);
+    float shadow = EvaluateShadow(lightIndex, P, N, light.positionRange.xyz, viewDistance);
     if (shadow <= 0.0)
     {
         return Vector3(0.0, 0.0, 0.0);

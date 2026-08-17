@@ -993,6 +993,41 @@ bool FluxionRendererInternal_RenderView_GetShadow(FluxionRenderViewHandle view, 
     return true;
 }
 
+// One shadow, in the shape a shader reads it.
+static void Fluxion_RenderViewInternal_WriteShadow(FluxionRenderShadowGPU* out, const FluxionRenderViewShadow* shadow,
+                                                   const FluxionShadowAtlasDesc* atlas, FluxionShadowAtlasTile tile)
+{
+    // A row at a time, and no transpose: what the shader does with these
+    // is four dot products against a position, which is the matrix read
+    // exactly as it is written here.
+    for (u32 row = 0; row < 4; ++row)
+    {
+        for (u32 column = 0; column < 4; ++column)
+        {
+            out->lightRows[row][column] = shadow->lightViewProjection.m[row][column];
+        }
+    }
+
+    const FluxionVec4 rect = Fluxion_ShadowAtlas_TileRect(atlas, tile);
+    out->atlasRect[0] = rect.x;
+    out->atlasRect[1] = rect.y;
+    out->atlasRect[2] = rect.z;
+    out->atlasRect[3] = rect.w;
+
+    out->range[0] = (f32)shadow->lightIndex;
+    out->range[1] = shadow->coverTo;
+    out->range[2] = shadow->blendBand;
+
+    // How the shader picks among this light's shadows: where the surface
+    // is, or how far the eye is.
+    out->range[3] = shadow->cubeFaces ? 1.0f : 0.0f;
+
+    out->bias[0] = shadow->depthBias;
+    out->bias[1] = shadow->normalBias;
+    out->bias[2] = 0.0f;
+    out->bias[3] = 0.0f;
+}
+
 u32 Fluxion_RenderView_SetShadows(FluxionRenderViewHandle view, const FluxionRenderViewShadow* shadows, u32 count)
 {
     FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
@@ -1002,69 +1037,59 @@ u32 Fluxion_RenderView_SetShadows(FluxionRenderViewHandle view, const FluxionRen
     record->shadowCount = 0;
     if (count == 0) return 0;
 
-    // One tile each, asked for as one batch. The allocator places the
-    // largest requests first and hands the answers back in the order they
-    // went in, so a request that found no room is visible here rather
-    // than discovered as a shadow that quietly stopped appearing.
     FluxionShadowAtlasDesc atlas;
     atlas.atlasSize = FLUXION_RENDERER_SHADOW_ATLAS_SIZE;
     atlas.tileSize = FLUXION_RENDERER_SHADOW_TILE_SIZE;
 
-    FluxionShadowAtlasRequest requests[FLUXION_RENDER_VIEW_MAX_SHADOWS];
-    FluxionShadowAtlasResult results[FLUXION_RENDER_VIEW_MAX_SHADOWS];
+    const u32 offered = count < FLUXION_RENDER_VIEW_MAX_SHADOWS ? count : FLUXION_RENDER_VIEW_MAX_SHADOWS;
 
-    u32 requested = count < FLUXION_RENDER_VIEW_MAX_SHADOWS ? count : FLUXION_RENDER_VIEW_MAX_SHADOWS;
-    for (u32 i = 0; i < requested; ++i)
+    // Grouped by light, because a light is what fits or does not. Runs of
+    // one light are already next to each other -- that is the contract --
+    // so a group ends where the light index changes.
+    FluxionShadowAtlasRequest requests[FLUXION_RENDER_VIEW_MAX_SHADOWS];
+    u32 groupFirst[FLUXION_RENDER_VIEW_MAX_SHADOWS];
+    u32 groupCount = 0;
+
+    for (u32 i = 0; i < offered; )
     {
-        requests[i].tileCount = 1;
-        requests[i].tag = i;
+        u32 runLength = 1;
+        while (i + runLength < offered &&
+               shadows[i + runLength].lightIndex == shadows[i].lightIndex &&
+               runLength < FLUXION_SHADOW_ATLAS_MAX_TILES_PER_REQUEST)
+        {
+            ++runLength;
+        }
+
+        requests[groupCount].tileCount = runLength;
+        requests[groupCount].tag = groupCount;
+        groupFirst[groupCount] = i;
+        ++groupCount;
+
+        i += runLength;
     }
-    Fluxion_ShadowAtlas_Allocate(&atlas, requests, requested, results);
+
+    FluxionShadowAtlasResult results[FLUXION_RENDER_VIEW_MAX_SHADOWS];
+    Fluxion_ShadowAtlas_Allocate(&atlas, requests, groupCount, results);
 
     FluxionRenderShadowGPU* mapped = (FluxionRenderShadowGPU*)Fluxion_RHI_MapBuffer(record->shadowStaging);
     if (mapped == NULL) return 0;
 
     u32 written = 0;
-    for (u32 i = 0; i < requested; ++i)
+    for (u32 group = 0; group < groupCount; ++group)
     {
-        if (!results[i].fitted) continue;
+        if (!results[group].fitted) continue;
 
-        const FluxionRenderViewShadow* shadow = &shadows[i];
-        const FluxionShadowAtlasTile tile = results[i].tiles[0];
-
-        record->shadowMatrices[written] = shadow->lightViewProjection;
-        record->shadowTiles[written] = tile;
-
-        FluxionRenderShadowGPU* out = &mapped[written];
-
-        // A row at a time, and no transpose: what the shader does with
-        // these is four dot products against a position, which is the
-        // matrix read exactly as it is written here.
-        for (u32 row = 0; row < 4; ++row)
+        for (u32 slot = 0; slot < results[group].tileCount; ++slot)
         {
-            for (u32 column = 0; column < 4; ++column)
-            {
-                out->lightRows[row][column] = shadow->lightViewProjection.m[row][column];
-            }
+            const FluxionRenderViewShadow* shadow = &shadows[groupFirst[group] + slot];
+            const FluxionShadowAtlasTile tile = results[group].tiles[slot];
+
+            record->shadowMatrices[written] = shadow->lightViewProjection;
+            record->shadowTiles[written] = tile;
+
+            Fluxion_RenderViewInternal_WriteShadow(&mapped[written], shadow, &atlas, tile);
+            ++written;
         }
-
-        const FluxionVec4 rect = Fluxion_ShadowAtlas_TileRect(&atlas, tile);
-        out->atlasRect[0] = rect.x;
-        out->atlasRect[1] = rect.y;
-        out->atlasRect[2] = rect.z;
-        out->atlasRect[3] = rect.w;
-
-        out->range[0] = (f32)shadow->lightIndex;
-        out->range[1] = shadow->coverTo;
-        out->range[2] = shadow->blendBand;
-        out->range[3] = 0.0f;
-
-        out->bias[0] = shadow->depthBias;
-        out->bias[1] = shadow->normalBias;
-        out->bias[2] = 0.0f;
-        out->bias[3] = 0.0f;
-
-        ++written;
     }
 
     Fluxion_RHI_UnmapBuffer(record->shadowStaging);

@@ -217,6 +217,27 @@ void Fluxion_ShadowMatrices_DirectionalBias(f32 radius, u32 tileSize, f32* outDe
     if (outNormalBias != NULL) *outNormalBias = worldPerTexel * texelDiagonal;
 }
 
+void Fluxion_ShadowMatrices_PerspectiveBias(f32 range, u32 tileSize, f32* outDepthBias, f32* outNormalBias)
+{
+    if (range <= 0.0f) range = 1.0f;
+    if (tileSize == 0) tileSize = 1;
+
+    // At the far end of the light's reach, where a texel is widest. A
+    // cube face spans ninety degrees, so at a distance it covers twice
+    // that distance across -- and a spot's cone is narrower, which makes
+    // this the safe side to be wrong on for both.
+    const f32 worldPerTexel = (2.0f * range) / (f32)tileSize;
+
+    // The same shape as the sun's, and the same warning: what it is a
+    // fraction of is not evenly spread here.
+    const f32 depthPerTexel = 1.0f / (f32)tileSize;
+    const f32 steepestSlopeCovered = 3.0f;
+    const f32 texelDiagonal = 1.41421356f;
+
+    if (outDepthBias != NULL) *outDepthBias = depthPerTexel * steepestSlopeCovered;
+    if (outNormalBias != NULL) *outNormalBias = worldPerTexel * texelDiagonal;
+}
+
 bool Fluxion_ShadowMatrices_CascadeSplits(f32 nearPlane, f32 farPlane, u32 count, f32 blend, f32* outSplits)
 {
     if (outSplits == NULL) return false;

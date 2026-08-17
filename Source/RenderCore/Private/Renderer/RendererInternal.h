@@ -107,12 +107,18 @@ extern "C" {
 #define FLUXION_RENDERER_DFG_SIZE 128
 
 // One depth texture for every shadow in the frame, cut into equal
-// tiles. Two by two at these numbers -- enough for the sun's four
-// cascades, which is what the sun needs and all it needs. Raising the
-// atlas is the one number to change; the allocator and everything above
-// it are told the size rather than assuming it.
+// tiles. Four by four at these numbers: the sun's cascades no longer
+// have the atlas to themselves, and a single point light wants six
+// tiles of it on its own.
+//
+// The tile got smaller rather than the atlas bigger, because the atlas
+// is what costs memory and a tile is what costs sharpness -- and the
+// sharpness lost is mostly in the far cascades, where a texel already
+// covers more than anyone can make out. Raising the atlas is the one
+// number to change; the allocator and everything above it are told the
+// size rather than assuming it.
 #define FLUXION_RENDERER_SHADOW_ATLAS_SIZE 2048
-#define FLUXION_RENDERER_SHADOW_TILE_SIZE 1024
+#define FLUXION_RENDERER_SHADOW_TILE_SIZE 512
 
 // One canonical, engine-owned bind-group-layout shape per FRAME/OBJECT
 // frequency, independent of any particular shader -- every RenderView

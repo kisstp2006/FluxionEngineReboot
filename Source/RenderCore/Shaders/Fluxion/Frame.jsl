@@ -189,7 +189,9 @@ struct FluxionShadow
     //    shadows can be ordered near to far and each cover its own share.
     // z: how wide the handover to the next one is at that far edge. Zero
     //    means a hard change, which is visible as a line across the floor.
-    // w: unused.
+    // w: how this light's shadows are chosen -- zero by how far the eye
+    //    is, one by which way the surface lies from the light. The first
+    //    is a set of cascades, the second the six faces of a cube.
     Vector4 range;
 
     // x: how far along the light's own axis to move the comparison, and

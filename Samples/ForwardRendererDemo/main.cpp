@@ -252,6 +252,16 @@ static const f32 kCascadeLogarithmicShare = 0.85f;
 // still read from one map alone.
 static const f32 kCascadeHandoverShare = 0.1f;
 
+// How many tiles the sun takes. Four, out of an atlas that holds
+// sixteen: the rest are what a spot light and a point light need, and a
+// sun that took them all would be the only thing in the scene casting.
+static const u32 kSunCascadeCount = 4;
+
+// How far out the sun bothers to cast. Not its camera's far plane: a
+// last cascade stretched over a hundred metres would spend its texels on
+// ground nobody can make out, and every nearer one would be coarser.
+static const f32 kSunShadowDistance = 40.0f;
+
 int main(int argc, char** argv)
 {
     // --graphics=vulkan (default) | --graphics=opengl | --graphics=d3d12 --
@@ -1520,56 +1530,51 @@ int main(int argc, char** argv)
         }
         Fluxion_RenderView_SetLights(frameView, sceneLights, lightsUsed);
 
-        // --- What the sun casts ------------------------------------------
+        // --- What each light casts ---------------------------------------
         //
-        // One cascade per tile of the atlas, near to far. The near ones
-        // cover a few metres at the map's full resolution and the far one
-        // covers the rest of what is visible -- which is the whole trick:
-        // detail where the pixels are, and coverage everywhere else.
+        // Three kinds, three shapes. The sun gets cascades, because it
+        // covers everything and the detail has to go where the pixels
+        // are; the spot gets the one map its cone needs; the point light
+        // gets six, because it shines every way at once. They go in
+        // together, and the atlas hands out what it has -- a light that
+        // does not fit casts nothing rather than something broken.
         {
             u32 atlasSize = 0;
             u32 tileSize = 0;
             Fluxion_RenderView_GetShadowAtlasSize(frameView, &atlasSize, &tileSize);
-            const u32 tilesAcross = tileSize > 0 ? atlasSize / tileSize : 0;
-            const u32 cascadeCount = tilesAcross * tilesAcross;
 
-            // Which light is the sun. The first directional one: a scene
-            // with two suns is not a thing this sample makes.
-            u32 sunIndex = lightsUsed;
-            for (u32 i = 0; i < lightsUsed; ++i)
-            {
-                if (sceneLights[i].type == FLUXION_RENDER_LIGHT_DIRECTIONAL) { sunIndex = i; break; }
-            }
+            FluxionVec3 eye{};
+            FluxionVec3 forward{};
+            Fluxion_Mat4_DecomposeView(cameraView, &eye, &forward);
 
             FluxionRenderViewShadow shadows[FLUXION_RENDER_VIEW_MAX_SHADOWS] = {};
             u32 shadowCount = 0;
 
-            if (sunIndex < lightsUsed && cascadeCount > 0 && cascadeCount <= FLUXION_RENDER_VIEW_MAX_SHADOWS)
+            for (u32 lightIndex = 0; lightIndex < lightsUsed; ++lightIndex)
             {
-                FluxionVec3 eye{};
-                FluxionVec3 forward{};
-                Fluxion_Mat4_DecomposeView(cameraView, &eye, &forward);
+                const FluxionRenderLight& light = sceneLights[lightIndex];
 
-                // Not out to the camera's own far plane. A sun that had
-                // to cover a hundred metres would spend its last cascade
-                // on ground nobody can make out anyway, and every nearer
-                // one would be coarser for it.
-                const f32 shadowDistance = 40.0f;
-
-                f32 splits[FLUXION_SHADOW_MAX_CASCADES + 1] = {};
-                if (Fluxion_ShadowMatrices_CascadeSplits(kCameraNearPlane, shadowDistance, cascadeCount,
-                                                         kCascadeLogarithmicShare, splits))
+                if (light.type == FLUXION_RENDER_LIGHT_DIRECTIONAL)
                 {
-                    for (u32 i = 0; i < cascadeCount; ++i)
+                    if (shadowCount + kSunCascadeCount > FLUXION_RENDER_VIEW_MAX_SHADOWS) continue;
+
+                    f32 splits[FLUXION_SHADOW_MAX_CASCADES + 1] = {};
+                    if (!Fluxion_ShadowMatrices_CascadeSplits(kCameraNearPlane, kSunShadowDistance, kSunCascadeCount,
+                                                             kCascadeLogarithmicShare, splits))
+                    {
+                        continue;
+                    }
+
+                    for (u32 i = 0; i < kSunCascadeCount; ++i)
                     {
                         f32 radius = 0.0f;
                         const FluxionVec3 centre = Fluxion_ShadowMatrices_CascadeSphere(
                             eye, forward, kCameraFieldOfView, aspect, splits[i], splits[i + 1], &radius);
 
-                        FluxionRenderViewShadow* shadow = &shadows[shadowCount];
+                        FluxionRenderViewShadow* shadow = &shadows[shadowCount++];
                         shadow->lightViewProjection = Fluxion_ShadowMatrices_Directional(
-                            sceneLights[sunIndex].direction, centre, radius, tileSize);
-                        shadow->lightIndex = sunIndex;
+                            light.direction, centre, radius, tileSize);
+                        shadow->lightIndex = lightIndex;
                         shadow->coverTo = splits[i + 1];
 
                         // Handed over across the last part of each
@@ -1577,7 +1582,41 @@ int main(int argc, char** argv)
                         shadow->blendBand = (splits[i + 1] - splits[i]) * kCascadeHandoverShare;
 
                         Fluxion_ShadowMatrices_DirectionalBias(radius, tileSize, &shadow->depthBias, &shadow->normalBias);
-                        ++shadowCount;
+                    }
+                }
+                else if (light.type == FLUXION_RENDER_LIGHT_SPOT)
+                {
+                    if (shadowCount + 1 > FLUXION_RENDER_VIEW_MAX_SHADOWS) continue;
+
+                    FluxionRenderViewShadow* shadow = &shadows[shadowCount++];
+                    // Back to an angle. A light carries the cosine
+                    // because that is what shading wants every pixel; a
+                    // projection wants the angle itself, and this is the
+                    // one place a frame pays for turning it back.
+                    shadow->lightViewProjection = Fluxion_ShadowMatrices_Spot(
+                        light.position, light.direction, std::acos(light.outerConeCos), light.range);
+                    shadow->lightIndex = lightIndex;
+
+                    // One map, so nothing to hand over to and nothing to
+                    // stop covering -- the cone's own falloff already
+                    // ends where the shadow would.
+                    shadow->coverTo = kCameraFarPlane;
+
+                    Fluxion_ShadowMatrices_PerspectiveBias(light.range, tileSize, &shadow->depthBias, &shadow->normalBias);
+                }
+                else
+                {
+                    if (shadowCount + FLUXION_RHI_CUBE_FACE_COUNT > FLUXION_RENDER_VIEW_MAX_SHADOWS) continue;
+
+                    for (u32 face = 0; face < FLUXION_RHI_CUBE_FACE_COUNT; ++face)
+                    {
+                        FluxionRenderViewShadow* shadow = &shadows[shadowCount++];
+                        shadow->lightViewProjection = Fluxion_ShadowMatrices_PointFace(light.position, face, light.range);
+                        shadow->lightIndex = lightIndex;
+                        shadow->coverTo = kCameraFarPlane;
+                        shadow->cubeFaces = true;
+
+                        Fluxion_ShadowMatrices_PerspectiveBias(light.range, tileSize, &shadow->depthBias, &shadow->normalBias);
                     }
                 }
             }

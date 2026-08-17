@@ -248,7 +248,11 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view);
 // How many shadows one view may hold at once. A budget rather than a
 // limit on lights: a light that finds no room casts none, which is said
 // rather than silently done -- see ShadowAtlas.h.
-#define FLUXION_RENDER_VIEW_MAX_SHADOWS 8
+//
+// As many as the atlas has tiles, so this is never the thing that runs
+// out first -- the atlas is, and the atlas is the one that can say which
+// light lost its shadow.
+#define FLUXION_RENDER_VIEW_MAX_SHADOWS 16
 
 // One shadow: a light, a matrix, and how far out it is the one to read.
 typedef struct FluxionRenderViewShadow
@@ -277,6 +281,16 @@ typedef struct FluxionRenderViewShadow
     // surface shadowing itself in stripes.
     f32 depthBias;
     f32 normalBias;
+
+    // True when this light's shadows are the six faces of a cube around
+    // it rather than slices of the distance from the eye.
+    //
+    // A point light shines every way at once, so which of its maps a
+    // surface reads is decided by WHERE THE SURFACE IS relative to the
+    // light, not by how far the eye is. Six of them, in the order
+    // Fluxion_ShadowMatrices_PointFace numbers them, and `coverTo` then
+    // says how far out the whole cube is worth reading at all.
+    bool cubeFaces;
 } FluxionRenderViewShadow;
 
 // The shadows this view draws, replacing whatever it had.
@@ -286,6 +300,12 @@ typedef struct FluxionRenderViewShadow
 // of them there was room for. One light's shadows must be next to each
 // other in the array and ordered near to far; that is what lets a surface
 // find the sharpest one covering it without searching the whole list.
+//
+// A LIGHT GETS ALL OF ITS SHADOWS OR NONE. Half a cube is not a worse
+// shadow, it is a light that goes dark in three directions, and half a
+// cascade set is a shadow that ends somewhere nobody chose. So the
+// atlas is asked for each light's shadows together, and a light that
+// does not fit is left out whole -- which the returned count says.
 //
 // Passing zero is not a special case: a scene where nothing casts a
 // shadow is a picture rather than a fault, and the pass then does nothing
