@@ -219,16 +219,49 @@ void CallVoid(TestContext& ctx, Vm* vm, ObjectHandle instance, u32 classIndex, c
     TEST_CHECK(ctx, result.IsOk());
 }
 
+// Every cache directory this run claimed, so they can be taken away
+// again at the end.
+std::vector<std::filesystem::path> g_cacheDirectories;
+
+// A directory nobody else is writing into.
+//
+// The checks below count how many modules were COMPILED and how many
+// came off disk, which only means anything if this cache is this run's
+// alone. A fixed path is not: a second copy of this binary would clear
+// the directory and warm it in the middle of the first one's counting,
+// and both would then see numbers that belong to neither.
+//
+// Claimed by creating rather than by naming: create_directories says
+// false when the directory is already there, so the first name that
+// succeeds is one no other process holds. No process id is needed, and
+// none is portable anyway.
 std::filesystem::path MakeCacheDirectory(const char* name)
 {
     std::error_code error;
     const std::filesystem::path root = std::filesystem::temp_directory_path(error);
     if (error) return std::filesystem::path();
 
-    const std::filesystem::path directory = root / "FluxionSceneReloadTests" / name;
-    std::filesystem::remove_all(directory, error);
-    std::filesystem::create_directories(directory, error);
-    return error ? std::filesystem::path() : directory;
+    const std::filesystem::path parent = root / "FluxionSceneReloadTests";
+    for (u32 attempt = 0; attempt < 4096; ++attempt)
+    {
+        const std::filesystem::path directory = parent / (std::string(name) + "-" + std::to_string(attempt));
+
+        error.clear();
+        if (std::filesystem::create_directories(directory, error) && !error)
+        {
+            g_cacheDirectories.push_back(directory);
+            return directory;
+        }
+    }
+
+    return std::filesystem::path();
+}
+
+void RemoveCacheDirectories()
+{
+    std::error_code error;
+    for (const std::filesystem::path& directory : g_cacheDirectories) std::filesystem::remove_all(directory, error);
+    g_cacheDirectories.clear();
 }
 
 // Two shapes of the same component. The second declares something ahead
@@ -755,4 +788,9 @@ void Test_Reload_Run(TestContext& ctx)
             TEST_CHECK(ctx, CallInt(ctx, scene.Machine(), instance, reloadedClass, "Ticks") == ticksBefore + 10);
         }
     }
+
+    // The directories are claimed by creating them, so leaving them
+    // behind would make every later run climb past a longer list before
+    // finding a free name.
+    RemoveCacheDirectories();
 }

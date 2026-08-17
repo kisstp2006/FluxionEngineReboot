@@ -48,24 +48,17 @@
 
 // What actually reaches the eye from a surface.
 //
-// The reflectance model in BRDF.jsl answers "of the light arriving from
-// there, how much leaves towards here". This file answers the rest of the
-// question: how much light arrives, and from where.
-//
-// The two are separate because they change for different reasons. A new
-// kind of light -- a point, a spot, an area -- changes this file and not
-// that one. A better reflectance model changes that one and not this.
+// BRDF.jsl answers "of the light arriving from there, how much leaves
+// towards here"; this file answers how much arrives, and from where. Two
+// files because they change for different reasons: a new kind of light
+// touches this one, a better reflectance model the other.
 
-// One directional light.
+// One directional light -- the sun, far enough away that its direction
+// is one vector for the whole scene.
 //
-// Directional because it is the sun: far enough away that its direction
-// is the same everywhere in the scene, which is what makes it a single
-// vector rather than something computed per pixel.
-//
-// The cosine of the incidence angle is applied HERE and not inside the
-// reflectance model. It says how much light falls on the surface, which
-// is a property of the geometry rather than of the material -- and a
-// second light would otherwise apply it a second time.
+// The incidence cosine is applied HERE rather than inside the
+// reflectance model: it is a property of the geometry, and a second
+// light would otherwise apply it a second time.
 Vector3 EvaluateDirectionalLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 L, Vector3 lightColor,
                                  Vector3 energyCompensation)
 {
@@ -84,12 +77,10 @@ Vector3 EvaluateDirectionalLight(SurfaceData surface, Vector3 N, Vector3 V, Vect
 
 // How much of a light reaches something this far away.
 //
-// Inverse square, times a window that reaches exactly zero at the range.
-// The window is what makes many lights affordable: a light dropped while
-// still contributing leaves a moving edge, so the falloff is shaped to
-// reach zero on its own and dropping it there costs nothing. The
-// square-of-a-square shape is the published one -- smooth at the far
-// end, cheap, and it barely disturbs the inverse square elsewhere.
+// Inverse square, times a window reaching exactly zero at the range --
+// which is what makes many lights affordable, since a light dropped
+// while still contributing leaves a moving edge. The square-of-a-square
+// shape is the published one.
 float DistanceAttenuation(float distanceSquared, float range)
 {
     float attenuation = 1.0 / max(distanceSquared, FLUXION_EPSILON);
@@ -118,19 +109,23 @@ float SpotAttenuation(Vector3 lightDirection, Vector3 toSurface, float innerCos,
     return Square(t) * (3.0 - 2.0 * t);
 }
 
-// How much of one shadow's light reaches this point.
-//
-// One means all of it. A point outside what this shadow recorded is lit,
-// not dark: nothing was written there, so nothing is known to stand in
-// the way -- and guessing dark would put a black slab wherever a shadow
-// map ends.
-float ShadowFactor(FluxionShadow shadow, Vector3 P, Vector3 N)
+// How far the filter reaches from its centre, in texels, and how many
+// taps that is. The bias has to cover the depth across the whole
+// footprint the comparison reads, so these belong to it as much as to
+// the filter.
+#define FLUXION_SHADOW_FILTER_REACH 1.0
+#define FLUXION_SHADOW_FILTER_TAPS 9.0
+
+// How much of one shadow's light reaches this point. One means all of
+// it, which is also what a point outside the map gets: nothing was
+// recorded there, and guessing dark would put a black slab wherever a
+// shadow map ends. `NoL` is the cosine to the light -- see the bias.
+float ShadowFactor(FluxionShadow shadow, Vector3 P, Vector3 N, float NoL)
 {
-    // Moved along the normal before it is looked up. The depth was
-    // recorded at the atlas's resolution and is being tested against a
-    // surface sampled at the screen's, and the two disagree by up to a
-    // texel -- moving the lookup out of the surface is what stops that
-    // disagreement from reading as the surface shadowing itself.
+    // Moved out of the surface before the lookup: the depth was recorded
+    // at the atlas's resolution and is tested against a surface sampled
+    // at the screen's, and that disagreement otherwise reads as the
+    // surface shadowing itself.
     Vector3 offsetP = P + N * shadow.bias.y;
     Vector4 p = Vector4(offsetP.x, offsetP.y, offsetP.z, 1.0);
 
@@ -156,23 +151,69 @@ float ShadowFactor(FluxionShadow shadow, Vector3 P, Vector3 N)
     float u = ndc.x * 0.5 + 0.5;
     float v = 0.5 - ndc.y * 0.5;
 
-    float atlasU = shadow.atlasRect.x + u * shadow.atlasRect.z;
-    float atlasV = shadow.atlasRect.y + v * shadow.atlasRect.w;
-    atlasV = shadowAtlasParams.y * atlasV + shadowAtlasParams.z;
+    float centreU = shadow.atlasRect.x + u * shadow.atlasRect.z;
+    float centreV = shadow.atlasRect.y + v * shadow.atlasRect.w;
 
     // Pulled towards the light before the comparison, for the other half
     // of the same disagreement the normal offset above addresses.
-    float reference = ndc.z - shadow.bias.x;
-    return textureCompare(shadowAtlas, Vector2(atlasU, atlasV), reference);
+    //
+    // SCALED BY THE SURFACE'S SLOPE, because no fixed amount suits two
+    // surfaces at different angles: one edge-on to the light crosses
+    // many texels' worth of depth within a single texel, one facing it
+    // almost none. The tangent of the incidence angle is that ratio,
+    // bounded because it runs away at grazing angles.
+    //
+    // Times the filter's reach too -- the comparison reads a footprint,
+    // not a texel, and its far side is where a lit surface would
+    // otherwise shadow itself.
+    float slope = sqrt(max(1.0 - NoL * NoL, 0.0)) / max(NoL, 0.05);
+    float boundedSlope = min(slope, 8.0);
+    float reference = ndc.z - shadow.bias.x * (1.0 + boundedSlope) * (1.0 + FLUXION_SHADOW_FILTER_REACH);
+
+    float texel = shadowAtlasParams.x;
+
+    // HOW FAR A TAP MAY WANDER AND STILL BE THIS LIGHT'S SHADOW. Every
+    // shadow shares one texture, so a tap past the tile's edge reads the
+    // NEXT LIGHT'S map, not this one's edge. Half a texel inside is
+    // where a bilinear read stops reaching over.
+    float halfTexel = texel * 0.5;
+    float lowU = shadow.atlasRect.x + halfTexel;
+    float highU = shadow.atlasRect.x + shadow.atlasRect.z - halfTexel;
+    float lowV = shadow.atlasRect.y + halfTexel;
+    float highV = shadow.atlasRect.y + shadow.atlasRect.w - halfTexel;
+
+    // Nine comparisons a texel apart, averaged.
+    //
+    // THE ANSWERS ARE FILTERED, NOT THE DEPTHS -- the whole published
+    // idea, and why the sampler does the comparing. An average of depths
+    // is a number no surface was at; an average of "did the light reach
+    // me" is how much of it did. Each tap is already the hardware's own
+    // average of four texels, so three by three covers four by four.
+    float sum = 0.0;
+    for (int y = -1; y <= 1; y = y + 1)
+    {
+        for (int x = -1; x <= 1; x = x + 1)
+        {
+            float tapU = min(max(centreU + float(x) * texel, lowU), highU);
+            float tapV = min(max(centreV + float(y) * texel, lowV), highV);
+
+            // To the device's own way up, last, so everything above is
+            // in the one convention this engine states its rectangles in.
+            tapV = shadowAtlasParams.y * tapV + shadowAtlasParams.z;
+
+            sum = sum + textureCompare(shadowAtlas, Vector2(tapU, tapV), reference);
+        }
+    }
+
+    return sum / FLUXION_SHADOW_FILTER_TAPS;
 }
 
 // Which of a cube's six maps a direction falls in.
 //
-// The largest component says which way it mostly points, and its sign
-// says which end -- the same order Fluxion_ShadowMatrices_PointFace
-// builds them in: +X, -X, +Y, -Y, +Z, -Z. A face picked in a different
-// order would look up a real depth from the wrong direction, which is a
-// shadow in the wrong place rather than no shadow.
+// Largest component for the axis, its sign for the end -- the order
+// Fluxion_ShadowMatrices_PointFace builds them in: +X, -X, +Y, -Y, +Z,
+// -Z. A different order reads a real depth from the wrong direction,
+// which is a shadow in the wrong place rather than no shadow.
 int CubeFaceOf(Vector3 direction)
 {
     Vector3 size = abs(direction);
@@ -200,7 +241,7 @@ int CubeFaceOf(Vector3 direction)
 // distance from the eye at its own resolution, or a point light's six
 // faces, which cover directions rather than distances. Which of the two
 // this light is comes from the record itself.
-float EvaluateShadow(int lightIndex, Vector3 P, Vector3 N, Vector3 lightPosition, float viewDistance)
+float EvaluateShadow(int lightIndex, Vector3 P, Vector3 N, float NoL, Vector3 lightPosition, float viewDistance)
 {
     int shadowCount = int(lightParams.y);
 
@@ -233,7 +274,7 @@ float EvaluateShadow(int lightIndex, Vector3 P, Vector3 N, Vector3 lightPosition
         }
 
         int face = CubeFaceOf(P - lightPosition);
-        return ShadowFactor(shadows[first + face], P, N);
+        return ShadowFactor(shadows[first + face], P, N, NoL);
     }
 
     // Cascades: the nearest one that reaches this far is the sharpest
@@ -253,7 +294,7 @@ float EvaluateShadow(int lightIndex, Vector3 P, Vector3 N, Vector3 lightPosition
         return 1.0;
     }
 
-    float factor = ShadowFactor(shadows[chosen], P, N);
+    float factor = ShadowFactor(shadows[chosen], P, N, NoL);
 
     // Two cascades meeting at a hard line is the thing a viewer notices
     // about cascades at all, because the two sides of it are shadows of
@@ -264,7 +305,7 @@ float EvaluateShadow(int lightIndex, Vector3 P, Vector3 N, Vector3 lightPosition
     if (band > 0.0 && next < shadowCount && int(shadows[next].range.x) == lightIndex)
     {
         float handover = Saturate((viewDistance - (shadows[chosen].range.y - band)) / band);
-        factor = factor + (ShadowFactor(shadows[next], P, N) - factor) * handover;
+        factor = factor + (ShadowFactor(shadows[next], P, N, NoL) - factor) * handover;
     }
 
     return factor;
@@ -308,7 +349,13 @@ Vector3 EvaluateOneLight(SurfaceData surface, Vector3 N, Vector3 V, Vector3 P, F
     // Asked after the falloff and before the reflectance: a light that
     // does not reach here needs no shadow looked up, and one that is
     // fully blocked needs no reflectance worked out.
-    float shadow = EvaluateShadow(lightIndex, P, N, light.positionRange.xyz, viewDistance);
+    //
+    // The cosine goes with it because the depth offset depends on it --
+    // a surface edge-on to the light needs a far larger one than a
+    // surface facing it. Worked out here rather than inside, where the
+    // way back to the light is no longer a thing that exists.
+    float shadowNoL = Saturate(dot(N, L));
+    float shadow = EvaluateShadow(lightIndex, P, N, shadowNoL, light.positionRange.xyz, viewDistance);
     if (shadow <= 0.0)
     {
         return Vector3(0.0, 0.0, 0.0);

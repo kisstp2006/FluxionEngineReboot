@@ -267,6 +267,79 @@ static inline FluxionMat4 Fluxion_Mat4_Transposed(FluxionMat4 m)
     return r;
 }
 
+// The six planes a view-projection clips against.
+//
+// Each is xyz the outward-facing... inward-facing normal and w the
+// distance, so a point is inside when dot(normal, point) + w >= 0 for
+// all six. They come out of the matrix by adding or subtracting two of
+// its rows -- Gribb and Hartmann's derivation, which falls out of
+// writing the clip-space test in terms of the untransformed point.
+//
+// Near is the third row ALONE rather than the sum of two, because depth
+// comes out of every matrix in this engine in 0..1 rather than -1..1.
+typedef struct FluxionFrustumPlanes
+{
+    FluxionVec4 planes[6];
+} FluxionFrustumPlanes;
+
+static inline FluxionVec4 Fluxion_FrustumInternal_Normalize(FluxionVec4 plane)
+{
+    const f32 length = sqrtf(plane.x * plane.x + plane.y * plane.y + plane.z * plane.z);
+    if (length <= 0.0f) return plane;
+
+    const f32 inverse = 1.0f / length;
+    FluxionVec4 r;
+    r.x = plane.x * inverse;
+    r.y = plane.y * inverse;
+    r.z = plane.z * inverse;
+    r.w = plane.w * inverse;
+    return r;
+}
+
+static inline FluxionFrustumPlanes Fluxion_Mat4_FrustumPlanes(FluxionMat4 viewProjection)
+{
+    const f32* row0 = viewProjection.m[0];
+    const f32* row1 = viewProjection.m[1];
+    const f32* row2 = viewProjection.m[2];
+    const f32* row3 = viewProjection.m[3];
+
+    FluxionFrustumPlanes result;
+    for (int i = 0; i < 4; ++i)
+    {
+        ((f32*)&result.planes[0])[i] = row3[i] + row0[i]; // left
+        ((f32*)&result.planes[1])[i] = row3[i] - row0[i]; // right
+        ((f32*)&result.planes[2])[i] = row3[i] + row1[i]; // bottom
+        ((f32*)&result.planes[3])[i] = row3[i] - row1[i]; // top
+        ((f32*)&result.planes[4])[i] = row2[i];           // near
+        ((f32*)&result.planes[5])[i] = row3[i] - row2[i]; // far
+    }
+
+    // Normalized so the distance below is in world units rather than in
+    // whatever scale the matrix happened to carry -- which is what lets
+    // a radius be compared against it.
+    for (int i = 0; i < 6; ++i) result.planes[i] = Fluxion_FrustumInternal_Normalize(result.planes[i]);
+    return result;
+}
+
+// False when the sphere is wholly outside at least one plane.
+//
+// True does NOT mean it is inside: a sphere straddling two planes near a
+// corner passes both tests and is still outside the frustum. That is the
+// right way round for culling -- what is thrown away is only what
+// certainly cannot be seen.
+static inline bool Fluxion_Frustum_TouchesSphere(const FluxionFrustumPlanes* frustum, FluxionVec3 centre, f32 radius)
+{
+    if (frustum == NULL) return true;
+
+    for (int i = 0; i < 6; ++i)
+    {
+        const FluxionVec4 plane = frustum->planes[i];
+        const f32 distance = plane.x * centre.x + plane.y * centre.y + plane.z * centre.z + plane.w;
+        if (distance < -radius) return false;
+    }
+    return true;
+}
+
 // Where a view matrix puts the eye, and which way it looks.
 //
 // A view matrix moves the world rather than the eye, so neither is in it

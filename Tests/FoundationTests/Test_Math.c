@@ -143,6 +143,65 @@ static void TheGeneralInverse(TestContext* ctx)
     TEST_CHECK(ctx, NearlyEqual(refused.m[1][2], 0.0f));
 }
 
+// --- What a matrix can and cannot see --------------------------------------
+//
+// Checked against an orthographic slab written out by hand, because that
+// is what a sun's shadow uses and its answers can be read off: the slab
+// runs from -2 to 2 across and from 0 to 10 deep, so a sphere at the
+// origin is inside and one ten units to the side is not.
+//
+// The direction of the test matters more than the numbers. Culling may
+// keep something it could have thrown away; it may never throw away
+// something that would have been drawn.
+static void TheFrustumOfAMatrix(TestContext* ctx)
+{
+    const f32 halfWidth = 2.0f;
+    const f32 nearPlane = 0.0f;
+    const f32 farPlane = 10.0f;
+
+    // Looking down negative Z, depth coming out in 0..1 -- the same
+    // convention every matrix in this engine produces.
+    FluxionMat4 m = Fluxion_Mat4_Identity();
+    m.m[0][0] = 1.0f / halfWidth;
+    m.m[1][1] = 1.0f / halfWidth;
+    m.m[2][2] = -1.0f / (farPlane - nearPlane);
+    m.m[2][3] = -nearPlane / (farPlane - nearPlane);
+
+    const FluxionFrustumPlanes frustum = Fluxion_Mat4_FrustumPlanes(m);
+
+    // In the middle of the slab.
+    const FluxionVec3 middle = { 0.0f, 0.0f, -5.0f };
+    TEST_CHECK(ctx, Fluxion_Frustum_TouchesSphere(&frustum, middle, 0.1f));
+
+    // Well off to the side, and small enough not to reach back.
+    const FluxionVec3 aside = { 10.0f, 0.0f, -5.0f };
+    TEST_CHECK(ctx, !Fluxion_Frustum_TouchesSphere(&frustum, aside, 0.5f));
+
+    // The same place, but large enough to reach in. Kept, because part
+    // of it would draw.
+    TEST_CHECK(ctx, Fluxion_Frustum_TouchesSphere(&frustum, aside, 9.0f));
+
+    // Behind the near plane and beyond the far one.
+    const FluxionVec3 behind = { 0.0f, 0.0f, 5.0f };
+    TEST_CHECK(ctx, !Fluxion_Frustum_TouchesSphere(&frustum, behind, 0.5f));
+    const FluxionVec3 beyond = { 0.0f, 0.0f, -20.0f };
+    TEST_CHECK(ctx, !Fluxion_Frustum_TouchesSphere(&frustum, beyond, 0.5f));
+
+    // Straddling the near plane from behind: part of it is inside.
+    TEST_CHECK(ctx, Fluxion_Frustum_TouchesSphere(&frustum, behind, 6.0f));
+
+    // The distances are in world units, which is what lets a radius be
+    // compared against them at all: a sphere just inside the side wall
+    // is kept and one just outside it is not.
+    const FluxionVec3 nearWall = { halfWidth + 0.4f, 0.0f, -5.0f };
+    TEST_CHECK(ctx, Fluxion_Frustum_TouchesSphere(&frustum, nearWall, 0.5f));
+    TEST_CHECK(ctx, !Fluxion_Frustum_TouchesSphere(&frustum, nearWall, 0.3f));
+
+    // Nothing to test against keeps everything -- a caller with no
+    // frustum is not a caller that wants an empty screen.
+    TEST_CHECK(ctx, Fluxion_Frustum_TouchesSphere(NULL, aside, 0.1f));
+}
+
 void Test_Math_Run(TestContext* ctx)
 {
     FluxionVec3 a = { 1.0f, 2.0f, 3.0f };
@@ -178,4 +237,5 @@ void Test_Math_Run(TestContext* ctx)
     TEST_CHECK(ctx, NearlyEqual(qq.w, 1.0f));
 
     TheGeneralInverse(ctx);
+    TheFrustumOfAMatrix(ctx);
 }

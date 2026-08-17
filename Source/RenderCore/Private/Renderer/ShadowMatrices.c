@@ -200,20 +200,25 @@ void Fluxion_ShadowMatrices_DirectionalBias(f32 radius, u32 tileSize, f32* outDe
     // divided by the map's width. So a surface at forty-five degrees
     // crosses exactly one texel's worth of depth per texel, and in the
     // 0..1 the comparison works in, that is one over the width.
+    // ONE TEXEL'S WORTH OF DEPTH, and no more. The slab is twice the
+    // radius -- see the matrix above -- so a surface at forty-five
+    // degrees crosses exactly this much depth per texel, and in the 0..1
+    // the comparison works in that is one over the width.
+    //
+    // What a steeper surface needs is this times its slope, and the
+    // slope is not known here: it is the angle between that surface and
+    // this light, per pixel. The shader scales by it -- see
+    // Lighting.jsl. A constant large enough for every slope would pull
+    // gentle ones so far towards the light that their shadows come away
+    // from what casts them.
     const f32 depthPerTexel = 1.0f / (f32)tileSize;
     const f32 worldPerTexel = (2.0f * radius) / (f32)tileSize;
-
-    // Room for steeper than forty-five degrees, which is most of a
-    // scene. Beyond this a surface nearly edge-on to the light still
-    // stripes -- and no constant fixes that one, because the depth it
-    // would need is the depth of something else.
-    const f32 steepestSlopeCovered = 3.0f;
 
     // A texel's DIAGONAL, not its side: the lookup may land at a corner
     // of one, and moving out by the side would still leave it inside.
     const f32 texelDiagonal = 1.41421356f;
 
-    if (outDepthBias != NULL) *outDepthBias = depthPerTexel * steepestSlopeCovered;
+    if (outDepthBias != NULL) *outDepthBias = depthPerTexel;
     if (outNormalBias != NULL) *outNormalBias = worldPerTexel * texelDiagonal;
 }
 
@@ -228,13 +233,13 @@ void Fluxion_ShadowMatrices_PerspectiveBias(f32 range, u32 tileSize, f32* outDep
     // this the safe side to be wrong on for both.
     const f32 worldPerTexel = (2.0f * range) / (f32)tileSize;
 
-    // The same shape as the sun's, and the same warning: what it is a
-    // fraction of is not evenly spread here.
+    // The same shape as the sun's, scaled by the surface's own slope in
+    // the shader for the same reason -- and with the same warning as the
+    // header gives: what this is a fraction of is not evenly spread here.
     const f32 depthPerTexel = 1.0f / (f32)tileSize;
-    const f32 steepestSlopeCovered = 3.0f;
     const f32 texelDiagonal = 1.41421356f;
 
-    if (outDepthBias != NULL) *outDepthBias = depthPerTexel * steepestSlopeCovered;
+    if (outDepthBias != NULL) *outDepthBias = depthPerTexel;
     if (outNormalBias != NULL) *outNormalBias = worldPerTexel * texelDiagonal;
 }
 

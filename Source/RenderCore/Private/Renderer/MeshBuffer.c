@@ -234,3 +234,16 @@ bool FluxionRendererInternal_MeshBuffer_Get(FluxionMeshBufferHandle mesh, Fluxio
     if (outVertexLayout != NULL) *outVertexLayout = record->vertexLayout;
     return true;
 }
+
+bool FluxionRendererInternal_MeshBuffer_GetBounds(FluxionMeshBufferHandle mesh, FluxionAABB* outBounds)
+{
+    // Its own accessor rather than an eighth output on the one above:
+    // what wants the bounds -- deciding whether to draw at all -- asks
+    // before it wants any of the rest, and a caller that only needs to
+    // know where something is should not have to name six buffers.
+    const FluxionMeshBufferRecord* record = Fluxion_MeshBufferInternal_Resolve(mesh);
+    if (record == NULL) return false;
+
+    if (outBounds != NULL) *outBounds = record->bounds;
+    return true;
+}

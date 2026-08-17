@@ -284,6 +284,16 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
     // every frame. This way each caster costs one.
     FluxionRHIPipelineHandle boundPipeline = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
+    // Worked out once each, before anything is drawn: what a shadow can
+    // see does not change between casters.
+    FluxionFrustumPlanes shadowFrustum[FLUXION_RENDER_VIEW_MAX_SHADOWS];
+    for (u32 shadowIndex = 0; shadowIndex < shadowCount; ++shadowIndex)
+    {
+        FluxionMat4 lightViewProjection;
+        if (!FluxionRendererInternal_RenderView_GetShadow(renderer->currentView, shadowIndex, &lightViewProjection, nullptr)) continue;
+        shadowFrustum[shadowIndex] = Fluxion_Mat4_FrustumPlanes(lightViewProjection);
+    }
+
     for (u32 i = 0; i < renderer->packetCount; ++i)
     {
         const FluxionDrawPacket* packet = &renderer->packets[i];
@@ -293,6 +303,58 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
         bool use16BitIndices;
         FluxionRHIVertexLayout vertexLayout;
         if (!FluxionRendererInternal_MeshBuffer_Get(packet->mesh, &vertexBuffer, &indexBuffer, &vertexCount, &indexCount, &use16BitIndices, &vertexLayout)) continue;
+
+        // Where this caster is and how far it reaches, as a sphere.
+        //
+        // A SPHERE RATHER THAN THE BOX, because a box has to be turned
+        // with the object and a sphere does not -- eight corners
+        // transformed per caster per shadow, against one centre and one
+        // number. It claims more room than the box does, which for
+        // throwing work away is the safe direction: what survives may be
+        // outside, what is dropped certainly is.
+        const FluxionMat4& world = renderer->packetTransforms[i];
+        FluxionAABB bounds;
+        bool haveBounds = FluxionRendererInternal_MeshBuffer_GetBounds(packet->mesh, &bounds);
+
+        FluxionVec3 worldCentre = { 0.0f, 0.0f, 0.0f };
+        f32 worldRadius = 0.0f;
+        if (haveBounds)
+        {
+            const FluxionVec3 centre = { (bounds.min.x + bounds.max.x) * 0.5f,
+                                         (bounds.min.y + bounds.max.y) * 0.5f,
+                                         (bounds.min.z + bounds.max.z) * 0.5f };
+            const FluxionVec3 extent = { (bounds.max.x - bounds.min.x) * 0.5f,
+                                         (bounds.max.y - bounds.min.y) * 0.5f,
+                                         (bounds.max.z - bounds.min.z) * 0.5f };
+
+            worldCentre.x = world.m[0][0] * centre.x + world.m[0][1] * centre.y + world.m[0][2] * centre.z + world.m[0][3];
+            worldCentre.y = world.m[1][0] * centre.x + world.m[1][1] * centre.y + world.m[1][2] * centre.z + world.m[1][3];
+            worldCentre.z = world.m[2][0] * centre.x + world.m[2][1] * centre.y + world.m[2][2] * centre.z + world.m[2][3];
+
+            // The largest the transform stretches anything, taken from
+            // its own rows -- a scale of two in one axis grows the
+            // sphere by two whichever way the object was turned.
+            f32 longestAxis = 0.0f;
+            for (u32 row = 0; row < 3; ++row)
+            {
+                const f32 length = sqrtf(world.m[row][0] * world.m[row][0] +
+                                         world.m[row][1] * world.m[row][1] +
+                                         world.m[row][2] * world.m[row][2]);
+                if (length > longestAxis) longestAxis = length;
+            }
+
+            worldRadius = sqrtf(extent.x * extent.x + extent.y * extent.y + extent.z * extent.z) * longestAxis;
+        }
+
+        // Nothing to draw anywhere is worth finding out before a
+        // pipeline is built for it.
+        bool wantedByAny = false;
+        for (u32 shadowIndex = 0; shadowIndex < shadowCount && !wantedByAny; ++shadowIndex)
+        {
+            if (!haveBounds || Fluxion_Frustum_TouchesSphere(&shadowFrustum[shadowIndex], worldCentre, worldRadius)) wantedByAny = true;
+        }
+        if (!wantedByAny) continue;
+
         if (!EnsurePipeline(renderer, &vertexLayout)) break;
 
         FluxionRHIBindGroupEntry objectEntry;
@@ -334,6 +396,10 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
         {
             FluxionShadowAtlasTile tile;
             if (!FluxionRendererInternal_RenderView_GetShadow(renderer->currentView, shadowIndex, nullptr, &tile)) continue;
+
+            // The near cascades cover a few metres each. Without this
+            // they get the whole world, one draw at a time.
+            if (haveBounds && !Fluxion_Frustum_TouchesSphere(&shadowFrustum[shadowIndex], worldCentre, worldRadius)) continue;
 
             // The viewport is what puts a shadow in its own corner of the
             // atlas, and the scissor is what keeps it there: geometry
