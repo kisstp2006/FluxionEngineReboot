@@ -406,7 +406,18 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
             // camera's answer, which is not this pass's question.
             if (FLUXION_HANDLE_IS_VALID(indexBuffer))
             {
-                Fluxion_RHI_CommandList_DrawIndexed(commandList, indexCount, batch->objectCount, 0, 0, 0);
+                // The batch's own level of detail, because a batch IS a
+                // level: a caster drawn at a different range than the
+                // camera draws it would cast the shadow of a shape that
+                // is not on the screen.
+                FluxionMeshLevel level;
+                if (!Fluxion_MeshBuffer_GetLevel(batch->mesh, batch->lodIndex, &level))
+                {
+                    level.firstIndex = 0;
+                    level.indexCount = indexCount;
+                }
+
+                Fluxion_RHI_CommandList_DrawIndexed(commandList, level.indexCount, batch->objectCount, level.firstIndex, 0, 0);
             }
             else
             {

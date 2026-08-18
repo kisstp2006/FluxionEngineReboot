@@ -44,7 +44,9 @@
 #include "RendererInternal.h"
 
 #include <Fluxion/Foundation/Assert.h>
+#include <Fluxion/Foundation/Log.h>
 
+#include <math.h>
 #include <string.h>
 
 typedef struct FluxionMeshBufferRecord
@@ -61,6 +63,10 @@ typedef struct FluxionMeshBufferRecord
     bool use16BitIndices;
     FluxionRHIVertexLayout vertexLayout;
     FluxionAABB bounds;
+
+    // Always at least one, whatever the caller said -- see Create.
+    FluxionMeshLevel levels[FLUXION_MESH_BUFFER_MAX_LEVELS];
+    u32 levelCount;
 } FluxionMeshBufferRecord;
 
 static FluxionMeshBufferRecord s_meshBuffers[FLUXION_RENDERER_MAX_MESH_BUFFERS];
@@ -71,6 +77,63 @@ static FluxionMeshBufferRecord* Fluxion_MeshBufferInternal_Resolve(FluxionMeshBu
     FluxionMeshBufferRecord* record = &s_meshBuffers[handle.index];
     if (!record->alive || record->generation != handle.generation) return NULL;
     return record;
+}
+
+// The levels as the record keeps them: at least one, in range, and in
+// order. False means the description was wrong about its own mesh, which
+// is refused rather than drawn -- see FluxionMeshBufferDesc.
+static bool Fluxion_MeshBufferInternal_MakeLevels(const FluxionMeshBufferDesc* desc, u32 indexCount,
+                                                  FluxionMeshLevel* outLevels, u32* outCount)
+{
+    if (desc->levelCount == 0)
+    {
+        // The whole index buffer, from wherever the camera is. What
+        // every mesh was before there were levels.
+        outLevels[0].firstIndex = 0;
+        outLevels[0].indexCount = indexCount;
+        outLevels[0].minDistance = 0.0f;
+        *outCount = 1;
+        return true;
+    }
+
+    if (desc->levelCount > FLUXION_MESH_BUFFER_MAX_LEVELS)
+    {
+        FLUXION_LOG_ERROR("MeshBuffer", "a mesh described %u levels of detail and %u is the most one may have",
+                          desc->levelCount, (u32)FLUXION_MESH_BUFFER_MAX_LEVELS);
+        return false;
+    }
+
+    for (u32 i = 0; i < desc->levelCount; ++i)
+    {
+        const FluxionMeshLevel* level = &desc->levels[i];
+
+        if (level->indexCount == 0 || (usize)level->firstIndex + level->indexCount > indexCount)
+        {
+            FLUXION_LOG_ERROR("MeshBuffer", "level %u of a mesh reads indices %u..%u of a buffer that holds %u", i,
+                              level->firstIndex, level->firstIndex + level->indexCount, indexCount);
+            return false;
+        }
+
+        outLevels[i] = *level;
+
+        // Level zero starts where the camera is, whatever was written --
+        // there is no distance at which nothing is drawn.
+        if (i == 0)
+        {
+            outLevels[i].minDistance = 0.0f;
+            continue;
+        }
+
+        if (level->minDistance <= outLevels[i - 1].minDistance)
+        {
+            FLUXION_LOG_ERROR("MeshBuffer", "level %u of a mesh begins at %.2f, which is not further away than level %u at %.2f", i,
+                              (f64)level->minDistance, i - 1, (f64)outLevels[i - 1].minDistance);
+            return false;
+        }
+    }
+
+    *outCount = desc->levelCount;
+    return true;
 }
 
 FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device, FluxionRHIQueueHandle queue, const FluxionMeshBufferDesc* desc)
@@ -87,6 +150,15 @@ FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device,
 
     bool hasIndices = desc->indexData != NULL && desc->indexDataSize > 0;
     usize stagingSize = desc->vertexDataSize + (hasIndices ? desc->indexDataSize : 0);
+
+    const u32 describedIndices = hasIndices ? (u32)(desc->indexDataSize / (desc->use16BitIndices ? sizeof(u16) : sizeof(u32))) : 0;
+
+    FluxionMeshLevel levels[FLUXION_MESH_BUFFER_MAX_LEVELS];
+    u32 levelCount = 0;
+
+    // Before a single buffer is made: a mesh whose levels do not fit its
+    // own indices is refused here, where refusing costs nothing.
+    if (!Fluxion_MeshBufferInternal_MakeLevels(desc, describedIndices, levels, &levelCount)) return invalid;
 
     FluxionRHIBufferDesc stagingDesc;
     stagingDesc.size = stagingSize;
@@ -195,6 +267,8 @@ FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device,
     record->use16BitIndices = desc->use16BitIndices;
     record->vertexLayout = desc->vertexLayout;
     record->bounds = desc->bounds;
+    memcpy(record->levels, levels, sizeof(levels));
+    record->levelCount = levelCount;
 
     FluxionMeshBufferHandle handle = { index, generation };
     return handle;
@@ -233,6 +307,73 @@ bool FluxionRendererInternal_MeshBuffer_Get(FluxionMeshBufferHandle mesh, Fluxio
     if (outUse16BitIndices != NULL) *outUse16BitIndices = record->use16BitIndices;
     if (outVertexLayout != NULL) *outVertexLayout = record->vertexLayout;
     return true;
+}
+
+u32 Fluxion_MeshBuffer_GetLevelCount(FluxionMeshBufferHandle mesh)
+{
+    const FluxionMeshBufferRecord* record = Fluxion_MeshBufferInternal_Resolve(mesh);
+    return record != NULL ? record->levelCount : 0;
+}
+
+bool Fluxion_MeshBuffer_GetLevel(FluxionMeshBufferHandle mesh, u32 level, FluxionMeshLevel* outLevel)
+{
+    const FluxionMeshBufferRecord* record = Fluxion_MeshBufferInternal_Resolve(mesh);
+    if (record == NULL || level >= record->levelCount) return false;
+
+    if (outLevel != NULL) *outLevel = record->levels[level];
+    return true;
+}
+
+u32 Fluxion_MeshBuffer_SelectLevel(FluxionMeshBufferHandle mesh, FluxionVec3 cameraPosition, const FluxionMat4* world)
+{
+    const FluxionMeshBufferRecord* record = Fluxion_MeshBufferInternal_Resolve(mesh);
+    if (record == NULL || record->levelCount <= 1) return 0;
+
+    // Where the mesh is and how big it is, once the transform has had
+    // its say -- the same sphere the culling works out, worked out the
+    // same way so that the two cannot disagree about how far away
+    // something is.
+    const FluxionMat4 identity = Fluxion_Mat4_Identity();
+    const FluxionMat4* matrix = world != NULL ? world : &identity;
+
+    const FluxionVec3 centre = { (record->bounds.min.x + record->bounds.max.x) * 0.5f,
+                                 (record->bounds.min.y + record->bounds.max.y) * 0.5f,
+                                 (record->bounds.min.z + record->bounds.max.z) * 0.5f };
+    const FluxionVec3 extent = { (record->bounds.max.x - record->bounds.min.x) * 0.5f,
+                                 (record->bounds.max.y - record->bounds.min.y) * 0.5f,
+                                 (record->bounds.max.z - record->bounds.min.z) * 0.5f };
+
+    const FluxionVec3 worldCentre = {
+        matrix->m[0][0] * centre.x + matrix->m[0][1] * centre.y + matrix->m[0][2] * centre.z + matrix->m[0][3],
+        matrix->m[1][0] * centre.x + matrix->m[1][1] * centre.y + matrix->m[1][2] * centre.z + matrix->m[1][3],
+        matrix->m[2][0] * centre.x + matrix->m[2][1] * centre.y + matrix->m[2][2] * centre.z + matrix->m[2][3],
+    };
+
+    f32 longestAxis = 0.0f;
+    for (u32 row = 0; row < 3; ++row)
+    {
+        const f32 length = sqrtf(matrix->m[row][0] * matrix->m[row][0] +
+                                 matrix->m[row][1] * matrix->m[row][1] +
+                                 matrix->m[row][2] * matrix->m[row][2]);
+        if (length > longestAxis) longestAxis = length;
+    }
+
+    const f32 radius = sqrtf(extent.x * extent.x + extent.y * extent.y + extent.z * extent.z) * longestAxis;
+
+    const f32 dx = worldCentre.x - cameraPosition.x;
+    const f32 dy = worldCentre.y - cameraPosition.y;
+    const f32 dz = worldCentre.z - cameraPosition.z;
+
+    f32 distance = sqrtf(dx * dx + dy * dy + dz * dz) - radius;
+    if (distance < 0.0f) distance = 0.0f;
+
+    // Walked from the far end, so the answer is the COARSEST level this
+    // distance has reached rather than the first one that applies.
+    for (u32 i = record->levelCount; i > 0; --i)
+    {
+        if (distance >= record->levels[i - 1].minDistance) return i - 1;
+    }
+    return 0;
 }
 
 bool FluxionRendererInternal_MeshBuffer_GetBounds(FluxionMeshBufferHandle mesh, FluxionAABB* outBounds)

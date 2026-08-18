@@ -64,7 +64,12 @@ extern "C" {
 // knows nothing about meshes; it is handed a load function and an upload
 // function, exactly as a plugin would hand it some.
 
-#define FLUXION_MESH_ASSET_FORMAT_VERSION 1
+// VERSION 2 ADDED THE LEVELS OF DETAIL, and a version 1 file still
+// reads: it is a mesh with one level, which is what it always was. The
+// writer still produces version 1 for a mesh that has no levels, so a
+// project that never asked for them does not start shipping files an
+// older build cannot open.
+#define FLUXION_MESH_ASSET_FORMAT_VERSION 2
 #define FLUXION_MESH_ASSET_MAGIC          0x464C584Du // "FLXM"
 
 // The name a build setting writes down to say what happens to meshes.
@@ -83,6 +88,12 @@ typedef struct FluxionMeshAsset
     FluxionRHIVertexLayout vertexLayout;
     bool use16BitIndices;
     u32 indexCount;
+
+    // What the mesh buffer is made with. None means one level covering
+    // the whole index buffer -- see FluxionMeshBufferDesc, which says it
+    // the same way and for the same reason.
+    FluxionMeshLevel levels[FLUXION_MESH_BUFFER_MAX_LEVELS];
+    u32 levelCount;
 
     // The mesh as it was read, until the upload takes it. NULL afterwards
     // -- once a device holds the mesh there is no reason to keep a second
@@ -106,6 +117,9 @@ typedef struct FluxionMeshAssetData
     bool use16BitIndices;
     FluxionRHIVertexLayout vertexLayout;
     FluxionAABB bounds;
+
+    FluxionMeshLevel levels[FLUXION_MESH_BUFFER_MAX_LEVELS];
+    u32 levelCount;
 } FluxionMeshAssetData;
 
 // Writes the cooked form into `stream`, which must be a writer. This is

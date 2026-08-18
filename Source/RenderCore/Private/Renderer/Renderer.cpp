@@ -570,7 +570,8 @@ extern "C" void Fluxion_Renderer_SubmitRenderWorld(FluxionRendererHandle rendere
         // something does, every caller already goes through here.
         if (!object.visible) continue;
 
-        Fluxion_GPUScene_AddLayered(renderer->gpuScene, object.mesh, object.material, object.pipeline, &object.transform, object.layerMask);
+        Fluxion_GPUScene_AddDetailed(renderer->gpuScene, object.mesh, object.material, object.pipeline, &object.transform, object.layerMask,
+                                     object.lodIndex);
     }
 }
 

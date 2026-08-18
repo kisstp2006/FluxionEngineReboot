@@ -86,6 +86,13 @@ typedef struct FluxionGPUSceneBatch
     FluxionMaterialHandle material;
     FluxionRenderPipelineHandle pipeline;
 
+    // WHICH LEVEL OF DETAIL, and it is part of what makes a batch a
+    // batch: two objects of the same mesh seen from different distances
+    // read different ranges of the same index buffer, and one command
+    // carries one range. So they are two batches -- of one mesh, one
+    // material, one pipeline, and two levels.
+    u32 lodIndex;
+
     // Where this batch's rows start in the object buffer, and how many
     // there are. These describe what the batch HOLDS.
     u32 firstObject;
@@ -186,6 +193,13 @@ bool Fluxion_GPUScene_Add(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle m
 
 // One thing to draw, with the layers it belongs to. The call above is
 // this one with every layer.
+// The same, and which level of detail this object is drawn at. Out of
+// range for the mesh is clamped to its coarsest level rather than
+// refused: a level that does not exist is a caller's arithmetic being
+// wrong about a mesh, and the object still has to be drawn.
+bool Fluxion_GPUScene_AddDetailed(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
+                                  FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, u32 layerMask, u32 lodIndex);
+
 bool Fluxion_GPUScene_AddLayered(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
                                  FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, u32 layerMask);
 

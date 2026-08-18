@@ -124,8 +124,14 @@ bool Fluxion_MeshAsset_Write(FluxionStream* stream, const FluxionMeshAssetData* 
     if (!stream || !data || !Fluxion_Stream_IsWriting(stream)) return false;
     if (data->vertexDataSize == 0 || data->indexDataSize == 0) return false;
 
+    if (data->levelCount > FLUXION_MESH_BUFFER_MAX_LEVELS) return false;
+
     u32 magic = FLUXION_MESH_ASSET_MAGIC;
-    u32 formatVersion = FLUXION_MESH_ASSET_FORMAT_VERSION;
+
+    // The OLDER version when there is nothing new to say -- see the note
+    // on FLUXION_MESH_ASSET_FORMAT_VERSION. A mesh with one level is the
+    // same file it has always been.
+    u32 formatVersion = data->levelCount > 0 ? 2u : 1u;
     Fluxion_Stream_SerializeU32(stream, &magic);
     Fluxion_Stream_SerializeU32(stream, &formatVersion);
 
@@ -138,6 +144,22 @@ bool Fluxion_MeshAsset_Write(FluxionStream* stream, const FluxionMeshAssetData* 
 
     u8 use16BitIndices = data->use16BitIndices ? 1u : 0u;
     Fluxion_Stream_SerializeU8(stream, &use16BitIndices);
+
+    if (formatVersion >= 2)
+    {
+        u32 levelCount = data->levelCount;
+        Fluxion_Stream_SerializeU32(stream, &levelCount);
+
+        for (u32 i = 0; i < levelCount; ++i)
+        {
+            u32 firstIndex = data->levels[i].firstIndex;
+            u32 indexCount = data->levels[i].indexCount;
+            f32 minDistance = data->levels[i].minDistance;
+            Fluxion_Stream_SerializeU32(stream, &firstIndex);
+            Fluxion_Stream_SerializeU32(stream, &indexCount);
+            Fluxion_Stream_SerializeF32(stream, &minDistance);
+        }
+    }
 
     u32 vertexDataSize = (u32)data->vertexDataSize;
     u32 indexDataSize = (u32)data->indexDataSize;
@@ -189,9 +211,32 @@ bool Fluxion_MeshAsset_Read(const u8* bytes, usize size, FluxionMeshAsset** outA
     Fluxion_MeshAsset_SerializeVec3(&stream, &bounds.max);
 
     u8 use16BitIndices = 0;
+    Fluxion_Stream_SerializeU8(&stream, &use16BitIndices);
+
+    FluxionMeshLevel levels[FLUXION_MESH_BUFFER_MAX_LEVELS];
+    memset(levels, 0, sizeof(levels));
+    u32 levelCount = 0;
+
+    if (formatVersion >= 2)
+    {
+        Fluxion_Stream_SerializeU32(&stream, &levelCount);
+        if (levelCount > FLUXION_MESH_BUFFER_MAX_LEVELS)
+        {
+            FLUXION_LOG_ERROR(FLUXION_MESH_ASSET_LOG_CATEGORY, "this mesh claims %u levels of detail and %u is the most one may have",
+                              levelCount, (u32)FLUXION_MESH_BUFFER_MAX_LEVELS);
+            return false;
+        }
+
+        for (u32 i = 0; i < levelCount; ++i)
+        {
+            Fluxion_Stream_SerializeU32(&stream, &levels[i].firstIndex);
+            Fluxion_Stream_SerializeU32(&stream, &levels[i].indexCount);
+            Fluxion_Stream_SerializeF32(&stream, &levels[i].minDistance);
+        }
+    }
+
     u32 vertexDataSize = 0;
     u32 indexDataSize = 0;
-    Fluxion_Stream_SerializeU8(&stream, &use16BitIndices);
     Fluxion_Stream_SerializeU32(&stream, &vertexDataSize);
     Fluxion_Stream_SerializeU32(&stream, &indexDataSize);
 
@@ -234,6 +279,8 @@ bool Fluxion_MeshAsset_Read(const u8* bytes, usize size, FluxionMeshAsset** outA
     block->asset.bounds = bounds;
     block->asset.vertexLayout = layout;
     block->asset.use16BitIndices = use16BitIndices != 0;
+    memcpy(block->asset.levels, levels, sizeof(levels));
+    block->asset.levelCount = levelCount;
     block->asset.indexCount = use16BitIndices ? (u32)(indexDataSize / sizeof(u16)) : (u32)(indexDataSize / sizeof(u32));
     block->asset.vertexData = vertices;
     block->asset.vertexDataSize = vertexDataSize;
@@ -284,6 +331,8 @@ static bool Fluxion_MeshAsset_Finalize(void* object, void* userData)
     desc.use16BitIndices = asset->use16BitIndices;
     desc.vertexLayout = asset->vertexLayout;
     desc.bounds = asset->bounds;
+    memcpy(desc.levels, asset->levels, sizeof(desc.levels));
+    desc.levelCount = asset->levelCount;
 
     asset->buffer = Fluxion_MeshBuffer_Create(context->device, context->queue, &desc);
     if (!FLUXION_HANDLE_IS_VALID(asset->buffer)) return false;

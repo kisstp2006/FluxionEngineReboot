@@ -42,6 +42,7 @@
 #include "TestFramework.h"
 
 #include <Fluxion/Assets/AssetType.h>
+#include <Fluxion/Foundation/Serialization/Stream.h>
 #include <Fluxion/RenderCore/Renderer/MeshAsset.h>
 
 #include <cstdio>
@@ -225,10 +226,93 @@ void TheTypeShipsCookedAndClaimsNoSourceFormat(TestContext* ctx)
     Fluxion_AssetTypes_Shutdown();
 }
 
+// LEVELS OF DETAIL THROUGH THE FILE, both ways.
+//
+// The two halves that matter are that a mesh WITH levels keeps them, and
+// that a mesh WITHOUT them is still written in the format an older build
+// can open -- the second is the one nobody would notice breaking until a
+// shipped game met a cooked file it could not read.
+static void Test_MeshAsset_Levels(TestContext* ctx)
+{
+    const float vertices[9] = { 0.0f, 0.5f, 0.0f, 0.5f, -0.5f, 0.0f, -0.5f, -0.5f, 0.0f };
+    const unsigned short indices[6] = { 0, 1, 2, 0, 1, 2 };
+
+    FluxionMeshAssetData data;
+    std::memset(&data, 0, sizeof(data));
+    data.vertexData = vertices;
+    data.vertexDataSize = sizeof(vertices);
+    data.indexData = indices;
+    data.indexDataSize = sizeof(indices);
+    data.use16BitIndices = true;
+    data.vertexLayout.attributes[0].location = 0;
+    data.vertexLayout.attributes[0].format = FLUXION_RHI_FORMAT_R32G32B32_FLOAT;
+    data.vertexLayout.attributes[0].offset = 0;
+    data.vertexLayout.attributeCount = 1;
+    data.vertexLayout.stride = 3 * sizeof(float);
+    data.bounds.min = FluxionVec3{ -0.5f, -0.5f, 0.0f };
+    data.bounds.max = FluxionVec3{ 0.5f, 0.5f, 0.0f };
+
+    // --- no levels: the old format, unchanged -----------------------------
+
+    unsigned char plain[1024];
+    FluxionStream plainWriter;
+    Fluxion_MemoryStream_InitWriter(&plainWriter, plain, sizeof(plain));
+    TEST_CHECK(ctx, Fluxion_MeshAsset_Write(&plainWriter, &data));
+    const usize plainSize = Fluxion_Stream_GetPosition(&plainWriter);
+
+    // The version field, read straight out of the bytes: a mesh with
+    // nothing new to say is still a version 1 file.
+    u32 writtenVersion = 0;
+    std::memcpy(&writtenVersion, plain + sizeof(u32), sizeof(writtenVersion));
+    TEST_CHECK(ctx, writtenVersion == 1);
+
+    FluxionMeshAsset* readPlain = nullptr;
+    TEST_CHECK(ctx, Fluxion_MeshAsset_Read(plain, plainSize, &readPlain));
+    if (readPlain != nullptr)
+    {
+        // Which the mesh buffer then turns into one level covering
+        // everything -- that half is Test_MeshBuffer's.
+        TEST_CHECK(ctx, readPlain->levelCount == 0);
+        Fluxion_MeshAsset_Destroy(readPlain);
+    }
+
+    // --- with levels: the new format, and they survive --------------------
+
+    data.levels[0] = FluxionMeshLevel{ 0, 6, 0.0f };
+    data.levels[1] = FluxionMeshLevel{ 3, 3, 25.0f };
+    data.levelCount = 2;
+
+    unsigned char detailed[1024];
+    FluxionStream detailedWriter;
+    Fluxion_MemoryStream_InitWriter(&detailedWriter, detailed, sizeof(detailed));
+    TEST_CHECK(ctx, Fluxion_MeshAsset_Write(&detailedWriter, &data));
+    const usize detailedSize = Fluxion_Stream_GetPosition(&detailedWriter);
+
+    std::memcpy(&writtenVersion, detailed + sizeof(u32), sizeof(writtenVersion));
+    TEST_CHECK(ctx, writtenVersion == 2);
+
+    FluxionMeshAsset* readDetailed = nullptr;
+    TEST_CHECK(ctx, Fluxion_MeshAsset_Read(detailed, detailedSize, &readDetailed));
+    if (readDetailed != nullptr)
+    {
+        TEST_CHECK(ctx, readDetailed->levelCount == 2);
+        TEST_CHECK(ctx, readDetailed->levels[0].firstIndex == 0 && readDetailed->levels[0].indexCount == 6);
+        TEST_CHECK(ctx, readDetailed->levels[1].firstIndex == 3 && readDetailed->levels[1].indexCount == 3);
+        TEST_CHECK(ctx, readDetailed->levels[1].minDistance == 25.0f);
+        Fluxion_MeshAsset_Destroy(readDetailed);
+    }
+    else
+    {
+        TEST_CHECK(ctx, false);
+    }
+}
+
 } // namespace
 
 extern "C" void Test_MeshAsset_Run(TestContext* ctx)
 {
+    Test_MeshAsset_Levels(ctx);
+
     std::fprintf(stderr, "  Test_MeshAsset\n");
 
     RoundTrip(ctx);

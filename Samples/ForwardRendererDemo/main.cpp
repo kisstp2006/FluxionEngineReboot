@@ -555,14 +555,78 @@ int main(int argc, char** argv)
         { {  0.5f, -0.5f,  0.5f }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
         { { -0.5f, -0.5f,  0.5f }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } },
     };
-    static const u16 indices[36] =
+    // AND THE SAME CUBE FROM FURTHER AWAY: four triangles instead of
+    // twelve, sharing the buffers rather than being a mesh of its own.
+    //
+    // THIS IS NOT A SIMPLIFIED CUBE. There is no mesh simplifier in this
+    // engine, so what stands in for one is a tetrahedron drawn inside
+    // the cube -- a closed solid of the right size and roughly the right
+    // colour, which is what a cube two pixels across is. Said plainly
+    // because a reader who took this for real simplification would be
+    // looking for an algorithm that is not there.
+    //
+    // Its corners are four of the cube's own eight, and each face gets
+    // its own three vertices so that a face has one normal, exactly as
+    // the cube above does.
+    static const FluxionDemoVertex coarseVertices[12] =
     {
+        // The face towards +X +Y -Z
+        { {  0.5f,  0.5f,  0.5f }, {  0.577f,  0.577f, -0.577f }, { 0.707f, -0.707f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+        { {  0.5f, -0.5f, -0.5f }, {  0.577f,  0.577f, -0.577f }, { 0.707f, -0.707f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+        { { -0.5f,  0.5f, -0.5f }, {  0.577f,  0.577f, -0.577f }, { 0.707f, -0.707f, 0.0f, 1.0f }, { 0.5f, 0.0f } },
+        // -X +Y +Z
+        { {  0.5f,  0.5f,  0.5f }, { -0.577f,  0.577f,  0.577f }, { 0.707f,  0.707f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+        { { -0.5f,  0.5f, -0.5f }, { -0.577f,  0.577f,  0.577f }, { 0.707f,  0.707f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+        { { -0.5f, -0.5f,  0.5f }, { -0.577f,  0.577f,  0.577f }, { 0.707f,  0.707f, 0.0f, 1.0f }, { 0.5f, 0.0f } },
+        // +X -Y +Z
+        { {  0.5f,  0.5f,  0.5f }, {  0.577f, -0.577f,  0.577f }, { 0.707f,  0.707f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+        { { -0.5f, -0.5f,  0.5f }, {  0.577f, -0.577f,  0.577f }, { 0.707f,  0.707f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+        { {  0.5f, -0.5f, -0.5f }, {  0.577f, -0.577f,  0.577f }, { 0.707f,  0.707f, 0.0f, 1.0f }, { 0.5f, 0.0f } },
+        // -X -Y -Z
+        { {  0.5f, -0.5f, -0.5f }, { -0.577f, -0.577f, -0.577f }, { 0.707f, -0.707f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+        { { -0.5f, -0.5f,  0.5f }, { -0.577f, -0.577f, -0.577f }, { 0.707f, -0.707f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+        { { -0.5f,  0.5f, -0.5f }, { -0.577f, -0.577f, -0.577f }, { 0.707f, -0.707f, 0.0f, 1.0f }, { 0.5f, 0.0f } },
+    };
+
+    // One buffer holds both: the levels are RANGES of what follows, and
+    // a range cannot reach across two buffers.
+    static const FluxionDemoVertex vertexData[36] =
+    {
+        vertices[0], vertices[1], vertices[2], vertices[3], vertices[4], vertices[5],
+        vertices[6], vertices[7], vertices[8], vertices[9], vertices[10], vertices[11],
+        vertices[12], vertices[13], vertices[14], vertices[15], vertices[16], vertices[17],
+        vertices[18], vertices[19], vertices[20], vertices[21], vertices[22], vertices[23],
+        coarseVertices[0], coarseVertices[1], coarseVertices[2], coarseVertices[3],
+        coarseVertices[4], coarseVertices[5], coarseVertices[6], coarseVertices[7],
+        coarseVertices[8], coarseVertices[9], coarseVertices[10], coarseVertices[11],
+    };
+
+    static const u16 indices[48] =
+    {
+        // Level 0: the cube, twelve triangles.
         0, 1, 2, 0, 2, 3,       // front
         4, 5, 6, 4, 6, 7,       // back
         8, 9, 10, 8, 10, 11,    // left
         12, 13, 14, 12, 14, 15, // right
         16, 17, 18, 16, 18, 19, // top
         20, 21, 22, 20, 22, 23, // bottom
+
+        // Level 1: the stand-in above, four.
+        24, 25, 26,
+        27, 28, 29,
+        30, 31, 32,
+        33, 34, 35,
+    };
+
+    // Where each level begins in the indices above, and from how far away
+    // it is used. Twenty-five metres is chosen for this scene rather than
+    // derived: the grid is fifty metres across, so the far half of it
+    // draws the cheaper shape and the near half does not -- which is what
+    // makes the two numbers the frame prints differ.
+    static const FluxionMeshLevel cubeLevels[2] =
+    {
+        { 0, 36, 0.0f },
+        { 36, 12, 25.0f },
     };
 
     // --- Checkerboard texture: staged CPU->GPU by hand (MeshBuffer only
@@ -979,8 +1043,8 @@ int main(int argc, char** argv)
     // one-time depth/texture layout transitions. -----------------------------
 
     FluxionMeshBufferDesc cubeMeshDesc{};
-    cubeMeshDesc.vertexData = vertices;
-    cubeMeshDesc.vertexDataSize = sizeof(vertices);
+    cubeMeshDesc.vertexData = vertexData;
+    cubeMeshDesc.vertexDataSize = sizeof(vertexData);
     cubeMeshDesc.indexData = indices;
     cubeMeshDesc.indexDataSize = sizeof(indices);
     cubeMeshDesc.use16BitIndices = true;
@@ -1003,6 +1067,8 @@ int main(int argc, char** argv)
     cubeMeshDesc.vertexLayout.attributeCount = 4;
     cubeMeshDesc.vertexLayout.stride = sizeof(FluxionDemoVertex);
     cubeMeshDesc.bounds = FluxionAABB{ FluxionVec3{ -0.5f, -0.5f, -0.5f }, FluxionVec3{ 0.5f, 0.5f, 0.5f } };
+    std::memcpy(cubeMeshDesc.levels, cubeLevels, sizeof(cubeLevels));
+    cubeMeshDesc.levelCount = 2;
     cubeMeshDesc.debugName = "ForwardRendererDemo.Cube";
     FluxionMeshBufferHandle cubeMesh = Fluxion_MeshBuffer_Create(device, graphicsQueue, &cubeMeshDesc);
     if (!FLUXION_HANDLE_IS_VALID(cubeMesh))
@@ -1306,15 +1372,22 @@ int main(int argc, char** argv)
     FluxionAssetRef cubeMeshRef{};
     {
         FluxionMeshAssetData meshData{};
-        meshData.vertexData = vertices;
-        meshData.vertexDataSize = sizeof(vertices);
+        meshData.vertexData = vertexData;
+        meshData.vertexDataSize = sizeof(vertexData);
         meshData.indexData = indices;
         meshData.indexDataSize = sizeof(indices);
         meshData.use16BitIndices = true;
         meshData.vertexLayout = cubeMeshDesc.vertexLayout;
         meshData.bounds = cubeMeshDesc.bounds;
 
-        std::vector<u8> cooked(sizeof(vertices) + sizeof(indices) + 1024, 0);
+        // THE LEVELS GO THROUGH THE FILE, not around it. The grid draws
+        // the cooked asset rather than the buffer above, so a level that
+        // only existed in this program would be a level the game never
+        // sees.
+        std::memcpy(meshData.levels, cubeLevels, sizeof(cubeLevels));
+        meshData.levelCount = 2;
+
+        std::vector<u8> cooked(sizeof(vertexData) + sizeof(indices) + 1024, 0);
         FluxionStream writer;
         Fluxion_MemoryStream_InitWriter(&writer, cooked.data(), cooked.size());
         if (!Fluxion_MeshAsset_Write(&writer, &meshData) || Fluxion_Stream_HasOverflowed(&writer))
@@ -2187,8 +2260,19 @@ int main(int argc, char** argv)
             // out which of them are seen.
             const bool onDevice = Fluxion_Renderer_GetCullMode(renderer) == FLUXION_RENDERER_CULL_ON_DEVICE;
 
-            FLUXION_LOG_INFO("ForwardRendererDemo", "%s: %u objects -> %u seen (culled on the %s%s) -> %u draw calls; extracting them took %.3f ms.",
-                activePipeline->name, renderWorld.objectCount, Fluxion_Renderer_GetVisibleObjectCount(renderer),
+            // How the levels of detail fell out this frame. Counted from
+            // the extraction's own answer, which is where the choice was
+            // made -- and printed, because a level nobody counts is a
+            // level nobody notices stopping.
+            u32 coarse = 0;
+            for (u32 i = 0; i < renderWorld.objectCount; ++i)
+            {
+                if (renderWorld.objects[i].lodIndex > 0) ++coarse;
+            }
+
+            FLUXION_LOG_INFO("ForwardRendererDemo",
+                "%s: %u objects (%u of them at a coarser level) -> %u seen (culled on the %s%s) -> %u draw calls; extracting them took %.3f ms.",
+                activePipeline->name, renderWorld.objectCount, coarse, Fluxion_Renderer_GetVisibleObjectCount(renderer),
                 onDevice ? "device" : "processor", onDevice ? ", counted a frame behind" : "",
                 Fluxion_Renderer_GetLastDrawCallCount(renderer), extractionMs);
         }

@@ -79,6 +79,10 @@ typedef struct FluxionGPUSceneEntry
     f32 boundsRadius;
 
     u32 layerMask;
+
+    // Which range of the mesh's indices this object is drawn from. Part
+    // of the key below, because one command carries one range.
+    u32 lodIndex;
 } FluxionGPUSceneEntry;
 
 typedef struct FluxionGPUSceneRecord
@@ -1048,6 +1052,12 @@ bool Fluxion_GPUScene_Add(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle m
 bool Fluxion_GPUScene_AddLayered(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
                                  FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, u32 layerMask)
 {
+    return Fluxion_GPUScene_AddDetailed(scene, mesh, material, pipeline, transform, layerMask, 0);
+}
+
+bool Fluxion_GPUScene_AddDetailed(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
+                                  FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, u32 layerMask, u32 lodIndex)
+{
     FluxionGPUSceneRecord* record = Fluxion_GPUSceneInternal_Resolve(scene);
     if (record == NULL) return false;
 
@@ -1072,6 +1082,10 @@ bool Fluxion_GPUScene_AddLayered(FluxionGPUSceneHandle scene, FluxionMeshBufferH
     // is the one the arithmetic is written for.
     entry->model = Fluxion_Mat4_Transposed(world);
     entry->layerMask = layerMask;
+
+    // Clamped rather than refused -- see Fluxion_GPUScene_AddDetailed.
+    const u32 levels = Fluxion_MeshBuffer_GetLevelCount(mesh);
+    entry->lodIndex = (levels > 0 && lodIndex >= levels) ? levels - 1 : lodIndex;
     return true;
 }
 
@@ -1094,6 +1108,12 @@ static int Fluxion_GPUSceneInternal_CompareEntries(const void* leftIndex, const 
     if (left->pipeline.index != right->pipeline.index) return left->pipeline.index < right->pipeline.index ? -1 : 1;
     if (left->material.index != right->material.index) return left->material.index < right->material.index ? -1 : 1;
     if (left->mesh.index != right->mesh.index) return left->mesh.index < right->mesh.index ? -1 : 1;
+
+    // Last of the four, because it is the cheapest thing to switch
+    // between: the same buffers stay bound, and only the range the
+    // command names changes.
+    if (left->lodIndex != right->lodIndex) return left->lodIndex < right->lodIndex ? -1 : 1;
+
     return a < b ? -1 : (a > b ? 1 : 0);
 }
 
@@ -1168,7 +1188,8 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
             const FluxionGPUSceneBatch* current = &record->batches[record->batchCount - 1];
             continues = current->pipeline.index == entry->pipeline.index && current->pipeline.generation == entry->pipeline.generation &&
                         current->material.index == entry->material.index && current->material.generation == entry->material.generation &&
-                        current->mesh.index == entry->mesh.index && current->mesh.generation == entry->mesh.generation;
+                        current->mesh.index == entry->mesh.index && current->mesh.generation == entry->mesh.generation &&
+                        current->lodIndex == entry->lodIndex;
         }
 
         if (continues)
@@ -1204,6 +1225,7 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
         batch->mesh = entry->mesh;
         batch->material = entry->material;
         batch->pipeline = entry->pipeline;
+        batch->lodIndex = entry->lodIndex;
         batch->firstObject = i;
         batch->objectCount = 1;
         batch->boundsCentre = entry->boundsCentre;
@@ -1342,13 +1364,25 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
             indexCount = 0;
         }
 
-        commands[i].indexCount = indexCount;
+        // WHICH INDICES, from the level this batch is drawn at. The
+        // whole of the LOD arrives here: a level is a range, a command
+        // carries a range, and nothing between the two had to change.
+        FluxionMeshLevel level;
+        if (Fluxion_MeshBuffer_GetLevel(batch->mesh, batch->lodIndex, &level))
+        {
+            commands[i].indexCount = level.indexCount;
+            commands[i].firstIndex = level.firstIndex;
+        }
+        else
+        {
+            commands[i].indexCount = indexCount;
+            commands[i].firstIndex = 0;
+        }
 
         // On the device's path this starts at zero and the compute
         // counts up to what it finds; on the processor's it is already
         // the answer.
         commands[i].instanceCount = onDevice ? 0u : batch->visibleCount;
-        commands[i].firstIndex = 0;
         commands[i].vertexOffset = 0;
 
         // ALWAYS ZERO. A non-zero start instance means one thing to

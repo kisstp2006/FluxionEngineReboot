@@ -212,6 +212,25 @@ bool Fluxion_Scene_ExtractRenderWorld(FluxionSceneHandle scene, f32 aspect, Flux
 
     world->camera.valid = Fluxion_Scene_GatherCamera(scene, aspect, &world->camera.view, &world->camera.projection);
 
+    // WHERE THE EYE IS, which is what chooses each object's level of
+    // detail below. Taken out of the view matrix rather than out of the
+    // camera's transform: the view matrix is what the frame is actually
+    // drawn with, and a camera whose transform said one thing while its
+    // view said another would pick levels for a place nothing is drawn
+    // from.
+    //
+    // Undone by the same call the render view uses to answer the same
+    // question -- two ways of inverting a view matrix would eventually
+    // be two different eyes.
+    FluxionVec3 eye = { 0.0f, 0.0f, 0.0f };
+    if (world->camera.valid)
+    {
+        const FluxionMat4 cameraToWorld = Fluxion_Mat4_RigidInverse(world->camera.view);
+        eye.x = cameraToWorld.m[0][3];
+        eye.y = cameraToWorld.m[1][3];
+        eye.z = cameraToWorld.m[2][3];
+    }
+
     const FluxionTypeId required[2] = { Fluxion_MeshRenderer_TypeId(), Fluxion_Transform_TypeId() };
 
     FluxionEntityQueryDesc desc;
@@ -248,9 +267,20 @@ bool Fluxion_Scene_ExtractRenderWorld(FluxionSceneHandle scene, f32 aspect, Flux
             object.transform = transforms[i].worldMatrix;
             object.layerMask = renderers[i].layerMask != 0 ? renderers[i].layerMask : 0xFFFFFFFFu;
 
-            // Level zero, and seen. What decides otherwise is a step
-            // that does not exist yet -- see FluxionRenderObject.
-            object.lodIndex = 0;
+            // WHICH LEVEL OF DETAIL, decided here and nowhere else.
+            //
+            // Here because this is the one place that knows both where
+            // the object is and where the eye is, and because the answer
+            // has to be known before the batching -- a batch is one draw
+            // command, and a command carries one range of indices.
+            //
+            // The same on both culling paths: the device decides what is
+            // SEEN, never what is drawn at which detail, because that
+            // choice is part of what makes a batch.
+            object.lodIndex = Fluxion_MeshBuffer_SelectLevel(object.mesh, eye, &object.transform);
+
+            // Seen. What decides otherwise is the culling, which happens
+            // where the frame is assembled rather than here.
             object.visible = true;
 
             if (!Fluxion_RenderWorld_AddObject(world, &object)) break;

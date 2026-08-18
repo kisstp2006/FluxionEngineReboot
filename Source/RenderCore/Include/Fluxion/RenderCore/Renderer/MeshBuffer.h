@@ -58,6 +58,34 @@ typedef struct FluxionAABB
 
 FLUXION_DEFINE_HANDLE(FluxionMeshBufferHandle);
 
+// HOW MANY LEVELS OF DETAIL ONE MESH MAY CARRY.
+//
+// Eight, and the number is a shape rather than a limit anybody reaches:
+// each level is roughly half the triangles of the one before it, so
+// eight levels is a mesh that has run out of triangles long before the
+// camera has run out of distance.
+#define FLUXION_MESH_BUFFER_MAX_LEVELS 8
+
+// ONE LEVEL OF DETAIL: A RANGE OF THE INDEX BUFFER, NOT A MESH OF ITS
+// OWN.
+//
+// The vertices are shared and the indices sit end to end in one buffer,
+// so choosing a level is choosing where to start reading and how much --
+// which is exactly the pair an indirect draw command already carries.
+// The drawing path therefore does not change at all when a mesh gains
+// levels; only which two numbers go into the command.
+typedef struct FluxionMeshLevel
+{
+    u32 firstIndex;
+    u32 indexCount;
+
+    // From how far away this level is the one used. Levels are given
+    // nearest first, so this rises from one to the next, and LEVEL
+    // ZERO'S IS ALWAYS ZERO whatever is written here -- something has to
+    // be drawn when the camera is on top of it.
+    f32 minDistance;
+} FluxionMeshLevel;
+
 typedef struct FluxionMeshBufferDesc
 {
     const void* vertexData;
@@ -71,6 +99,19 @@ typedef struct FluxionMeshBufferDesc
     bool use16BitIndices;
     FluxionRHIVertexLayout vertexLayout;
     FluxionAABB bounds;
+
+    // The levels, nearest first. NONE MEANS ONE: a mesh that says
+    // nothing about levels is a mesh with a single level covering the
+    // whole index buffer from distance zero, which is what every mesh
+    // was before there were levels.
+    //
+    // A level whose range falls outside the index buffer, or one that
+    // begins nearer than the level before it, is refused rather than
+    // drawn -- indices read past the end of a buffer are geometry
+    // nobody can explain.
+    FluxionMeshLevel levels[FLUXION_MESH_BUFFER_MAX_LEVELS];
+    u32 levelCount;
+
     const char* debugName; // optional, may be NULL
 } FluxionMeshBufferDesc;
 
@@ -81,6 +122,21 @@ typedef struct FluxionMeshBufferDesc
 // staging buffer can be torn down before returning.
 FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device, FluxionRHIQueueHandle queue, const FluxionMeshBufferDesc* desc);
 void Fluxion_MeshBuffer_Destroy(FluxionMeshBufferHandle mesh);
+
+// --- Which level a distance asks for --------------------------------------
+
+u32 Fluxion_MeshBuffer_GetLevelCount(FluxionMeshBufferHandle mesh);
+bool Fluxion_MeshBuffer_GetLevel(FluxionMeshBufferHandle mesh, u32 level, FluxionMeshLevel* outLevel);
+
+// The level this mesh should be drawn at, seen from `cameraPosition`
+// with `world` for its transform.
+//
+// THE DISTANCE IS TO THE NEAR SIDE OF THE MESH, not to its origin --
+// the same rule the culling measures by, and for the same reason: a
+// large object whose centre is far away can still be filling the screen.
+// A mesh with one level always answers zero, so a caller never has to
+// ask whether this mesh has levels at all.
+u32 Fluxion_MeshBuffer_SelectLevel(FluxionMeshBufferHandle mesh, FluxionVec3 cameraPosition, const FluxionMat4* world);
 
 #ifdef __cplusplus
 }
