@@ -51,6 +51,7 @@ void Test_RenderGraphAsset_Run(TestContext* ctx);
 void Test_RenderPipelineAsset_Run(TestContext* ctx);
 void Test_RenderPipelineAssetGPU_Run(TestContext* ctx);
 void Test_GPUScene_Run(TestContext* ctx);
+void Test_GPUCullGPU_Run(TestContext* ctx);
 void Test_MaterialAsset_Run(TestContext* ctx);
 void Test_ShaderProgram_Run(TestContext* ctx);
 void Test_ShaderReload_Run(TestContext* ctx);
@@ -87,6 +88,7 @@ int main(void)
     Test_RenderPipelineAsset_Run(&ctx);
     Test_RenderPipelineAssetGPU_Run(&ctx);
     Test_GPUScene_Run(&ctx);
+    Test_GPUCullGPU_Run(&ctx);
     Test_MaterialAsset_Run(&ctx);
     Test_ShaderProgram_Run(&ctx);
     Test_ShaderReload_Run(&ctx);

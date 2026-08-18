@@ -433,6 +433,17 @@ private:
             case ExprKind::Call: {
                 auto& e = static_cast<const CallExpr&>(expr);
 
+                // An ordinary expression in this language: it answers
+                // with the value it replaced. The other one needs a
+                // statement and an out parameter, which is why the
+                // language only allows this where a variable is being
+                // declared -- see the HLSL backend and BuildIR.
+                if (e.callee == "AtomicAdd" && e.args.size() == 2)
+                {
+                    m_out << "atomicAdd("; EmitExpr(*e.args[0]); m_out << ", "; EmitExpr(*e.args[1]); m_out << ")";
+                    break;
+                }
+
                 // The comparison sample has no name of its own here: this
                 // language spells it as an ordinary sample whose
                 // coordinate carries the depth to compare against in its

@@ -430,6 +430,26 @@ private:
             }
             case StmtKind::VarDecl: {
                 auto& s = static_cast<const VarDeclStmt&>(stmt);
+
+                // An atomic add is a STATEMENT here and an expression in
+                // the other language: HLSL answers through an out
+                // parameter, so the variable is declared first and
+                // filled in second. This is why the language only allows
+                // it as an initialiser -- see BuildIR.
+                if (s.initializer && s.initializer->kind == ExprKind::Call &&
+                    static_cast<const CallExpr&>(*s.initializer).callee == "AtomicAdd")
+                {
+                    const auto& call = static_cast<const CallExpr&>(*s.initializer);
+                    Indent(depth); m_out << HLSLTypeName(s.type) << " " << s.name << ";\n";
+                    Indent(depth); m_out << "InterlockedAdd(";
+                    if (call.args.size() == 2)
+                    {
+                        EmitExpr(*call.args[0]); m_out << ", "; EmitExpr(*call.args[1]);
+                    }
+                    m_out << ", " << s.name << ");\n";
+                    break;
+                }
+
                 Indent(depth); m_out << HLSLTypeName(s.type) << " " << s.name;
                 if (s.initializer) { m_out << " = "; EmitExpr(*s.initializer); }
                 m_out << ";\n";

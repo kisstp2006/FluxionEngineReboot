@@ -259,6 +259,16 @@ private:
             "smoothstep", "sqrt", "step", "tan", "tanh", "transpose", "trunc",
             "dFdx", "dFdy",
             "texture", "texture2D", "textureCube", "textureLod", "textureCompare",
+
+            // Adds to a value in a storage buffer and answers with what
+            // was there BEFORE -- which is what makes it a way of
+            // claiming a slot rather than just a way of counting.
+            //
+            // Where it may appear is narrower than every other builtin
+            // here, and that is checked where the stage is known (see
+            // BuildIR): the two target languages spell this differently
+            // enough that only one shape can be emitted for both.
+            "AtomicAdd",
         };
         return kBuiltins.count(name) != 0;
     }
@@ -569,6 +579,7 @@ private:
         // table -- this covers the ordinary maths and sampling builtins
         // without hand-listing every overload.
         static const std::unordered_map<std::string, TypeKind> kFixedResultBuiltins = {
+            { "AtomicAdd", TypeKind::Int },
             { "dot", TypeKind::Float }, { "length", TypeKind::Float }, { "distance", TypeKind::Float },
             { "texture2D", TypeKind::Vec4 }, { "texture", TypeKind::Vec4 }, { "textureCube", TypeKind::Vec4 },
             { "textureLod", TypeKind::Vec4 },

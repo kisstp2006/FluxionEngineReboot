@@ -120,6 +120,24 @@ typedef struct FluxionGPUSceneBatch
 // until that backend is the one running.
 #define FLUXION_GPU_SCENE_BATCH_UNIFORM_STRIDE 256
 
+// WHO DECIDES what this frame can see.
+//
+// The same three tests either way, and the same two places the answer
+// goes -- what changes is where the arithmetic happens. A frame drawn
+// one way and the same frame drawn the other must produce the same set,
+// which is what Test_GPUCullGPU checks.
+typedef enum FluxionGPUSceneCullMode
+{
+    // On the processor, during the upload. What everything did before
+    // there was a choice, and so the zero value.
+    FLUXION_GPU_SCENE_CULL_CPU = 0,
+
+    // On the device, in a compute pass recorded just before the frame
+    // draws. Falls back to the processor -- saying so once -- if the
+    // shader will not build.
+    FLUXION_GPU_SCENE_CULL_GPU,
+} FluxionGPUSceneCullMode;
+
 // WHAT THE FRAME CAN SEE, and so what it need not draw.
 //
 // All of it is the view's: the frustum comes from its matrices, the
@@ -128,6 +146,8 @@ typedef struct FluxionGPUSceneBatch
 // nothing about it changes while that is happening.
 typedef struct FluxionGPUSceneCullDesc
 {
+    FluxionGPUSceneCullMode mode;
+
     // As this side writes it, NOT the transposed copy the shaders read --
     // the frustum planes are derived from it.
     FluxionMat4 viewProjection;
@@ -176,6 +196,12 @@ void Fluxion_GPUScene_SetCulling(FluxionGPUSceneHandle scene, const FluxionGPUSc
 // How many objects were added, and how many of them survived the cull.
 // Two numbers rather than one, because their RATIO is the only thing
 // that says whether the culling did anything.
+//
+// ON THE DEVICE'S PATH THIS NUMBER IS A FRAME BEHIND. What survived is
+// counted in a buffer the device writes, and reading it in the frame
+// that wrote it would mean waiting for the device in the middle of the
+// frame -- for a number nothing draws with. It is zero until the first
+// answer has come back.
 u32 Fluxion_GPUScene_GetVisibleCount(FluxionGPUSceneHandle scene);
 
 // Groups what was added, lays the rows out in that order, writes one
@@ -196,6 +222,17 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
 
 u32 Fluxion_GPUScene_GetObjectCount(FluxionGPUSceneHandle scene);
 
+// Whether the instance counts the frame draws with were worked out on
+// the device.
+//
+// What a pass needs it for: a batch's visibleCount on THIS side is what
+// the processor found, and on the device's path the processor found
+// nothing -- the number is in the command buffer. A pass that read the
+// zero and skipped the batch would draw an empty frame, so when this is
+// true every batch is submitted and a batch with nothing in it costs one
+// command that draws no instances.
+bool Fluxion_GPUScene_CountsOnDevice(FluxionGPUSceneHandle scene);
+
 // Valid after Upload, and until the next Begin.
 u32 Fluxion_GPUScene_GetBatchCount(FluxionGPUSceneHandle scene);
 const FluxionGPUSceneBatch* Fluxion_GPUScene_GetBatch(FluxionGPUSceneHandle scene, u32 batchIndex);
@@ -212,6 +249,15 @@ FluxionRHIBufferHandle Fluxion_GPUScene_GetIndirectBuffer(FluxionGPUSceneHandle 
 
 // One OBJECT-frequency uniform slice per batch, holding that batch's
 // first-object index, FLUXION_GPU_SCENE_BATCH_UNIFORM_STRIDE apart.
+// The same batch, bound to draw EVERY row it holds rather than only the
+// rows the camera can see.
+//
+// What it is for: a shadow's casters are not the camera's business. An
+// object behind the eye still throws a shadow into the picture, so a
+// pass drawing into a shadow map binds this and draws the batch's whole
+// object count, and does its own culling against the light.
+FluxionRHIBindGroupHandle Fluxion_GPUScene_GetBatchAllRowsBindGroup(FluxionGPUSceneHandle scene, u32 batchIndex);
+
 FluxionRHIBufferHandle Fluxion_GPUScene_GetBatchUniformBuffer(FluxionGPUSceneHandle scene);
 
 // What a pass binds to draw batch `batchIndex`.

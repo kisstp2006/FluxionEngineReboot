@@ -43,6 +43,8 @@
 
 #include <Fluxion/ShaderCompiler/ShaderCompiler.hpp>
 
+#include <cstdio>
+
 using namespace Fluxion::ShaderCompiler;
 
 // Which instance a vertex belongs to.
@@ -179,6 +181,76 @@ void TheComputeBuiltInIsHeldToTheSameRule(TestContext& ctx)
     TEST_CHECK(ctx, saidWhich);
 }
 
+// --- Claiming a slot ------------------------------------------------------
+
+const char* const kComputeWithAtomic =
+    "[Buffer(Global)] int counters;\n"
+    "[Buffer(Global)] int slots;\n"
+    "void main() {\n"
+    "  int slot = AtomicAdd(counters[0], 1);\n"
+    "  slots[slot] = int(ThreadID);\n"
+    "}\n";
+
+void AnAtomicAddIsSpelledDifferentlyInEachLanguage(TestContext& ctx)
+{
+    DiagnosticList diagnostics;
+    auto result = CompileFor(ShaderStage::Compute, kComputeWithAtomic, diagnostics);
+
+    if (!result.IsOk())
+    {
+        for (const Diagnostic& entry : diagnostics.entries)
+            std::fprintf(stderr, "    %s:%u: %s\n", entry.location.file.c_str(), entry.location.line, entry.message.c_str());
+    }
+    TEST_CHECK(ctx, result.IsOk());
+    if (!result.IsOk()) return;
+
+    const std::string& glsl = result.Value().glslSource;
+    const std::string& hlsl = result.Value().hlslSource;
+
+    // One language answers with the old value, so it is an expression.
+    TEST_CHECK(ctx, glsl.find("int slot = atomicAdd(counters[0], 1);") != std::string::npos);
+
+    // The other fills in an out parameter, so it is two statements -- and
+    // the variable has to exist before the call that fills it.
+    TEST_CHECK(ctx, hlsl.find("int slot;") != std::string::npos);
+    TEST_CHECK(ctx, hlsl.find("InterlockedAdd(counters[0], 1, slot);") != std::string::npos);
+    TEST_CHECK(ctx, hlsl.find("= InterlockedAdd") == std::string::npos);
+}
+
+void AnAtomicAddIsRefusedWhereItCannotBeWritten(TestContext& ctx)
+{
+    // Not in a fragment shader: a storage buffer is read-only there.
+    const char* const inFragment =
+        "[Buffer(Frame)] int counters;\n"
+        "[Target(0)] Vector4 outColor;\n"
+        "void main() {\n"
+        "  int slot = AtomicAdd(counters[0], 1);\n"
+        "  return Vector4(float(slot), 0.0, 0.0, 1.0);\n"
+        "}\n";
+
+    DiagnosticList fragmentDiagnostics;
+    TEST_CHECK(ctx, !CompileFor(ShaderStage::Fragment, inFragment, fragmentDiagnostics).IsOk());
+
+    // And not in the middle of an expression, however true that would be
+    // in one of the two languages.
+    const char* const insideAnExpression =
+        "[Buffer(Global)] int counters;\n"
+        "[Buffer(Global)] int slots;\n"
+        "void main() {\n"
+        "  slots[0] = AtomicAdd(counters[0], 1) + 1;\n"
+        "}\n";
+
+    DiagnosticList shapeDiagnostics;
+    TEST_CHECK(ctx, !CompileFor(ShaderStage::Compute, insideAnExpression, shapeDiagnostics).IsOk());
+
+    bool saidWhy = false;
+    for (const Diagnostic& entry : shapeDiagnostics.entries)
+    {
+        if (entry.message.find("initialiser of a variable") != std::string::npos) saidWhy = true;
+    }
+    TEST_CHECK(ctx, saidWhy);
+}
+
 } // namespace
 
 void Test_InstanceIndex_Run(TestContext& ctx)
@@ -187,4 +259,6 @@ void Test_InstanceIndex_Run(TestContext& ctx)
     AFragmentShaderIsToldItHasNoInstance(ctx);
     ItIsFoundHoweverDeepItIs(ctx);
     TheComputeBuiltInIsHeldToTheSameRule(ctx);
+    AnAtomicAddIsSpelledDifferentlyInEachLanguage(ctx);
+    AnAtomicAddIsRefusedWhereItCannotBeWritten(ctx);
 }

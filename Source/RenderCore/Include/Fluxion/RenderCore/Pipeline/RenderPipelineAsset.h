@@ -46,6 +46,7 @@
 #include <Fluxion/Foundation/Serialization/Stream.h>
 #include <Fluxion/Foundation/Types.h>
 #include <Fluxion/Foundation/UUID.h>
+#include <Fluxion/RenderCore/Renderer/Renderer.h>
 #include <Fluxion/RenderCore/Renderer/RenderView.h>
 
 #ifdef __cplusplus
@@ -79,7 +80,7 @@ extern "C" {
 #define FLUXION_RENDER_PIPELINE_ASSET_TYPE_NAME "RenderPipeline"
 
 #define FLUXION_RENDER_PIPELINE_ASSET_MAGIC          0x464C5850u // "FLXP"
-#define FLUXION_RENDER_PIPELINE_ASSET_FORMAT_VERSION 1
+#define FLUXION_RENDER_PIPELINE_ASSET_FORMAT_VERSION 2
 
 #define FLUXION_RENDER_PIPELINE_ASSET_MAX_NAME_LENGTH 63
 
@@ -110,10 +111,28 @@ typedef enum FluxionRenderPipelineShadowQuality
     FLUXION_RENDER_PIPELINE_SHADOW_QUALITY_HIGH,
 } FluxionRenderPipelineShadowQuality;
 
+// WHO DECIDES what a frame can see.
+//
+// The first setting here that refuses nothing: both answers have a pass
+// behind them, and which one is better depends on the scene rather than
+// on the build. What differs is only where the arithmetic happens --
+// the tests, and the answers they produce, are the same.
+typedef enum FluxionRenderPipelineCulling
+{
+    // On the processor, while the frame is being gathered. The zero
+    // value, because it is what a file that never mentions culling gets
+    // and what every frame did before there was a choice.
+    FLUXION_RENDER_PIPELINE_CULLING_CPU = 0,
+
+    // In a compute pass, just before the frame draws.
+    FLUXION_RENDER_PIPELINE_CULLING_GPU,
+} FluxionRenderPipelineCulling;
+
 typedef struct FluxionRenderPipelineAssetSettings
 {
     FluxionRenderPipelineLighting lighting;
     FluxionRenderPipelineShadowQuality shadowQuality;
+    FluxionRenderPipelineCulling culling;
 
     // The four that have no pass in this build. False is the only value
     // a file may give them; true is refused by name.
@@ -148,6 +167,7 @@ typedef struct FluxionRenderPipelineAsset
 //     "graph": "DefaultForward",
 //     "lighting": "forward",
 //     "shadowQuality": "high",
+//     "culling": "cpu",
 //     "taa": false,
 //     "ssao": false,
 //     "ssr": false,
@@ -198,6 +218,13 @@ void Fluxion_RenderPipelineAsset_UnregisterType(void);
 // quality has to build a new view; the old one's atlas is the size it
 // was made.
 void Fluxion_RenderPipelineAsset_ApplyToViewDesc(const FluxionRenderPipelineAsset* asset, FluxionRenderViewDesc* desc);
+
+// And the parts a renderer decides rather than a view -- today, who
+// works out what the frame can see.
+//
+// Every frame, not once at start-up: a program may switch pipelines
+// while it runs, and this is what makes that switch take effect.
+void Fluxion_RenderPipelineAsset_ApplyToRenderer(const FluxionRenderPipelineAsset* asset, FluxionRendererHandle renderer);
 
 // --- Which pipeline a view is drawn with ----------------------------------
 //

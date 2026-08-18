@@ -174,6 +174,7 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
     }
 
     const FluxionRHIBufferHandle indirectBuffer = Fluxion_GPUScene_GetIndirectBuffer(renderer->gpuScene);
+    const bool countsOnDevice = Fluxion_GPUScene_CountsOnDevice(renderer->gpuScene);
 
 
     for (u32 i = 0; i < batchCount; ++i)
@@ -186,7 +187,12 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
         // submitted with zero instances -- a draw call that draws
         // nothing is still a draw call, and the count below is a number
         // somebody reads.
-        if (batch->visibleCount == 0) continue;
+        //
+        // UNLESS THE DEVICE DID THE COUNTING, in which case this side's
+        // zero means "not known here" rather than "nothing to draw", and
+        // the command goes in: what it draws is in the buffer it reads
+        // its own arguments from.
+        if (batch->visibleCount == 0 && !countsOnDevice) continue;
 
         FluxionRHIBufferHandle vertexBuffer, indexBuffer;
         u32 vertexCount, indexCount;

@@ -106,6 +106,18 @@ static bool Fluxion_RenderPipelineAssetText_ReadShadowQuality(json_stream* json,
     return false;
 }
 
+static bool Fluxion_RenderPipelineAssetText_ReadCulling(json_stream* json, FluxionRenderPipelineCulling* outValue)
+{
+    if (json_next(json) != JSON_STRING) return false;
+
+    const char* value = json_get_string(json, NULL);
+    if (strcmp(value, "cpu") == 0) { *outValue = FLUXION_RENDER_PIPELINE_CULLING_CPU; return true; }
+    if (strcmp(value, "gpu") == 0) { *outValue = FLUXION_RENDER_PIPELINE_CULLING_GPU; return true; }
+
+    FLUXION_LOG_ERROR(FLUXION_RENDER_PIPELINE_ASSET_LOG_CATEGORY, "\"%s\" is not somewhere culling can happen", value);
+    return false;
+}
+
 bool Fluxion_RenderPipelineAsset_ParseText(const char* text, usize length, FluxionRenderPipelineGraphResolveFn resolve,
                                            void* context, FluxionRenderPipelineAsset* outAsset)
 {
@@ -147,6 +159,10 @@ bool Fluxion_RenderPipelineAsset_ParseText(const char* text, usize length, Fluxi
         else if (strcmp(key, "shadowQuality") == 0)
         {
             if (!Fluxion_RenderPipelineAssetText_ReadShadowQuality(&json, &parsed.settings.shadowQuality)) { ok = false; break; }
+        }
+        else if (strcmp(key, "culling") == 0)
+        {
+            if (!Fluxion_RenderPipelineAssetText_ReadCulling(&json, &parsed.settings.culling)) { ok = false; break; }
         }
         else if (strcmp(key, "taa") == 0)
         {

@@ -274,6 +274,7 @@ typedef struct FluxionRenderer
     // matrix beside it; the scene keeps both, in the order the device
     // wants them, which is what lets a group of objects be one call.
     FluxionGPUSceneHandle gpuScene;
+    FluxionRendererCullMode cullMode;
 
     // Incremented by ForwardOpaquePass.c's Execute for each draw call it
     // actually issues -- see Fluxion_Renderer_GetLastDrawCallCount.

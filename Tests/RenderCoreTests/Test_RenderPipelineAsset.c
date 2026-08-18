@@ -75,6 +75,7 @@ static void Test_RenderPipelineAsset_TextForm(TestContext* ctx)
         "  \"graph\": \"TestGraph\","
         "  \"lighting\": \"forward\","
         "  \"shadowQuality\": \"high\","
+        "  \"culling\": \"gpu\","
         "  \"taa\": false,"
         "  \"ssao\": false,"
         "  \"ssr\": false,"
@@ -89,6 +90,7 @@ static void Test_RenderPipelineAsset_TextForm(TestContext* ctx)
     TEST_CHECK(ctx, Fluxion_AssetRef_IsSet(asset.graph));
     TEST_CHECK(ctx, asset.settings.lighting == FLUXION_RENDER_PIPELINE_LIGHTING_FORWARD);
     TEST_CHECK(ctx, asset.settings.shadowQuality == FLUXION_RENDER_PIPELINE_SHADOW_QUALITY_HIGH);
+    TEST_CHECK(ctx, asset.settings.culling == FLUXION_RENDER_PIPELINE_CULLING_GPU);
     TEST_CHECK(ctx, resolveCalls == 1);
 
     // Everything but the graph is optional, and what is left out is the
@@ -101,6 +103,11 @@ static void Test_RenderPipelineAsset_TextForm(TestContext* ctx)
     TEST_CHECK(ctx, asset.settings.shadowQuality == FLUXION_RENDER_PIPELINE_SHADOW_QUALITY_OFF);
     TEST_CHECK(ctx, asset.settings.msaaSamples == 0);
 
+    // A file that says nothing about where culling happens gets the
+    // processor -- which is what every frame did before there was a
+    // choice, and so what a file written before there was one meant.
+    TEST_CHECK(ctx, asset.settings.culling == FLUXION_RENDER_PIPELINE_CULLING_CPU);
+
     // A pipeline that names no graph draws nothing.
     static const char noGraphText[] = "{ \"name\": \"Nothing\", \"shadowQuality\": \"low\" }";
     TEST_CHECK(ctx, !Test_RenderPipelineAsset_Parse(noGraphText, &asset, NULL));
@@ -111,6 +118,17 @@ static void Test_RenderPipelineAsset_TextForm(TestContext* ctx)
     resolveCalls = 0;
     TEST_CHECK(ctx, !Test_RenderPipelineAsset_Parse(unknownGraphText, &asset, &resolveCalls));
     TEST_CHECK(ctx, resolveCalls == 1);
+
+    // BOTH values of this one are accepted -- it is the first setting
+    // with a pass behind either answer, and a build that quietly refused
+    // one of them would make the choice a lie.
+    static const char cpuCullingText[] = "{ \"graph\": \"TestGraph\", \"culling\": \"cpu\" }";
+    memset(&asset, 0xAB, sizeof(asset));
+    TEST_CHECK(ctx, Test_RenderPipelineAsset_Parse(cpuCullingText, &asset, NULL));
+    TEST_CHECK(ctx, asset.settings.culling == FLUXION_RENDER_PIPELINE_CULLING_CPU);
+
+    static const char strangeCullingText[] = "{ \"graph\": \"TestGraph\", \"culling\": \"somewhere\" }";
+    TEST_CHECK(ctx, !Test_RenderPipelineAsset_Parse(strangeCullingText, &asset, NULL));
 
     static const char strangeQualityText[] = "{ \"graph\": \"TestGraph\", \"shadowQuality\": \"cinematic\" }";
     static const char strangeLightingText[] = "{ \"graph\": \"TestGraph\", \"lighting\": \"raytraced\" }";
@@ -190,7 +208,7 @@ static void Test_RenderPipelineAsset_CookedForm(TestContext* ctx)
 {
     FluxionRenderPipelineAsset authored;
     memset(&authored, 0, sizeof(authored));
-    static const char text[] = "{ \"name\": \"Cooked\", \"graph\": \"TestGraph\", \"shadowQuality\": \"medium\" }";
+    static const char text[] = "{ \"name\": \"Cooked\", \"graph\": \"TestGraph\", \"shadowQuality\": \"medium\", \"culling\": \"gpu\" }";
     TEST_CHECK(ctx, Test_RenderPipelineAsset_Parse(text, &authored, NULL));
 
     u8 cooked[512];
@@ -207,6 +225,11 @@ static void Test_RenderPipelineAsset_CookedForm(TestContext* ctx)
         TEST_CHECK(ctx, strcmp(readBack->name, "Cooked") == 0);
         TEST_CHECK(ctx, Fluxion_UUID_Equals(readBack->graph.asset, s_knownGraphId));
         TEST_CHECK(ctx, readBack->settings.shadowQuality == FLUXION_RENDER_PIPELINE_SHADOW_QUALITY_MEDIUM);
+
+        // Through the cooked form as well as the authored one: a setting
+        // that survived the parse and was dropped by the cook would be a
+        // shipped game culling somewhere other than the project said.
+        TEST_CHECK(ctx, readBack->settings.culling == FLUXION_RENDER_PIPELINE_CULLING_GPU);
         Fluxion_RenderPipelineAsset_Destroy(readBack);
     }
     else

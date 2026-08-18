@@ -303,13 +303,17 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
     }
 
     const u32 batchCount = Fluxion_GPUScene_GetBatchCount(renderer->gpuScene);
-    const FluxionRHIBufferHandle indirectBuffer = Fluxion_GPUScene_GetIndirectBuffer(renderer->gpuScene);
 
     for (u32 i = 0; i < batchCount; ++i)
     {
         const FluxionGPUSceneBatch* batch = Fluxion_GPUScene_GetBatch(renderer->gpuScene, i);
         if (batch == nullptr) continue;
-        if (batch->visibleCount == 0) continue;
+
+        // WHAT THE CAMERA CAN SEE IS NOT ASKED HERE, and that is the
+        // whole reason this pass draws a batch's rows rather than its
+        // visible list: an object behind the eye still throws a shadow
+        // into the picture, and a shadow map filled from the camera's
+        // answer would lose exactly those.
 
         FluxionRHIBufferHandle vertexBuffer, indexBuffer;
         u32 vertexCount, indexCount;
@@ -349,9 +353,10 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
         // one) and leaving it as whatever was on the stack is how a
         // storage-buffer view ends up describing 0xCCCCCCCC-byte
         // elements -- which is not a wrong picture but a removed device.
-        // The batch's own bind group -- the same one the forward pass
-        // binds, built once with the batch. See GPUScene.h.
-        const FluxionRHIBindGroupHandle objectBindGroup = Fluxion_GPUScene_GetBatchBindGroup(renderer->gpuScene, i);
+        // The batch's own bind group, in the form that reads every row
+        // it holds -- built once with the batch, beside the one the
+        // forward pass binds. See GPUScene.h.
+        const FluxionRHIBindGroupHandle objectBindGroup = Fluxion_GPUScene_GetBatchAllRowsBindGroup(renderer->gpuScene, i);
 
         // Rebound only when EnsurePipeline above actually built another
         // one, which happens when a mesh of a different shape turns up.
@@ -394,16 +399,17 @@ extern "C" void FluxionShadowPass_Execute(FluxionRHICommandListHandle commandLis
 
             Fluxion_RHI_CommandList_SetBindGroup(commandList, FLUXION_RHI_BIND_GROUP_GLOBAL, renderer->shadowGlobalBindGroups[shadowIndex]);
 
+            // DIRECT RATHER THAN INDIRECT, unlike the forward pass, and
+            // for a plain reason: the count this draw needs is the
+            // batch's object count, which this side knows whoever did
+            // the culling. The commands in the indirect buffer hold the
+            // camera's answer, which is not this pass's question.
             if (FLUXION_HANDLE_IS_VALID(indexBuffer))
             {
-                Fluxion_RHI_CommandList_DrawIndexedIndirect(commandList, indirectBuffer,
-                                                            (usize)i * sizeof(FluxionRHIDrawIndexedIndirectCommand), 1,
-                                                            (u32)sizeof(FluxionRHIDrawIndexedIndirectCommand));
+                Fluxion_RHI_CommandList_DrawIndexed(commandList, indexCount, batch->objectCount, 0, 0, 0);
             }
             else
             {
-                // See the forward pass: a mesh with no indices is drawn
-                // directly, still once for the whole batch.
                 Fluxion_RHI_CommandList_Draw(commandList, vertexCount, batch->objectCount, 0, 0);
             }
         }

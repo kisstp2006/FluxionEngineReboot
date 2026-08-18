@@ -379,6 +379,7 @@ int main(int argc, char** argv)
     u64 frameLimit = 0;
 
     // --pipeline=DefaultForward (the default) | --pipeline=MinimalForward
+    //   | --pipeline=DefaultForwardGPU
     // -- which render pipeline asset the project starts out drawing with.
     // P swaps between them while it runs, by putting one on the camera;
     // this only decides what the project's own default is.
@@ -860,11 +861,17 @@ int main(int argc, char** argv)
 
     // --- The pipelines this sample can draw with --------------------------
     //
-    // Two of them, and the difference is meant to be visible: one has a
-    // shadow pass in its graph and asks for the sharpest atlas, the other
-    // has neither. NOTHING BELOW THIS POINT NAMES EITHER -- the frame is
-    // built out of whichever asset the camera and the project between
-    // them resolve to, which is the whole point of the milestone.
+    // Three of them, and each difference is meant to be visible. One has
+    // a shadow pass in its graph and asks for the sharpest atlas and the
+    // second has neither, which is the frame's SHAPE changing. The third
+    // draws exactly what the first does and works out what can be seen
+    // on the device instead of the processor, which is the same picture
+    // arrived at another way -- and the numbers printed each second are
+    // where that shows.
+    //
+    // NOTHING BELOW THIS POINT NAMES ANY OF THEM -- the frame is built
+    // out of whichever asset the camera and the project between them
+    // resolve to.
     //
     // Graphs first: a pipeline names its graph by name, and the name has
     // to already be something the database can answer for.
@@ -889,7 +896,11 @@ int main(int argc, char** argv)
         FluxionAssetHandle graph;
     };
 
-    DemoPipeline demoPipelines[2] = { { "DefaultForward", {}, {}, {} }, { "MinimalForward", {}, {}, {} } };
+    DemoPipeline demoPipelines[3] = {
+        { "DefaultForward", {}, {}, {} },
+        { "MinimalForward", {}, {}, {} },
+        { "DefaultForwardGPU", {}, {}, {} },
+    };
 
     FLUXION_SCOPE_EXIT(
         for (DemoPipeline& entry : demoPipelines) {
@@ -932,8 +943,8 @@ int main(int argc, char** argv)
         }
         if (chosen == nullptr)
         {
-            FLUXION_LOG_ERROR("ForwardRendererDemo", "There is no pipeline called %s; this sample has DefaultForward and MinimalForward.",
-                startingPipeline);
+            FLUXION_LOG_ERROR("ForwardRendererDemo",
+                "There is no pipeline called %s; this sample has DefaultForward, MinimalForward and DefaultForwardGPU.", startingPipeline);
             return 1;
         }
         Fluxion_RenderPipelineAsset_SetProjectDefault(chosen->ref);
@@ -1617,41 +1628,36 @@ int main(int argc, char** argv)
         if (frameLimit != 0 && ++framesDrawn >= frameLimit) running = false;
         if (!running) break;
 
-        // P puts the other pipeline on the camera, and P again takes it
-        // back off -- the shadows go with it, and the scene, the scripts
-        // and the components are not touched either way. That is the
-        // whole claim: what a frame is made of is data now.
+        // P puts the next pipeline on the camera, and goes round -- the
+        // shadows go with it, and so does where the culling happens, and
+        // the scene, the scripts and the components are not touched by
+        // any of it. That is the whole claim: what a frame is made of is
+        // data now.
         if (Fluxion_Input_WasKeyPressed(FLUXION_KEY_P))
         {
             FluxionCamera* camera = (FluxionCamera*)Fluxion_GameObject_GetComponent(scene, cameraObject, Fluxion_Camera_TypeId());
             if (camera != nullptr)
             {
+                const FluxionAssetRef inForceNow = Fluxion_RenderPipelineAsset_Resolve(camera->renderPipeline);
+
+                usize current = 0;
+                for (usize i = 0; i < std::size(demoPipelines); ++i)
+                {
+                    if (Fluxion_UUID_Equals(demoPipelines[i].ref.asset, inForceNow.asset)) current = i;
+                }
+
+                const DemoPipeline& next = demoPipelines[(current + 1) % std::size(demoPipelines)];
+
+                // The project's default is chosen by naming NOTHING: a
+                // camera with no pipeline of its own is a camera that
+                // takes the project's, and that is a state worth being
+                // able to come back round to.
                 const FluxionAssetRef projectDefault = Fluxion_RenderPipelineAsset_GetProjectDefault();
+                const bool isDefault = Fluxion_UUID_Equals(next.ref.asset, projectDefault.asset);
+                camera->renderPipeline = isDefault ? FluxionAssetRef{} : next.ref;
 
-                if (Fluxion_AssetRef_IsSet(camera->renderPipeline))
-                {
-                    // Back to nothing, which is the camera saying
-                    // "whatever the project uses" rather than a camera
-                    // with no pipeline at all.
-                    camera->renderPipeline = FluxionAssetRef{};
-                }
-                else
-                {
-                    for (const DemoPipeline& entry : demoPipelines)
-                    {
-                        if (!Fluxion_UUID_Equals(entry.ref.asset, projectDefault.asset)) camera->renderPipeline = entry.ref;
-                    }
-                }
-
-                const FluxionAssetRef inForce = Fluxion_RenderPipelineAsset_Resolve(camera->renderPipeline);
-                for (const DemoPipeline& entry : demoPipelines)
-                {
-                    if (Fluxion_UUID_Equals(entry.ref.asset, inForce.asset))
-                    {
-                        FLUXION_LOG_INFO("ForwardRendererDemo", "Drawing with %s%s.", entry.name,
-                            Fluxion_AssetRef_IsSet(camera->renderPipeline) ? " (the camera's own)" : " (the project's default)");
-                    }
-                }
+                FLUXION_LOG_INFO("ForwardRendererDemo", "Drawing with %s%s.", next.name,
+                    isDefault ? " (the project's default)" : " (the camera's own)");
             }
         }
 
@@ -1904,6 +1910,12 @@ int main(int argc, char** argv)
         // is what the view is made with -- and the view is made fresh
         // every frame here, so switching pipelines needs nothing else.
         Fluxion_RenderPipelineAsset_ApplyToViewDesc(pipelineAsset, &viewDesc);
+
+        // And the parts that are the renderer's rather than the view's --
+        // today, whether the processor or the device works out what can
+        // be seen. Every frame, because the pipeline in force can change
+        // between two of them.
+        Fluxion_RenderPipelineAsset_ApplyToRenderer(pipelineAsset, renderer);
 
         FluxionRenderViewHandle frameView = Fluxion_RenderView_Create(device, &viewDesc);
 
@@ -2169,8 +2181,15 @@ int main(int argc, char** argv)
                 ? (f64)(extractionEnd - extractionStart) * 1000.0 / (f64)ticksPerSecond
                 : 0.0;
 
-            FLUXION_LOG_INFO("ForwardRendererDemo", "%u objects -> %u seen -> %u draw calls; extracting them took %.3f ms.",
-                renderWorld.objectCount, Fluxion_Renderer_GetVisibleObjectCount(renderer),
+            // Where the culling happened is printed WITH the numbers,
+            // because the numbers are the comparison: the same scene,
+            // the same batches, and two places that could have worked
+            // out which of them are seen.
+            const bool onDevice = Fluxion_Renderer_GetCullMode(renderer) == FLUXION_RENDERER_CULL_ON_DEVICE;
+
+            FLUXION_LOG_INFO("ForwardRendererDemo", "%s: %u objects -> %u seen (culled on the %s%s) -> %u draw calls; extracting them took %.3f ms.",
+                activePipeline->name, renderWorld.objectCount, Fluxion_Renderer_GetVisibleObjectCount(renderer),
+                onDevice ? "device" : "processor", onDevice ? ", counted a frame behind" : "",
                 Fluxion_Renderer_GetLastDrawCallCount(renderer), extractionMs);
         }
 

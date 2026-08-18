@@ -61,6 +61,7 @@ engine_embed_shader_library(
         Fluxion/Tonemap.jsl
         Fluxion/Material.jsl
         Fluxion/Pass/Vertex.jsl
+        Fluxion/Pass/GPUCull.jsl
         Fluxion/Pass/IrradianceProject.jsl
         Fluxion/Pass/ShadowDepth.jsl
         Fluxion/Pass/ShadowDepthWrite.jsl

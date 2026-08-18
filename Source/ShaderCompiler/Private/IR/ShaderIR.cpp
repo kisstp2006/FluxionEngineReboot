@@ -230,6 +230,234 @@ static const Expr* FindGlobalReference(const Expr& expr, const char* name)
     }
 }
 
+// Where a named call appears anywhere under this expression.
+static const Expr* FindCallInExpr(const Expr& expr, const char* name)
+{
+    switch (expr.kind)
+    {
+        case ExprKind::Call: {
+            const auto& call = static_cast<const CallExpr&>(expr);
+            if (call.callee == name) return &expr;
+            for (const ExprPtr& arg : call.args)
+            {
+                if (const Expr* found = FindCallInExpr(*arg, name)) return found;
+            }
+            return nullptr;
+        }
+
+        case ExprKind::Constructor: {
+            const auto& ctor = static_cast<const ConstructorExpr&>(expr);
+            for (const ExprPtr& arg : ctor.args)
+            {
+                if (const Expr* found = FindCallInExpr(*arg, name)) return found;
+            }
+            return nullptr;
+        }
+
+        case ExprKind::Binary: {
+            const auto& binary = static_cast<const BinaryExpr&>(expr);
+            if (const Expr* found = FindCallInExpr(*binary.lhs, name)) return found;
+            return FindCallInExpr(*binary.rhs, name);
+        }
+
+        case ExprKind::Unary:
+            return FindCallInExpr(*static_cast<const UnaryExpr&>(expr).operand, name);
+
+        case ExprKind::Member:
+            return FindCallInExpr(*static_cast<const MemberExpr&>(expr).base, name);
+
+        case ExprKind::Index: {
+            const auto& index = static_cast<const IndexExpr&>(expr);
+            if (const Expr* found = FindCallInExpr(*index.base, name)) return found;
+            return FindCallInExpr(*index.index, name);
+        }
+
+        case ExprKind::Ternary: {
+            const auto& ternary = static_cast<const TernaryExpr&>(expr);
+            if (const Expr* found = FindCallInExpr(*ternary.condition, name)) return found;
+            if (const Expr* found = FindCallInExpr(*ternary.thenExpr, name)) return found;
+            return FindCallInExpr(*ternary.elseExpr, name);
+        }
+
+        case ExprKind::Assign: {
+            const auto& assign = static_cast<const AssignExpr&>(expr);
+            if (const Expr* found = FindCallInExpr(*assign.target, name)) return found;
+            return FindCallInExpr(*assign.value, name);
+        }
+
+        default:
+            return nullptr;
+    }
+}
+
+// The same over a statement, wherever the call stands.
+static const Expr* FindCallAnywhere(const Stmt& stmt, const char* name);
+
+// And the same, EXCEPT where the call is the whole initialiser of a
+// variable declaration.
+//
+// One builtin needs that restriction. An atomic add answers with the
+// value it replaced, and the two target languages disagree about how it
+// says so: one returns it, the other fills in an out parameter. A single
+// shape can be emitted for both only where a name is being introduced
+// anyway -- so that is the only place it may stand.
+static const Expr* FindCallOutsideVarDecl(const Stmt& stmt, const char* name)
+{
+    switch (stmt.kind)
+    {
+        case StmtKind::Expr:
+            return FindCallInExpr(*static_cast<const ExprStmt&>(stmt).expr, name);
+
+        case StmtKind::VarDecl: {
+            const auto& decl = static_cast<const VarDeclStmt&>(stmt);
+            if (!decl.initializer) return nullptr;
+
+            if (decl.initializer->kind == ExprKind::Call)
+            {
+                const auto& call = static_cast<const CallExpr&>(*decl.initializer);
+                if (call.callee == name)
+                {
+                    // Allowed here -- but its own arguments are ordinary
+                    // expressions, and one of them holding a second
+                    // atomic add would need the same rewriting again.
+                    for (const ExprPtr& arg : call.args)
+                    {
+                        if (const Expr* found = FindCallInExpr(*arg, name)) return found;
+                    }
+                    return nullptr;
+                }
+            }
+            return FindCallInExpr(*decl.initializer, name);
+        }
+
+        case StmtKind::Block: {
+            const auto& block = static_cast<const BlockStmt&>(stmt);
+            for (const StmtPtr& inner : block.statements)
+            {
+                if (const Expr* found = FindCallOutsideVarDecl(*inner, name)) return found;
+            }
+            return nullptr;
+        }
+
+        case StmtKind::If: {
+            const auto& branch = static_cast<const IfStmt&>(stmt);
+            if (branch.condition)
+            {
+                if (const Expr* found = FindCallInExpr(*branch.condition, name)) return found;
+            }
+            if (branch.thenBranch)
+            {
+                if (const Expr* found = FindCallOutsideVarDecl(*branch.thenBranch, name)) return found;
+            }
+            return branch.elseBranch ? FindCallOutsideVarDecl(*branch.elseBranch, name) : nullptr;
+        }
+
+        case StmtKind::For: {
+            const auto& loop = static_cast<const ForStmt&>(stmt);
+            if (loop.init)
+            {
+                if (const Expr* found = FindCallOutsideVarDecl(*loop.init, name)) return found;
+            }
+            if (loop.condition)
+            {
+                if (const Expr* found = FindCallInExpr(*loop.condition, name)) return found;
+            }
+            if (loop.iteration)
+            {
+                if (const Expr* found = FindCallInExpr(*loop.iteration, name)) return found;
+            }
+            return loop.body ? FindCallOutsideVarDecl(*loop.body, name) : nullptr;
+        }
+
+        case StmtKind::While: {
+            const auto& loop = static_cast<const WhileStmt&>(stmt);
+            if (loop.condition)
+            {
+                if (const Expr* found = FindCallInExpr(*loop.condition, name)) return found;
+            }
+            return loop.body ? FindCallOutsideVarDecl(*loop.body, name) : nullptr;
+        }
+
+        case StmtKind::Return: {
+            const auto& ret = static_cast<const ReturnStmt&>(stmt);
+            return ret.value ? FindCallInExpr(*ret.value, name) : nullptr;
+        }
+
+        default:
+            return nullptr;
+    }
+}
+
+static const Expr* FindCallAnywhere(const Stmt& stmt, const char* name)
+{
+    switch (stmt.kind)
+    {
+        case StmtKind::Expr:
+            return FindCallInExpr(*static_cast<const ExprStmt&>(stmt).expr, name);
+
+        case StmtKind::VarDecl: {
+            const auto& decl = static_cast<const VarDeclStmt&>(stmt);
+            return decl.initializer ? FindCallInExpr(*decl.initializer, name) : nullptr;
+        }
+
+        case StmtKind::Block: {
+            const auto& block = static_cast<const BlockStmt&>(stmt);
+            for (const StmtPtr& inner : block.statements)
+            {
+                if (const Expr* found = FindCallAnywhere(*inner, name)) return found;
+            }
+            return nullptr;
+        }
+
+        case StmtKind::If: {
+            const auto& branch = static_cast<const IfStmt&>(stmt);
+            if (branch.condition)
+            {
+                if (const Expr* found = FindCallInExpr(*branch.condition, name)) return found;
+            }
+            if (branch.thenBranch)
+            {
+                if (const Expr* found = FindCallAnywhere(*branch.thenBranch, name)) return found;
+            }
+            return branch.elseBranch ? FindCallAnywhere(*branch.elseBranch, name) : nullptr;
+        }
+
+        case StmtKind::For: {
+            const auto& loop = static_cast<const ForStmt&>(stmt);
+            if (loop.init)
+            {
+                if (const Expr* found = FindCallAnywhere(*loop.init, name)) return found;
+            }
+            if (loop.condition)
+            {
+                if (const Expr* found = FindCallInExpr(*loop.condition, name)) return found;
+            }
+            if (loop.iteration)
+            {
+                if (const Expr* found = FindCallInExpr(*loop.iteration, name)) return found;
+            }
+            return loop.body ? FindCallAnywhere(*loop.body, name) : nullptr;
+        }
+
+        case StmtKind::While: {
+            const auto& loop = static_cast<const WhileStmt&>(stmt);
+            if (loop.condition)
+            {
+                if (const Expr* found = FindCallInExpr(*loop.condition, name)) return found;
+            }
+            return loop.body ? FindCallAnywhere(*loop.body, name) : nullptr;
+        }
+
+        case StmtKind::Return: {
+            const auto& ret = static_cast<const ReturnStmt&>(stmt);
+            return ret.value ? FindCallInExpr(*ret.value, name) : nullptr;
+        }
+
+        default:
+            return nullptr;
+    }
+}
+
 static const Expr* FindGlobalReference(const Stmt& stmt, const char* name)
 {
     switch (stmt.kind)
@@ -347,6 +575,25 @@ ShaderIRModule BuildIR(const Program& program, ShaderStage stage, DiagnosticList
                 diagnostics.AddError(found->location,
                     "'ThreadID' only means something in a compute shader -- no other stage has a thread to be");
             }
+
+            // A vertex or fragment stage's storage buffers are declared
+            // read-only (see the HLSL backend's note on
+            // fragmentStoresAndAtomics), so writing to one from there
+            // fails in the generated text rather than here.
+            if (const Expr* found = FindCallAnywhere(*function->body, "AtomicAdd"))
+            {
+                diagnostics.AddError(found->location,
+                    "'AtomicAdd' only works in a compute shader -- nothing else in this engine writes to a buffer");
+            }
+        }
+
+        // And where it may stand, in any stage.
+        if (const Expr* found = FindCallOutsideVarDecl(*function->body, "AtomicAdd"))
+        {
+            diagnostics.AddError(found->location,
+                "'AtomicAdd' may only be the initialiser of a variable, as in \"int slot = AtomicAdd(counter, 1);\" -- "
+                "one of the two shading languages answers with the old value and the other fills in an out parameter, "
+                "and that is the only shape both of them can be given");
         }
     }
 

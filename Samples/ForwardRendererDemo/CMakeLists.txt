@@ -93,12 +93,23 @@ set_tests_properties(ForwardRendererDemoSmokeMinimalPipeline PROPERTIES
     SKIP_RETURN_CODE 77
     TIMEOUT 120)
 
-# The two runs must not overlap. They are the same program in the same
+# And the same frame again with the culling worked out on the device
+# instead of the processor. Same graph, same shadow quality, one setting
+# different -- so what this covers that the first run does not is the
+# cull pipeline being compiled, dispatched and drawn from.
+add_test(NAME ForwardRendererDemoSmokeGPUCulling
+         COMMAND ForwardRendererDemo --graphics=vulkan --frames=30 --pipeline=DefaultForwardGPU)
+
+set_tests_properties(ForwardRendererDemoSmokeGPUCulling PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 120)
+
+# The runs must not overlap. They are the same program in the same
 # working directory, so they open the same pipeline cache files -- and
 # two copies of it writing one cache is a race the sample is not built to
 # survive (measured: run side by side under a parallel ctest, one of them
 # crashes and the other times out; run one after the other, both pass).
 # The lock is a name rather than a real file; ctest only uses it to keep
 # the two apart.
-set_tests_properties(ForwardRendererDemoSmoke ForwardRendererDemoSmokeMinimalPipeline PROPERTIES
+set_tests_properties(ForwardRendererDemoSmoke ForwardRendererDemoSmokeMinimalPipeline ForwardRendererDemoSmokeGPUCulling PROPERTIES
     RESOURCE_LOCK "ForwardRendererDemoWorkingDirectory")

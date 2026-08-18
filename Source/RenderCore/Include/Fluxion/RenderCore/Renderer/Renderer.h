@@ -175,6 +175,29 @@ u32 Fluxion_Renderer_GetLastDrawCallCount(FluxionRendererHandle renderer);
 // draw-call count of one.
 u32 Fluxion_Renderer_GetVisibleObjectCount(FluxionRendererHandle renderer);
 
+// --- Where the culling happens --------------------------------------------
+//
+// Not a rendering decision the renderer makes on its own: a pipeline
+// asset says it (Pipeline/RenderPipelineAsset.h, "culling"), and this is
+// where that answer lands. A renderer nobody tells culls on the host,
+// which is what every frame did before there was a choice.
+
+typedef enum FluxionRendererCullMode
+{
+    FLUXION_RENDERER_CULL_ON_HOST = 0,
+    FLUXION_RENDERER_CULL_ON_DEVICE,
+} FluxionRendererCullMode;
+
+// Takes effect at the next Fluxion_Renderer_UploadScene, so a frame is
+// never half culled one way and half the other.
+//
+// Asking for the device is a request, not a guarantee: if the cull pass
+// cannot be built on this device, the frame falls back to the host and
+// says so once. What is drawn is the same either way -- that is the
+// whole point of the two paths sharing one visible list.
+void Fluxion_Renderer_SetCullMode(FluxionRendererHandle renderer, FluxionRendererCullMode mode);
+FluxionRendererCullMode Fluxion_Renderer_GetCullMode(FluxionRendererHandle renderer);
+
 #ifdef __cplusplus
 }
 #endif

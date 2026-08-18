@@ -1,0 +1,160 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_PASS_GPU_CULL_INCLUDED
+#define FLUXION_PASS_GPU_CULL_INCLUDED
+
+// DECIDING WHAT IS SEEN, ON THE DEVICE.
+//
+// One thread per object. It answers the same question the processor
+// answers in GPUScene.c -- is this object in front of the eye, and near
+// enough -- and writes its answer to the same two places: the list of
+// what each batch draws, and that batch's instance count.
+//
+// The instance count IS the counter. A thread that finds its object
+// visible adds one to it and is handed the slot it just claimed, which
+// is what an atomic add is for: no thread has to know what the others
+// found, and the answer is the same however they are scheduled.
+//
+// WHAT IS NOT DECIDED HERE: which layers an object belongs to. This
+// language has no bitwise operators yet, so the mask test is answered on
+// the processor and arrives as a yes or a no -- said here rather than
+// left to be discovered from a layer that stops working.
+
+// The Global group, and the choice is load-bearing for the same reason
+// it is in Fluxion/Pass/IrradianceProject.jsl: a group's name IS its
+// descriptor set index, and this pipeline is built with one bind group
+// layout, at index zero.
+
+// xyz: a plane's normal, w: its distance. Six of them, in the order
+// Fluxion_Mat4_FrustumPlanes writes them.
+[Uniform(Global)] Vector4 cullPlane0;
+[Uniform(Global)] Vector4 cullPlane1;
+[Uniform(Global)] Vector4 cullPlane2;
+[Uniform(Global)] Vector4 cullPlane3;
+[Uniform(Global)] Vector4 cullPlane4;
+[Uniform(Global)] Vector4 cullPlane5;
+
+// xyz: where the eye is. w: how far it sees, or zero for no limit.
+[Uniform(Global)] Vector4 cullEye;
+
+// x: how many objects there are. Checked by every thread, because a
+// dispatch is rounded up to whole groups and the last group's spare
+// threads have no object of their own.
+[Uniform(Global)] Vector4 cullCounts;
+
+// One indirect draw, as the RHI lays it out --
+// FluxionRHIDrawIndexedIndirectCommand said in this language. The
+// instance count is the field this pass writes.
+struct FluxionCullCommand
+{
+    int indexCount;
+    int instanceCount;
+    int firstIndex;
+    int vertexOffset;
+    int firstInstance;
+};
+
+// xyz: the object's centre in world space, w: its radius.
+[Buffer(Global)] Vector4 cullSpheres;
+
+// Which batch each object belongs to, and whether its layers passed --
+// two lists rather than fields in one struct, because a struct mixing
+// integers and vectors is packed differently by the two shading
+// languages and this way nothing has to be remembered about that.
+[Buffer(Global)] int cullBatches;
+[Buffer(Global)] int cullLayerPass;
+
+// Where each batch's slice of the visible list begins.
+[Buffer(Global)] int cullBatchFirst;
+
+// What the frame draws, and what draws it.
+[Buffer(Global)] int visibleObjects;
+[Buffer(Global)] FluxionCullCommand cullCommands;
+
+bool Fluxion_Cull_InsideFrustum(Vector3 centre, float radius)
+{
+    // A sphere is outside as soon as it is behind ONE plane. Written out
+    // rather than looped, because the planes are separate uniforms:
+    // an array of them in a uniform block is packed differently by the
+    // two languages, and six named vectors cannot be.
+    if (dot(cullPlane0.xyz, centre) + cullPlane0.w < -radius) { return false; }
+    if (dot(cullPlane1.xyz, centre) + cullPlane1.w < -radius) { return false; }
+    if (dot(cullPlane2.xyz, centre) + cullPlane2.w < -radius) { return false; }
+    if (dot(cullPlane3.xyz, centre) + cullPlane3.w < -radius) { return false; }
+    if (dot(cullPlane4.xyz, centre) + cullPlane4.w < -radius) { return false; }
+    if (dot(cullPlane5.xyz, centre) + cullPlane5.w < -radius) { return false; }
+    return true;
+}
+
+void main() {
+  int index = int(ThreadID);
+  if (index >= int(cullCounts.x)) { return; }
+
+  // The layers, answered on the processor -- see the note at the top.
+  if (cullLayerPass[index] == 0) { return; }
+
+  Vector4 sphere = cullSpheres[index];
+  Vector3 centre = sphere.xyz;
+  float radius = sphere.w;
+
+  // An object with no bounds is always drawn: not knowing where
+  // something is, is not a reason to decide it is elsewhere. The same
+  // rule the processor's answer follows.
+  if (radius > 0.0) {
+    if (cullEye.w > 0.0) {
+      // To the NEAR SIDE of the sphere, not to its centre: a large
+      // object whose centre is past the limit may still have half of
+      // itself in view.
+      float distance = length(centre - cullEye.xyz) - radius;
+      if (distance > cullEye.w) { return; }
+    }
+
+    if (!Fluxion_Cull_InsideFrustum(centre, radius)) { return; }
+  }
+
+  // Seen. Claim a slot in this batch's slice and say which object it is.
+  int batch = cullBatches[index];
+  int slot = AtomicAdd(cullCommands[batch].instanceCount, 1);
+  visibleObjects[cullBatchFirst[batch] + slot] = index;
+}
+
+#endif

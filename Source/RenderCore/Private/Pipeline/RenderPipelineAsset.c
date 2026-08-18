@@ -128,12 +128,21 @@ static bool Fluxion_RenderPipelineAsset_Serialize(FluxionStream* stream, Fluxion
 
     u32 lighting = (u32)asset->settings.lighting;
     u32 shadowQuality = (u32)asset->settings.shadowQuality;
+    u32 culling = (u32)asset->settings.culling;
     Fluxion_Stream_SerializeU32(stream, &lighting);
     Fluxion_Stream_SerializeU32(stream, &shadowQuality);
+
+    // Version 2 added it. A file written before it says nothing about
+    // where culling happens, and gets the answer everything had then --
+    // which is the zero value the asset was cleared to.
+    if (formatVersion >= 2) Fluxion_Stream_SerializeU32(stream, &culling);
+
     if (lighting > FLUXION_RENDER_PIPELINE_LIGHTING_CLUSTERED) return false;
     if (shadowQuality > FLUXION_RENDER_PIPELINE_SHADOW_QUALITY_HIGH) return false;
+    if (culling > FLUXION_RENDER_PIPELINE_CULLING_GPU) return false;
     asset->settings.lighting = (FluxionRenderPipelineLighting)lighting;
     asset->settings.shadowQuality = (FluxionRenderPipelineShadowQuality)shadowQuality;
+    asset->settings.culling = (FluxionRenderPipelineCulling)culling;
 
     u8 taa = asset->settings.taa ? 1u : 0u;
     u8 ssao = asset->settings.ssao ? 1u : 0u;
@@ -293,6 +302,16 @@ void Fluxion_RenderPipelineAsset_ApplyToViewDesc(const FluxionRenderPipelineAsse
             desc->shadowTileSize = 1024;
             break;
     }
+}
+
+void Fluxion_RenderPipelineAsset_ApplyToRenderer(const FluxionRenderPipelineAsset* asset, FluxionRendererHandle renderer)
+{
+    if (asset == NULL) return;
+
+    const FluxionRendererCullMode mode = (asset->settings.culling == FLUXION_RENDER_PIPELINE_CULLING_GPU)
+                                             ? FLUXION_RENDERER_CULL_ON_DEVICE
+                                             : FLUXION_RENDERER_CULL_ON_HOST;
+    Fluxion_Renderer_SetCullMode(renderer, mode);
 }
 
 // ---------------------------------------------------------------------

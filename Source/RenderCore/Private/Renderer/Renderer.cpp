@@ -374,6 +374,7 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     // would try to free a bogus "valid" handle instead of skipping it.
     renderer->currentView = FluxionRenderViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->gpuScene = FluxionGPUSceneHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->cullMode = FLUXION_RENDERER_CULL_ON_HOST;
     renderer->debugVertexBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->debugVertexShader = FluxionRHIShaderHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->debugFragmentShader = FluxionRHIShaderHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -593,6 +594,7 @@ extern "C" void Fluxion_Renderer_UploadScene(FluxionRendererHandle rendererHandl
     cull.layerMask = viewLayerMask;
     cull.enabled = FluxionRendererInternal_RenderView_GetCamera(renderer->currentView, &cull.viewProjection,
                                                                 &cull.cameraPosition, &cull.cullDistance);
+    cull.mode = (renderer->cullMode == FLUXION_RENDERER_CULL_ON_DEVICE) ? FLUXION_GPU_SCENE_CULL_GPU : FLUXION_GPU_SCENE_CULL_CPU;
 
     Fluxion_GPUScene_SetCulling(renderer->gpuScene, &cull);
     Fluxion_GPUScene_Upload(renderer->gpuScene, commandList, renderer->objectBindGroupLayout);
@@ -714,6 +716,22 @@ extern "C" void Fluxion_Renderer_SetDebugDrawDepthFormat(FluxionRendererHandle r
 extern "C" void* Fluxion_Renderer_GetForwardOpaquePassUserData(FluxionRendererHandle rendererHandle)
 {
     return Resolve(rendererHandle);
+}
+
+extern "C" void Fluxion_Renderer_SetCullMode(FluxionRendererHandle rendererHandle, FluxionRendererCullMode mode)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return;
+
+    renderer->cullMode = mode;
+}
+
+extern "C" FluxionRendererCullMode Fluxion_Renderer_GetCullMode(FluxionRendererHandle rendererHandle)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return FLUXION_RENDERER_CULL_ON_HOST;
+
+    return renderer->cullMode;
 }
 
 extern "C" u32 Fluxion_Renderer_GetVisibleObjectCount(FluxionRendererHandle rendererHandle)
