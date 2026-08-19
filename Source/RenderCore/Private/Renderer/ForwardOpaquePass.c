@@ -89,6 +89,17 @@ void FluxionForwardOpaquePass_Setup(FluxionRenderGraphBuilder* builder, void* us
     FluxionRHITextureViewHandle depthView = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     if (!FluxionRendererInternal_RenderTarget_Get(renderTarget, colorViews, &colorViewCount, &depthView)) return;
 
+    // THE SCENE'S OWN TARGET, when the chain is on: what this pass writes
+    // is light, and light does not fit in the eight bits a screen takes.
+    // The caller's target is written at the end of the frame, by the
+    // resolve -- see PostProcessPass.c.
+    const FluxionRHITextureViewHandle sceneColor = FluxionRendererInternal_PostProcess_GetSceneColorView(renderer);
+    if (FLUXION_HANDLE_IS_VALID(sceneColor))
+    {
+        colorViews[0] = sceneColor;
+        colorViewCount = 1;
+    }
+
     for (u32 i = 0; i < colorViewCount; ++i)
     {
         char name[32];
@@ -127,6 +138,17 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
     u32 colorViewCount = 0;
     FluxionRHITextureViewHandle depthView = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     if (!FluxionRendererInternal_RenderTarget_Get(renderTarget, colorViews, &colorViewCount, &depthView) || colorViewCount == 0) return;
+
+    // THE SCENE'S OWN TARGET, when the chain is on: what this pass writes
+    // is light, and light does not fit in the eight bits a screen takes.
+    // The caller's target is written at the end of the frame, by the
+    // resolve -- see PostProcessPass.c.
+    const FluxionRHITextureViewHandle sceneColor = FluxionRendererInternal_PostProcess_GetSceneColorView(renderer);
+    if (FLUXION_HANDLE_IS_VALID(sceneColor))
+    {
+        colorViews[0] = sceneColor;
+        colorViewCount = 1;
+    }
 
     FluxionRHIRenderingAttachment colorAttachments[FLUXION_RENDER_TARGET_MAX_COLOR_ATTACHMENTS];
     for (u32 i = 0; i < colorViewCount; ++i)
@@ -259,8 +281,14 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
     // the two the renderer was told, and they are the frame's attachment
     // formats rather than anything specific to the debug lines that first
     // needed them.
+    //
+    // WITH ONE EXCEPTION: when this pass has been redirected into the
+    // scene's own target, that is the format the sky is drawn for, not
+    // the one the caller named for its screen. The sky is part of the
+    // scene and lands wherever the scene does.
     FluxionRendererInternal_Skybox_Draw(renderer, commandList, frameBindGroup,
-        renderer->attachmentColorFormat, renderer->attachmentDepthFormat, FLUXION_HANDLE_IS_VALID(depthView));
+        FLUXION_HANDLE_IS_VALID(sceneColor) ? FLUXION_RENDERER_SCENE_COLOR_FORMAT : renderer->attachmentColorFormat,
+        renderer->attachmentDepthFormat, FLUXION_HANDLE_IS_VALID(depthView));
 
     Fluxion_RHI_CommandList_EndRendering(commandList);
 }

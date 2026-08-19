@@ -493,6 +493,44 @@ typedef struct FluxionRenderer
     FluxionRHIBufferHandle pyramidUniformBuffer;
     FluxionRHIBindGroupHandle pyramidBindGroups[FLUXION_RENDER_HISTORY_MAX_PYRAMID_LEVELS];
 
+    // --- what the scene is drawn into, and what turns it into a picture ---
+    //
+    // Sixteen bits a channel, because what the passes write is an amount
+    // of light and light has no upper bound. The screen's own target
+    // comes later, from the resolve -- see PostProcessPass.c.
+    FluxionRHITextureHandle sceneColorTexture;
+    FluxionRHITextureViewHandle sceneColorView;       // to attach
+    FluxionRHITextureViewHandle sceneColorSampleView; // to read
+    u32 sceneColorWidth;
+    u32 sceneColorHeight;
+
+    // A texture nobody has drawn into is in no state at all: the first
+    // barrier of its life must say so rather than claim it was already a
+    // render target.
+    bool sceneColorIsUndefined;
+
+    FluxionShaderProgramHandle postProgram;
+    FluxionRHIPipelineHandle postPipeline;
+    FluxionRHIBindGroupLayoutHandle postLayout;
+    FluxionRHISamplerHandle postSampler;
+    FluxionRHIBufferHandle postVertexBuffer;
+    FluxionRHIBufferHandle postUniformBuffer;
+    FluxionRHIBindGroupHandle postBindGroup;
+    FluxionRHITextureViewHandle postBoundSceneColor;
+
+    // The format of what the resolve writes -- the screen's, not the
+    // scene's. Told by the application, because only it knows what it
+    // asked its swapchain for.
+    FluxionRHIFormat postOutputFormat;
+    bool postFailed;
+
+    // WHETHER THE SCENE GOES THROUGH THE CHAIN AT ALL. Off by default,
+    // because it changes what every pipeline drawing the scene must be
+    // built for: with the chain on, the scene lands in a target of
+    // sixteen-bit light, and a pipeline built for an eight-bit screen
+    // cannot write into it.
+    bool postEnabled;
+
     // The depth view the groups above were built against. When the frame
     // is resized its depth is a different texture, and a group still
     // pointing at the old one reads a texture nobody draws into.
@@ -740,6 +778,34 @@ void FluxionRendererInternal_DepthPyramid_Destroy(FluxionRenderer* renderer);
 // Makes the pyramid's texture and its per-level views for a frame of this
 // size, and answers whether there is one to draw into.
 bool FluxionRendererInternal_History_EnsurePyramid(FluxionRenderer* renderer, u32 width, u32 height);
+
+// --- The scene's own target, and the pass that resolves it (PostProcessPass.c)
+//
+// THE SCENE IS NEVER DRAWN STRAIGHT TO THE SCREEN. Every pass that draws
+// the world writes light into this texture, and one pass at the end turns
+// that into what a monitor shows. Anything that wants to read the picture
+// as light -- what glows, how bright the frame is -- reads this.
+#define FLUXION_RENDERER_SCENE_COLOR_FORMAT FLUXION_RHI_FORMAT_R16G16B16A16_FLOAT
+
+bool FluxionRendererInternal_PostProcess_EnsureSceneColor(FluxionRenderer* renderer, u32 width, u32 height);
+void FluxionRendererInternal_PostProcess_ReleaseSceneColor(FluxionRenderer* renderer);
+void FluxionRendererInternal_PostProcess_Shutdown(FluxionRenderer* renderer);
+
+// What the scene passes attach instead of the target the caller gave the
+// view. Invalid before the first frame has sized it.
+FluxionRHITextureViewHandle FluxionRendererInternal_PostProcess_GetSceneColorView(const FluxionRenderer* renderer);
+
+void FluxionPostProcessPass_Setup(FluxionRenderGraphBuilder* builder, void* userData);
+void FluxionPostProcessPass_Execute(FluxionRHICommandListHandle commandList, void* userData);
+
+// Exposure, white point and whether the output needs the display's
+// transfer function -- the same three the frame constants carry, asked
+// for by the one pass that now acts on them.
+bool FluxionRendererInternal_RenderView_GetToneMapping(FluxionRenderViewHandle view, FluxionVec4* outToneMapping);
+
+// Said by the renderer, once a frame, when the resolve at the end will
+// apply the camera and the curve instead of every surface shader.
+void FluxionRendererInternal_RenderView_SetToneMappingDeferred(FluxionRenderViewHandle view, bool deferred);
 
 // --- "MotionVectorPass" registered pass type (MotionVectorPass.c) ----------
 

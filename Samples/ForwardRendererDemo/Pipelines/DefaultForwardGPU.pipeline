@@ -4,6 +4,7 @@
   "lighting": "forward",
   "shadowQuality": "high",
   "culling": "gpu",
+  "postfx": true,
   "taa": false,
   "ssao": false,
   "ssr": false,

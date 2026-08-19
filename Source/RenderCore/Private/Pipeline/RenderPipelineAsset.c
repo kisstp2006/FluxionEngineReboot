@@ -144,6 +144,12 @@ static bool Fluxion_RenderPipelineAsset_Serialize(FluxionStream* stream, Fluxion
     asset->settings.shadowQuality = (FluxionRenderPipelineShadowQuality)shadowQuality;
     asset->settings.culling = (FluxionRenderPipelineCulling)culling;
 
+    // Version 3 added the chain. A file written before it says nothing
+    // about it and gets the answer everything had then: off.
+    u8 postfx = asset->settings.postfx ? 1u : 0u;
+    if (formatVersion >= 3) Fluxion_Stream_SerializeU8(stream, &postfx);
+    asset->settings.postfx = postfx != 0u;
+
     u8 taa = asset->settings.taa ? 1u : 0u;
     u8 ssao = asset->settings.ssao ? 1u : 0u;
     u8 ssr = asset->settings.ssr ? 1u : 0u;
@@ -312,6 +318,10 @@ void Fluxion_RenderPipelineAsset_ApplyToRenderer(const FluxionRenderPipelineAsse
                                              ? FLUXION_RENDERER_CULL_ON_DEVICE
                                              : FLUXION_RENDERER_CULL_ON_HOST;
     Fluxion_Renderer_SetCullMode(renderer, mode);
+
+    // The chain, from the same file and the same call: one place says
+    // how a pipeline draws, and this is it.
+    Fluxion_Renderer_SetPostProcessEnabled(renderer, asset->settings.postfx);
 }
 
 // ---------------------------------------------------------------------

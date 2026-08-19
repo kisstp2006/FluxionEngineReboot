@@ -131,12 +131,19 @@ struct FluxionRHID3D12HeapRange
     u32 count;
 };
 
+// HOW MANY SEPARATE HOLES THE FREE LIST CAN HOLD. Adjacent ones are
+// merged as they are freed, so this is reached only by a heap genuinely
+// full of alternating live and dead ranges -- and a free that cannot be
+// recorded is said out loud rather than dropped, because a dropped one
+// is descriptor space nothing can ever hand out again.
+#define FLUXION_RHI_D3D12_MAX_FREE_RANGES 64
+
 struct FluxionRHID3D12HeapAllocator
 {
     ID3D12DescriptorHeap* heap = nullptr;
     u32 capacity = 0;
     u32 descriptorSize = 0;
-    FluxionRHID3D12HeapRange freeRanges[64];
+    FluxionRHID3D12HeapRange freeRanges[FLUXION_RHI_D3D12_MAX_FREE_RANGES];
     u32 freeRangeCount = 0;
 };
 

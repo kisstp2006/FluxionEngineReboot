@@ -627,7 +627,6 @@ struct FluxionRHIOpenGLSwapchain
     // present, and its only attachment is a texture that changes just
     // when the window is resized.
     GLuint presentFBO = 0;
-    GLuint presentFBOTexture = 0;
 #if defined(_WIN32)
     HDC hdc = nullptr;
 #else
@@ -771,19 +770,26 @@ void Fluxion_RHIOpenGL_SwapchainPresent(FluxionRHISwapchainHandle swapchain, u32
     if (image != nullptr && image->name != 0)
     {
         if (sc->presentFBO == 0) glCreateFramebuffers(1, &sc->presentFBO);
-        if (sc->presentFBOTexture != image->name)
-        {
-            glNamedFramebufferTexture(sc->presentFBO, GL_COLOR_ATTACHMENT0, image->name, 0);
-            glNamedFramebufferReadBuffer(sc->presentFBO, GL_COLOR_ATTACHMENT0);
-            sc->presentFBOTexture = image->name;
-        }
+
+        // ATTACHED EVERY TIME, AND NOT WHEN THE NAME CHANGES.
+        //
+        // A resized window gets a new texture, and this backend hands
+        // freed names straight back out -- so the new one is very often
+        // the SAME name as the one just deleted. A framebuffer that
+        // decided by name kept the deleted attachment and copied the old
+        // picture at the old size for the rest of the run, which looked
+        // exactly like a window that had grown with black beside the
+        // picture. One call a frame is not worth a cache that can be
+        // wrong in a way nothing reports.
+        glNamedFramebufferTexture(sc->presentFBO, GL_COLOR_ATTACHMENT0, image->name, 0);
+        glNamedFramebufferReadBuffer(sc->presentFBO, GL_COLOR_ATTACHMENT0);
 
         // A copy is clipped by the scissor the way a draw is, and the
         // pass that ran last is under no obligation to have left it off.
         glDisable(GL_SCISSOR_TEST);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, sc->presentFBO);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glBlitFramebuffer(0, 0, (GLint)image->width, (GLint)image->height, 0, 0, (GLint)image->width, (GLint)image->height,
+            glBlitFramebuffer(0, 0, (GLint)image->width, (GLint)image->height, 0, 0, (GLint)image->width, (GLint)image->height,
                           GL_COLOR_BUFFER_BIT, GL_NEAREST);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }

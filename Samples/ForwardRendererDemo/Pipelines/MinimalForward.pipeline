@@ -3,6 +3,7 @@
   "graph": "MinimalForward",
   "lighting": "forward",
   "shadowQuality": "off",
+  "postfx": true,
   "taa": false,
   "ssao": false,
   "ssr": false,

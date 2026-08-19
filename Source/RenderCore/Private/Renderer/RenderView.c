@@ -75,6 +75,14 @@ typedef struct FluxionRenderViewRecord
     f32 cullDistance;
     f32 exposure;
     f32 tonemapWhitePoint;
+
+    // WHETHER SOMETHING ELSE WILL DO IT. The camera and the curve belong
+    // to the frame either way -- what changes is where they are applied:
+    // in the shader that draws each surface, or once at the end, by the
+    // pass that turns a target full of light into a picture. The values
+    // stay here in both cases, because the pass that applies them asks
+    // this view for them.
+    bool toneMappingDeferred;
     bool encodeOutputToSRGB;
 
     // What the world looks like in every direction. Never nothing: a
@@ -719,9 +727,14 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
     // edit rather than a hunt.
     constants.ambientColor.w = record->environmentIntensity;
 
-    constants.toneMapping.x = record->exposure;
-    constants.toneMapping.y = record->tonemapWhitePoint;
-    constants.toneMapping.z = record->encodeOutputToSRGB ? 1.0f : 0.0f;
+    // A multiplier of one, no curve, and no transfer function, when the
+    // resolve at the end of the frame is going to do all three. What the
+    // passes then write is the light itself -- which is the whole point
+    // of the extra target: anything that reads the picture as light has
+    // something to read.
+    constants.toneMapping.x = record->toneMappingDeferred ? 1.0f : record->exposure;
+    constants.toneMapping.y = record->toneMappingDeferred ? 0.0f : record->tonemapWhitePoint;
+    constants.toneMapping.z = (!record->toneMappingDeferred && record->encodeOutputToSRGB) ? 1.0f : 0.0f;
 
     // Worked out once a frame here rather than in every pixel that wants
     // it. Turning a point on the screen back into a direction in the
@@ -1238,6 +1251,25 @@ bool FluxionRendererInternal_RenderView_Get(FluxionRenderViewHandle view, Fluxio
     if (outRenderTarget != NULL) *outRenderTarget = record->renderTarget;
     if (outLayerMask != NULL) *outLayerMask = record->layerMask;
     if (outFrameBindGroup != NULL) *outFrameBindGroup = record->frameBindGroup;
+    return true;
+}
+
+void FluxionRendererInternal_RenderView_SetToneMappingDeferred(FluxionRenderViewHandle view, bool deferred)
+{
+    FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return;
+    record->toneMappingDeferred = deferred;
+}
+
+bool FluxionRendererInternal_RenderView_GetToneMapping(FluxionRenderViewHandle view, FluxionVec4* outToneMapping)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL || outToneMapping == NULL) return false;
+
+    outToneMapping->x = record->exposure;
+    outToneMapping->y = record->tonemapWhitePoint;
+    outToneMapping->z = record->encodeOutputToSRGB ? 1.0f : 0.0f;
+    outToneMapping->w = 0.0f;
     return true;
 }
 

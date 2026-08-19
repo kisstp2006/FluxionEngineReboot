@@ -65,6 +65,7 @@ engine_embed_shader_library(
         Fluxion/Pass/IrradianceProject.jsl
         Fluxion/Pass/FullscreenVertex.jsl
         Fluxion/Pass/DepthPyramid.jsl
+        Fluxion/Pass/PostProcess.jsl
         Fluxion/Pass/MotionVector.jsl
         Fluxion/Pass/MotionVectorWrite.jsl
         Fluxion/Pass/ShadowDepth.jsl

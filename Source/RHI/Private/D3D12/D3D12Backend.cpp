@@ -49,6 +49,8 @@
 
 #include "D3D12Common.h"
 
+#include <Fluxion/Foundation/Log.h>
+
 #include <cstring>
 
 // --- Generic slot pool -------------------------------------------------------
@@ -137,14 +139,66 @@ bool Fluxion_RHID3D12_HeapAllocatorAllocate(FluxionRHID3D12HeapAllocator* alloca
     return false;
 }
 
+// FREED SPACE IS PUT BACK NEXT TO ITS NEIGHBOURS, not merely appended.
+//
+// The list used to be a bag of ranges in the order they happened to be
+// freed, with a "if there is room" on the append -- and once the bag was
+// full, every further free was DROPPED. Not leaked memory: leaked
+// address space in the one heap every bind group is cut from, and it
+// never came back. Resizing a window churns every bind group in the
+// engine at once, so the bag filled in a single frame, and after it the
+// culling could not be bound again for the rest of the run: a black
+// picture with the debug lines still on top of it, and one line saying
+// the next frame would try again, forever.
+//
+// Keeping the list sorted is what makes merging a question about
+// neighbours instead of a search, and merging is what keeps the list
+// short enough that the limit is not reached in the first place.
 void Fluxion_RHID3D12_HeapAllocatorFree(FluxionRHID3D12HeapAllocator* allocator, u32 offset, u32 count)
 {
     if (count == 0) return;
-    // No coalescing with neighboring free ranges -- a v1 simplification
-    // (fragmentation is an accepted cost, see the struct's own comment in
-    // D3D12Common.h); still correct, just doesn't reclaim adjacency.
-    if (allocator->freeRangeCount < 64)
-        allocator->freeRanges[allocator->freeRangeCount++] = { offset, count };
+
+    u32 insert = 0;
+    while (insert < allocator->freeRangeCount && allocator->freeRanges[insert].offset < offset) ++insert;
+
+    // Ends exactly where this one begins: the one before grows.
+    if (insert > 0 && allocator->freeRanges[insert - 1].offset + allocator->freeRanges[insert - 1].count == offset)
+    {
+        allocator->freeRanges[insert - 1].count += count;
+
+        // And may now touch the one after it, which then disappears into
+        // it -- the case that keeps a run of frees from becoming a run of
+        // entries.
+        if (insert < allocator->freeRangeCount &&
+            allocator->freeRanges[insert - 1].offset + allocator->freeRanges[insert - 1].count == allocator->freeRanges[insert].offset)
+        {
+            allocator->freeRanges[insert - 1].count += allocator->freeRanges[insert].count;
+            for (u32 j = insert; j + 1 < allocator->freeRangeCount; ++j) allocator->freeRanges[j] = allocator->freeRanges[j + 1];
+            --allocator->freeRangeCount;
+        }
+        return;
+    }
+
+    // Begins exactly where this one ends: the one after moves back.
+    if (insert < allocator->freeRangeCount && offset + count == allocator->freeRanges[insert].offset)
+    {
+        allocator->freeRanges[insert].offset = offset;
+        allocator->freeRanges[insert].count += count;
+        return;
+    }
+
+    if (allocator->freeRangeCount >= FLUXION_RHI_D3D12_MAX_FREE_RANGES)
+    {
+        FLUXION_LOG_ERROR("RHI.D3D12",
+                          "the descriptor heap's free list is full (%u holes); %u descriptors at %u cannot be recorded and are lost",
+                          allocator->freeRangeCount, count, offset);
+        return;
+    }
+
+    for (u32 j = allocator->freeRangeCount; j > insert; --j) allocator->freeRanges[j] = allocator->freeRanges[j - 1];
+    allocator->freeRanges[insert].offset = offset;
+    allocator->freeRanges[insert].count = count;
+    ++allocator->freeRangeCount;
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE Fluxion_RHID3D12_HeapCpuHandle(const FluxionRHID3D12HeapAllocator* allocator, u32 offset)

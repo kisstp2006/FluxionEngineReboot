@@ -5,12 +5,14 @@
     { "name": "ForwardOpaquePass.Depth", "kind": "texture" },
     { "name": "ShadowPass.Atlas", "kind": "texture" },
     { "name": "MotionVectorPass.Motion", "kind": "texture" },
-    { "name": "DepthPyramidPass.Pyramid", "kind": "texture" }
+    { "name": "DepthPyramidPass.Pyramid", "kind": "texture" },
+    { "name": "PostProcessPass.Color", "kind": "texture" }
   ],
   "nodes": [
     { "name": "shadow", "type": "ShadowPass" },
     { "name": "opaque", "type": "ForwardOpaquePass" },
     { "name": "motion", "type": "MotionVectorPass" },
-    { "name": "pyramid", "type": "DepthPyramidPass" }
+    { "name": "pyramid", "type": "DepthPyramidPass" },
+    { "name": "resolve", "type": "PostProcessPass" }
   ]
 }

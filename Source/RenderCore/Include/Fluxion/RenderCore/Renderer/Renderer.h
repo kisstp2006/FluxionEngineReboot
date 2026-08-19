@@ -213,6 +213,43 @@ FluxionRHITextureHandle Fluxion_Renderer_GetMotionVectorTexture(FluxionRendererH
 FluxionRHITextureHandle Fluxion_Renderer_GetDepthPyramidTexture(FluxionRendererHandle renderer);
 u32 Fluxion_Renderer_GetDepthPyramidLevelCount(FluxionRendererHandle renderer);
 
+// --- The chain that turns light into a picture ----------------------------
+//
+// OFF BY DEFAULT, AND THAT IS NOT A DEFAULT ABOUT QUALITY. With it on,
+// every pass that draws the scene writes into a target of sixteen-bit
+// light instead of into the target the caller gave the view -- so every
+// pipeline that draws the scene has to have been built for THAT format,
+// materials included. Switching it on under pipelines built for an
+// eight-bit screen is not a worse picture, it is no picture: a pipeline
+// cannot write into a target it was not built for.
+//
+// What it buys is everything that reads the picture as light rather than
+// as a colour: what glows and by how much, how bright the frame is on
+// average, what a reflection carries. None of that can be read once the
+// values have been squashed into what a monitor shows, and squashing
+// them is what a surface shader does when there is nothing after it.
+//
+// A pipeline asset says it (Pipeline/RenderPipelineAsset.h, "postfx"),
+// and this is where that answer lands.
+void Fluxion_Renderer_SetPostProcessEnabled(FluxionRendererHandle renderer, bool enabled);
+bool Fluxion_Renderer_IsPostProcessEnabled(FluxionRendererHandle renderer);
+
+// What the scene is drawn into with the chain on. Ask this before
+// building anything that draws the scene -- it is the format those
+// pipelines need, and it does not depend on a renderer existing yet.
+FluxionRHIFormat Fluxion_Renderer_GetSceneColorFormat(void);
+
+// The texture itself, which is what a render graph binds to the name the
+// forward pass writes ("ForwardOpaquePass.Color0") once the chain is on.
+// Made at the first Fluxion_Renderer_BeginFrame after it is switched on,
+// and remade whenever the frame changes size.
+FluxionRHITextureHandle Fluxion_Renderer_GetSceneColorTexture(FluxionRendererHandle renderer);
+
+// The format of what the RESOLVE writes -- the screen's, not the scene's.
+// Told rather than guessed, because only the caller knows what it asked
+// its swapchain for.
+void Fluxion_Renderer_SetOutputColorFormat(FluxionRendererHandle renderer, FluxionRHIFormat format);
+
 // --- Where the culling happens --------------------------------------------
 //
 // Not a rendering decision the renderer makes on its own: a pipeline

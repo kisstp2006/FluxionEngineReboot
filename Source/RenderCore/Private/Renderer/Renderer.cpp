@@ -428,6 +428,23 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     renderer->irradiancePipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->irradianceLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->irradianceBindGroup = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    // Invalid, not zero: a zeroed handle is a handle to slot zero, and the
+    // last time this engine left one that way the first frame destroyed
+    // somebody else's texture.
+    renderer->sceneColorTexture = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->sceneColorView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->sceneColorSampleView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->sceneColorIsUndefined = true;
+    renderer->postProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->postPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->postLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->postSampler = FluxionRHISamplerHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->postVertexBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->postUniformBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->postBindGroup = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->postBoundSceneColor = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->postOutputFormat = FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
     renderer->irradianceFailed = false;
 
     renderer->prefilterProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -504,6 +521,15 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
         FLUXION_LOG_ERROR("Renderer", "Failed to register \"MotionVectorPass\" (already registered? Only one FluxionRenderer instance is supported at a time)");
     }
 
+    FluxionRenderGraphPassType postPassType;
+    postPassType.name = "PostProcessPass";
+    postPassType.setup = FluxionPostProcessPass_Setup;
+    postPassType.execute = FluxionPostProcessPass_Execute;
+    if (!Fluxion_RenderGraphPassRegistry_Register(&postPassType))
+    {
+        FLUXION_LOG_ERROR("Renderer", "Failed to register \"PostProcessPass\" (already registered? Only one FluxionRenderer instance is supported at a time)");
+    }
+
     FluxionRenderGraphPassType shadowPassType;
     shadowPassType.name = "ShadowPass";
     shadowPassType.setup = FluxionShadowPass_Setup;
@@ -527,6 +553,7 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
     }
 
     // The sky goes with the renderer that built it.
+    FluxionRendererInternal_PostProcess_Shutdown(renderer);
     FluxionRendererInternal_Skybox_Destroy(renderer);
     FluxionRendererInternal_Irradiance_Destroy(renderer);
     FluxionRendererInternal_Prefilter_Destroy(renderer);
@@ -602,6 +629,13 @@ extern "C" void Fluxion_Renderer_BeginFrame(FluxionRendererHandle rendererHandle
         const u32 width = (u32)viewport.width;
         const u32 height = (u32)viewport.height;
 
+        // The scene's own target follows the frame's size, like the
+        // history does -- and is made before anything draws into it.
+        if (renderer->postEnabled)
+        {
+            FluxionRendererInternal_PostProcess_EnsureSceneColor(renderer, width, height);
+        }
+
         const bool sameSize = renderer->history.width == width && renderer->history.height == height;
         if (FluxionRendererInternal_History_Begin(renderer, width, height))
         {
@@ -617,6 +651,58 @@ extern "C" void Fluxion_Renderer_BeginFrame(FluxionRendererHandle rendererHandle
     {
         Fluxion_RenderView_SetPreviousViewProjection(view, renderer->history.previousViewProjection);
     }
+
+    // Told once a frame rather than assumed: with the chain on, the
+    // surface shaders write light and the resolve turns it into a
+    // picture; with it off, each shader does its own as it always did.
+    FluxionRendererInternal_RenderView_SetToneMappingDeferred(view, renderer->postEnabled && FLUXION_HANDLE_IS_VALID(renderer->sceneColorTexture));
+
+    // AND WRITTEN AGAIN, because the answer above changes one of them.
+    // A caller that fills its frame constants before beginning the frame
+    // -- which is the natural order, everything about the frame is known
+    // by then -- would otherwise send constants that still say every
+    // shader does its own camera and curve, and the resolve would then
+    // do it a second time. Measured, when it did: the picture came out
+    // at the exposure squared, which is nearly black.
+    Fluxion_RenderView_UpdateFrameConstants(view);
+}
+
+extern "C" void Fluxion_Renderer_SetPostProcessEnabled(FluxionRendererHandle rendererHandle, bool enabled)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return;
+
+    if (renderer->postEnabled == enabled) return;
+    renderer->postEnabled = enabled;
+
+    // Off again means the scene goes straight to the caller's target once
+    // more, and what was made for the chain has nothing left to hold.
+    if (!enabled) FluxionRendererInternal_PostProcess_ReleaseSceneColor(renderer);
+}
+
+extern "C" bool Fluxion_Renderer_IsPostProcessEnabled(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    return renderer != nullptr && renderer->postEnabled;
+}
+
+extern "C" FluxionRHIFormat Fluxion_Renderer_GetSceneColorFormat(void)
+{
+    return FLUXION_RENDERER_SCENE_COLOR_FORMAT;
+}
+
+extern "C" FluxionRHITextureHandle Fluxion_Renderer_GetSceneColorTexture(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    return renderer->sceneColorTexture;
+}
+
+extern "C" void Fluxion_Renderer_SetOutputColorFormat(FluxionRendererHandle rendererHandle, FluxionRHIFormat format)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return;
+    renderer->postOutputFormat = format;
 }
 
 extern "C" void Fluxion_Renderer_InvalidateHistory(FluxionRendererHandle rendererHandle)

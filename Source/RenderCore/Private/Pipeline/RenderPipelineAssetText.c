@@ -164,6 +164,10 @@ bool Fluxion_RenderPipelineAsset_ParseText(const char* text, usize length, Fluxi
         {
             if (!Fluxion_RenderPipelineAssetText_ReadCulling(&json, &parsed.settings.culling)) { ok = false; break; }
         }
+        else if (strcmp(key, "postfx") == 0)
+        {
+            if (!Fluxion_RenderPipelineAssetText_ReadBool(&json, &parsed.settings.postfx)) { ok = false; break; }
+        }
         else if (strcmp(key, "taa") == 0)
         {
             if (!Fluxion_RenderPipelineAssetText_ReadBool(&json, &parsed.settings.taa)) { ok = false; break; }

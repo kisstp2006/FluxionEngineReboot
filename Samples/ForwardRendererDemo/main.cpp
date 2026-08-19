@@ -1215,7 +1215,14 @@ int main(int argc, char** argv)
         Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_WHITE), albedoSampler);
     Fluxion_Material_FlushDirty(cubeMaterial);
 
-    FluxionRenderPipelineHandle cubePipeline = Fluxion_RenderPipeline_Create(device, cubeProgram, FLUXION_RENDER_PIPELINE_CATEGORY_OPAQUE, swapchainDesc.format, depthTextureDesc.format);
+    // THE SCENE'S FORMAT, NOT THE SCREEN'S. Every pipeline in this sample
+    // draws through the post chain (all three .pipeline files say
+    // "postfx": true), and the chain puts the scene in a target of
+    // sixteen-bit light. A pipeline built for the swapchain's eight bits
+    // cannot write into that one at all.
+    const FluxionRHIFormat sceneColorFormat = Fluxion_Renderer_GetSceneColorFormat();
+
+    FluxionRenderPipelineHandle cubePipeline = Fluxion_RenderPipeline_Create(device, cubeProgram, FLUXION_RENDER_PIPELINE_CATEGORY_OPAQUE, sceneColorFormat, depthTextureDesc.format);
     if (!FLUXION_HANDLE_IS_VALID(cubePipeline))
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Failed to create the cube RenderPipeline.");
@@ -1344,7 +1351,13 @@ int main(int argc, char** argv)
     // The debug lines a script draws go into the same colour attachment
     // as everything else, which is a swapchain image -- and the renderer
     // cannot work its format out for itself.
+    // THE DEBUG LINES ARE DRAWN ON THE SCREEN, NOT IN THE SCENE. They are
+    // flushed after the graph has run -- so after the resolve has already
+    // turned the scene's light into a picture -- and they land in the
+    // target this view was given. Their colours are therefore screen
+    // colours and not amounts of light, which is what an overlay wants.
     Fluxion_Renderer_SetDebugDrawColorFormat(renderer, swapchainDesc.format);
+    Fluxion_Renderer_SetOutputColorFormat(renderer, swapchainDesc.format);
     Fluxion_Renderer_SetDebugDrawDepthFormat(renderer, depthTextureDesc.format);
 
     // What a script may name, and what it draws through. The three names
@@ -1367,7 +1380,7 @@ int main(int argc, char** argv)
     // the run that follows.
 
     if (!Fluxion_MeshAsset_RegisterType(device, graphicsQueue) ||
-        !Fluxion_MaterialAsset_RegisterType(device, graphicsQueue, swapchainDesc.format, depthTextureDesc.format))
+        !Fluxion_MaterialAsset_RegisterType(device, graphicsQueue, sceneColorFormat, depthTextureDesc.format))
     {
         FLUXION_LOG_ERROR("ForwardRendererDemo", "Could not register the mesh and material asset types.");
         return 1;
@@ -2221,7 +2234,17 @@ int main(int argc, char** argv)
         // it that way round, so this is where it really is -- and D3D12
         // checks that the state declared here is the state it is in.
         const FluxionRenderGraphBinding frameBindings[] = {
-            { "ForwardOpaquePass.Color0", backbuffer, {}, FLUXION_RHI_RESOURCE_STATE_UNDEFINED },
+            // WHAT THE SCENE IS DRAWN INTO, which is the renderer's own
+            // target of light rather than the screen -- see
+            // Fluxion_Renderer_GetSceneColorFormat. The screen is bound
+            // below, under the name the resolve writes.
+            // UNDEFINED EVERY FRAME, like the pyramid below: the forward
+            // pass clears it and draws the whole picture into it, so
+            // nothing of the last frame's contents is wanted -- and
+            // "whatever was there" is the one state no backend has to be
+            // told twice.
+            { "ForwardOpaquePass.Color0", Fluxion_Renderer_GetSceneColorTexture(renderer), {},
+              FLUXION_RHI_RESOURCE_STATE_UNDEFINED },
             { "ForwardOpaquePass.Depth", depthTexture, {},
               depthIsUndefined ? FLUXION_RHI_RESOURCE_STATE_UNDEFINED : FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE },
             { FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE, Fluxion_RenderView_GetShadowAtlasTexture(frameView), {},
@@ -2244,6 +2267,12 @@ int main(int argc, char** argv)
             // backend has to be told twice.
             { "DepthPyramidPass.Pyramid", Fluxion_Renderer_GetDepthPyramidTexture(renderer), {},
               FLUXION_RHI_RESOURCE_STATE_UNDEFINED },
+
+            // AND THE SCREEN, WHICH IS NO LONGER WHAT THE SCENE IS DRAWN
+            // INTO. "ForwardOpaquePass.Color0" above is the renderer's own
+            // target of light; this is where the resolve puts the picture
+            // it makes from it.
+            { "PostProcessPass.Color", backbuffer, {}, FLUXION_RHI_RESOURCE_STATE_UNDEFINED },
         };
         depthIsUndefined = false;
         motionIsUndefined = false;

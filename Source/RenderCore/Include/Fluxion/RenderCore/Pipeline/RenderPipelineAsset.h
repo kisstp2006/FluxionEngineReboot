@@ -80,7 +80,7 @@ extern "C" {
 #define FLUXION_RENDER_PIPELINE_ASSET_TYPE_NAME "RenderPipeline"
 
 #define FLUXION_RENDER_PIPELINE_ASSET_MAGIC          0x464C5850u // "FLXP"
-#define FLUXION_RENDER_PIPELINE_ASSET_FORMAT_VERSION 2
+#define FLUXION_RENDER_PIPELINE_ASSET_FORMAT_VERSION 3
 
 #define FLUXION_RENDER_PIPELINE_ASSET_MAX_NAME_LENGTH 63
 
@@ -133,6 +133,12 @@ typedef struct FluxionRenderPipelineAssetSettings
     FluxionRenderPipelineLighting lighting;
     FluxionRenderPipelineShadowQuality shadowQuality;
     FluxionRenderPipelineCulling culling;
+
+    // WHETHER THE SCENE GOES THROUGH THE CHAIN. See
+    // Fluxion_Renderer_SetPostProcessEnabled for what it costs: with it
+    // on, everything drawing the scene has to be built for a target of
+    // light rather than for the screen.
+    bool postfx;
 
     // The four that have no pass in this build. False is the only value
     // a file may give them; true is refused by name.
