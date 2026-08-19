@@ -140,6 +140,8 @@ void Test_VulkanBackend_Run(TestContext* ctx)
     Fluxion_RHI_CommandList_CopyBuffer(commandList, stagingBuffer, 0, gpuBuffer, 0, 256);
 
     FluxionRHIBarrier barrier;
+
+    memset(&barrier, 0, sizeof(barrier));
     // A zero-filled handle is NOT the same as an invalid one here --
     // FLUXION_HANDLE_INVALID_INDEX is 0xFFFFFFFF, not 0, so `texture`
     // must be set explicitly invalid rather than left memset(0) (which

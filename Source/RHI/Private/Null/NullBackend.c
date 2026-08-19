@@ -644,6 +644,17 @@ static FluxionRHITextureViewHandle Fluxion_RHI_Null_CreateTextureView(FluxionRHI
 
 static void Fluxion_RHI_Null_DestroyTextureView(FluxionRHITextureViewHandle view) { s_textureViewPool_Free(view); }
 
+// This backend keeps nothing about a view but its slot, so it cannot say
+// which texture the view is of. Nothing on this backend asks -- what does
+// (a pass moving a texture between states) is recording commands that go
+// nowhere here anyway.
+static FluxionRHITextureHandle Fluxion_RHI_Null_GetTextureViewTexture(FluxionRHITextureViewHandle view)
+{
+    FLUXION_UNUSED(view);
+    FluxionRHITextureHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    return invalid;
+}
+
 static FluxionRHISamplerHandle Fluxion_RHI_Null_CreateSampler(FluxionRHIDeviceHandle device, const FluxionRHISamplerDesc* desc)
 {
     FLUXION_UNUSED(desc);
@@ -999,6 +1010,7 @@ static const FluxionRHIBackendVTable s_nullVTable = {
     Fluxion_RHI_Null_DestroyTexture,
     Fluxion_RHI_Null_CreateTextureView,
     Fluxion_RHI_Null_DestroyTextureView,
+    Fluxion_RHI_Null_GetTextureViewTexture,
     Fluxion_RHI_Null_CreateSampler,
     Fluxion_RHI_Null_DestroySampler,
 

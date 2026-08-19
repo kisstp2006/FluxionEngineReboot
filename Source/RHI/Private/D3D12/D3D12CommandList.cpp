@@ -563,16 +563,24 @@ void Fluxion_RHID3D12_CommandListBarrier(FluxionRHICommandListHandle commandList
     FluxionRHID3D12CommandList* cl = Fluxion_RHID3D12_RequireRecording(commandList);
     if (cl == nullptr || barriers == nullptr || barrierCount == 0) return;
 
-    D3D12_RESOURCE_BARRIER nativeBarriers[16];
+    // Room for more than the caller asked for: a barrier that names mip
+    // levels becomes one native barrier PER LEVEL, because this API's
+    // barrier speaks about a single subresource or about all of them and
+    // has no third choice.
+    D3D12_RESOURCE_BARRIER nativeBarriers[64];
     u32 count = 0;
-    for (u32 i = 0; i < barrierCount && count < 16; ++i)
+    for (u32 i = 0; i < barrierCount && count < 64; ++i)
     {
         ID3D12Resource* resource = nullptr;
+        u32 textureMipLevels = 1;
+        u32 textureArrayLayers = 1;
         if (FLUXION_HANDLE_IS_VALID(barriers[i].texture))
         {
             FluxionRHID3D12Texture* textureState = Fluxion_RHID3D12_ResolveTexture(barriers[i].texture);
             if (textureState == nullptr) continue;
             resource = textureState->resource.Get();
+            textureMipLevels = textureState->mipLevels;
+            textureArrayLayers = textureState->arrayLayers;
         }
         else if (FLUXION_HANDLE_IS_VALID(barriers[i].buffer))
         {
@@ -586,13 +594,37 @@ void Fluxion_RHID3D12_CommandListBarrier(FluxionRHICommandListHandle commandList
         D3D12_RESOURCE_STATES after = Fluxion_RHID3D12_MapResourceState(barriers[i].after);
         if (before == after) continue; // D3D12 rejects a same-state transition barrier
 
-        D3D12_RESOURCE_BARRIER& barrier = nativeBarriers[count++];
-        barrier = {};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = resource;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        barrier.Transition.StateBefore = before;
-        barrier.Transition.StateAfter = after;
+        const bool wholeTexture = barriers[i].mipLevelCount == 0 || !FLUXION_HANDLE_IS_VALID(barriers[i].texture);
+        if (wholeTexture)
+        {
+            D3D12_RESOURCE_BARRIER& barrier = nativeBarriers[count++];
+            barrier = {};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource = resource;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            barrier.Transition.StateBefore = before;
+            barrier.Transition.StateAfter = after;
+            continue;
+        }
+
+        // One per level per layer, in the numbering this API uses for a
+        // subresource: the mip index, plus the layer's whole chain before
+        // it.
+        const u32 firstMip = barriers[i].baseMipLevel;
+        const u32 lastMip = firstMip + barriers[i].mipLevelCount;
+        for (u32 layer = 0; layer < textureArrayLayers && count < 64; ++layer)
+        {
+            for (u32 mip = firstMip; mip < lastMip && mip < textureMipLevels && count < 64; ++mip)
+            {
+                D3D12_RESOURCE_BARRIER& barrier = nativeBarriers[count++];
+                barrier = {};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Transition.pResource = resource;
+                barrier.Transition.Subresource = mip + layer * textureMipLevels;
+                barrier.Transition.StateBefore = before;
+                barrier.Transition.StateAfter = after;
+            }
+        }
     }
     if (count > 0) cl->list->ResourceBarrier(count, nativeBarriers);
 }

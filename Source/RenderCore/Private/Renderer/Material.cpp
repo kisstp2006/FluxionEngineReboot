@@ -57,11 +57,14 @@
 namespace
 {
 
-// Sized off Fluxion::ShaderCompiler::IRBuildOptions::maxUniformBufferBytesPerGroup's
-// default (128 bytes) with headroom -- the real, authoritative size for
-// a given material is FluxionMaterialRecord::uniformBufferSize, always
-// <= this.
-constexpr u32 kMaterialCPUBufferCapacity = 256;
+// AS LARGE AS THE COMPILER WILL LET A GROUP BE. The compiler refuses a
+// uniform block over
+// Fluxion::ShaderCompiler::IRBuildOptions::maxUniformBufferBytesPerGroup,
+// so a material that got this far cannot need more than that -- and a
+// capacity smaller than the limit would be an assert waiting for the
+// first material that used all of it. The real size for a given
+// material is FluxionMaterialRecord::uniformBufferSize, always <= this.
+constexpr u32 kMaterialCPUBufferCapacity = 512;
 
 struct FluxionMaterialRecord
 {

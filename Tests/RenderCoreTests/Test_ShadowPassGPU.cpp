@@ -237,7 +237,7 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     TEST_CHECK(ctx, FLUXION_HANDLE_IS_VALID(readback));
 
     const FluxionRHIBufferHandle noBuffer = Fluxion::Foundation::NoHandle<FluxionRHIBufferHandle>();
-    FluxionRHIBarrier toSource = { atlas, noBuffer, FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE };
+    FluxionRHIBarrier toSource = { atlas, noBuffer, FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(cmd, &toSource, 1);
     Fluxion_RHI_CommandList_CopyTextureToBuffer(cmd, atlas, 0, 0, readback, 0);
     Fluxion_RHI_CommandList_End(cmd);

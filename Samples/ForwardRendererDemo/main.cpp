@@ -1028,7 +1028,11 @@ int main(int argc, char** argv)
     depthTextureDesc.arrayLayers = 1;
     depthTextureDesc.sampleCount = 1;
     depthTextureDesc.format = FLUXION_RHI_FORMAT_D32_FLOAT;
-    depthTextureDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_DEPTH_STENCIL;
+    // SAMPLED as well as attachable: the depth pyramid is built by
+    // reading this, and a texture made only to be attached cannot be read
+    // -- which the engine reports rather than works around, because it is
+    // this file that decides what its own textures are for.
+    depthTextureDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_DEPTH_STENCIL | FLUXION_RHI_TEXTURE_USAGE_SAMPLED;
     depthTextureDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
     depthTextureDesc.debugName = "DemoDepthTexture";
     FluxionRHITextureHandle depthTexture = Fluxion_RHI_CreateTexture(device, &depthTextureDesc);
@@ -1083,9 +1087,9 @@ int main(int argc, char** argv)
 
     FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
-    FluxionRHIBarrier preCopyBarriers[2];
-    preCopyBarriers[0] = FluxionRHIBarrier{ albedoTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
-    preCopyBarriers[1] = FluxionRHIBarrier{ depthTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE };
+    FluxionRHIBarrier preCopyBarriers[2]{};
+    preCopyBarriers[0] = FluxionRHIBarrier{ albedoTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, 0, 0 };
+    preCopyBarriers[1] = FluxionRHIBarrier{ depthTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(uploadCommandList, preCopyBarriers, 2);
 
     for (u32 level = 0; level < kMipLevels; ++level)
@@ -1093,7 +1097,7 @@ int main(int argc, char** argv)
         Fluxion_RHI_CommandList_CopyBufferToTexture(uploadCommandList, textureStagingBuffer, mipStagingOffsets[level], albedoTexture, level, 0);
     }
 
-    FluxionRHIBarrier postUploadBarrier = { albedoTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+    FluxionRHIBarrier postUploadBarrier = { albedoTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(uploadCommandList, &postUploadBarrier, 1);
     Fluxion_RHI_CommandList_End(uploadCommandList);
 
@@ -1673,14 +1677,30 @@ int main(int argc, char** argv)
     // texture has been replaced and the new one has never been used.
     bool depthIsUndefined = false;
 
+    // The same for the motion vector target, which the renderer owns:
+    // the FIRST frame finds it in no state at all, because nothing has
+    // written it yet, and every frame after that finds it as the pass
+    // that wrote it left it.
+    bool motionIsUndefined = true;
+
     // Held across frames rather than acquired inside one: an asset takes
     // more than a frame to arrive, and asking again each time would start
     // the load over and never get there.
     FluxionAssetHandle environmentAsset = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     FLUXION_SCOPE_EXIT(if (FLUXION_HANDLE_IS_VALID(environmentAsset)) Fluxion_Assets_Release(environmentAsset));
 
-    while (running)
-    {
+    // ONE FRAME, AS SOMETHING THAT CAN BE CALLED, not only as the inside
+    // of the loop below.
+    //
+    // Dragging the window's edge starts a loop belonging to the operating
+    // system, and it does not hand control back until the mouse is let
+    // go. The loop below gets no turn in all that time, so the picture
+    // stops and the window shows a stretched copy of its last frame for
+    // as long as the drag lasts. Being callable is what lets the window
+    // ask for a frame from inside that loop -- see the registration after
+    // this.
+    auto drawOneFrame = [&]() {
+
         // Whatever was pressed or released during the last frame stops
         // counting as "this frame" here, before any new event arrives --
         // so a component asking whether a key went down this frame is
@@ -1688,6 +1708,19 @@ int main(int argc, char** argv)
         Fluxion_Input_BeginFrame();
 
         Fluxion_WindowSystem_PollEvents();
+
+        // THE TOP OF THE FRAME, AND NOT LATER. This does two things: it
+        // hands what a worker decoded to the device this thread owns, and
+        // it puts a file that changed on disc in place of the object that
+        // was loaded from it -- letting go of the old object as it does.
+        //
+        // Anything holding what Fluxion_Assets_GetObject returned is
+        // holding freed memory the moment that happens, so this goes
+        // where nothing is holding anything: before the frame asks for
+        // its first asset. Further down, it cost a render graph read
+        // through a pointer taken earlier in the same frame, which came
+        // out as a name of three rubbish bytes.
+        Fluxion_Assets_Update();
         FluxionEvent event;
         while (Fluxion_EventQueue_Pop(&queue, &event))
         {
@@ -1699,7 +1732,7 @@ int main(int argc, char** argv)
         }
         if (Fluxion_Input_WasKeyPressed(FLUXION_KEY_ESCAPE)) running = false;
         if (frameLimit != 0 && ++framesDrawn >= frameLimit) running = false;
-        if (!running) break;
+        if (!running) return;
 
         // P puts the next pipeline on the camera, and goes round -- the
         // shadows go with it, and so does where the culling happens, and
@@ -1867,7 +1900,7 @@ int main(int argc, char** argv)
         // was never handed out.
         if (surfaceWidth == 0 || surfaceHeight == 0)
         {
-            continue;
+            return;
         }
 
         // The depth target has to be at least as large as the area being
@@ -1900,6 +1933,7 @@ int main(int argc, char** argv)
             // submit per frame; the graph already emits exactly this
             // barrier for free.
             depthIsUndefined = true;
+            motionIsUndefined = true;
 
             FLUXION_LOG_INFO("ForwardRendererDemo", "Depth target resized to %ux%u", surfaceWidth, surfaceHeight);
         }
@@ -1925,7 +1959,7 @@ int main(int argc, char** argv)
         {
             FLUXION_LOG_ERROR("ForwardRendererDemo", "The scene has no camera to look through.");
             running = false;
-            continue;
+            return;
         }
 
         // Which pipeline draws this frame. Asked every frame, and in
@@ -1948,7 +1982,7 @@ int main(int argc, char** argv)
             // left to fall back to, which is the point.
             FLUXION_LOG_ERROR("ForwardRendererDemo", "The camera names a render pipeline this sample does not have.");
             running = false;
-            continue;
+            return;
         }
 
         const FluxionRenderPipelineAsset* pipelineAsset = (const FluxionRenderPipelineAsset*)Fluxion_Assets_GetObject(activePipeline->pipeline);
@@ -2134,10 +2168,6 @@ int main(int argc, char** argv)
             }
         }
 
-        // The half of a load that cannot happen anywhere else: handing
-        // what a worker decoded to the device this thread owns.
-        Fluxion_Assets_Update();
-
         if (FLUXION_HANDLE_IS_VALID(environmentAsset) &&
             Fluxion_Assets_GetState(environmentAsset) == FLUXION_ASSET_STATE_READY)
         {
@@ -2179,6 +2209,13 @@ int main(int argc, char** argv)
         // cannot hold -- the real resources behind the names it
         // declares, and the state each of them is already in.
         //
+        // THE FRAME IS BEGUN FIRST, and that order is load-bearing now:
+        // one of the resources below is the renderer's own -- what it
+        // keeps from one frame to the next -- and that is made at the
+        // beginning of a frame, at the size that frame is drawn.
+        Fluxion_Renderer_BeginFrame(renderer, frameView);
+
+        //
         // The atlas is imported as something to read: the view cleared
         // it once before the first frame and every frame since has left
         // it that way round, so this is where it really is -- and D3D12
@@ -2189,8 +2226,27 @@ int main(int argc, char** argv)
               depthIsUndefined ? FLUXION_RHI_RESOURCE_STATE_UNDEFINED : FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE },
             { FLUXION_RENDER_VIEW_SHADOW_ATLAS_RESOURCE, Fluxion_RenderView_GetShadowAtlasTexture(frameView), {},
               FLUXION_RHI_RESOURCE_STATE_SHADER_READ },
+
+            // The motion vectors belong to the RENDERER and not to this
+            // sample: it keeps what survives from one frame to the next,
+            // and the graph is told where that lives the same way it is
+            // told about everything else.
+            { "MotionVectorPass.Motion", Fluxion_Renderer_GetMotionVectorTexture(renderer), {},
+              motionIsUndefined ? FLUXION_RHI_RESOURCE_STATE_UNDEFINED : FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET },
+
+            // And the pyramid, which the renderer keeps for the same
+            // reason and hands over the same way.
+            // UNDEFINED EVERY FRAME, unlike the others: the pyramid is
+            // rewritten from top to bottom by the pass that owns it, and
+            // whoever wanted last frame's contents (the culling) has
+            // already read them by the time the graph runs. Saying
+            // "whatever was there" is both true and the one state no
+            // backend has to be told twice.
+            { "DepthPyramidPass.Pyramid", Fluxion_Renderer_GetDepthPyramidTexture(renderer), {},
+              FLUXION_RHI_RESOURCE_STATE_UNDEFINED },
         };
         depthIsUndefined = false;
+        motionIsUndefined = false;
 
         FluxionRenderGraphInstantiateDesc instantiate{};
         instantiate.bindings = frameBindings;
@@ -2207,8 +2263,6 @@ int main(int argc, char** argv)
             FLUXION_LOG_ERROR("ForwardRendererDemo", "The render graph could not be built from its asset -- this is a real bug, not a transient condition.");
             std::exit(1);
         }
-
-        Fluxion_Renderer_BeginFrame(renderer, frameView);
 
         // One turn of the scene, taken here rather than at the top of the
         // loop: a component's Update is where the cube is turned, where
@@ -2284,7 +2338,7 @@ int main(int argc, char** argv)
         // Execute, so Present still needs one manual barrier here, the
         // same role the old hand-rolled demo's own toPresent barrier
         // played.
-        FluxionRHIBarrier toPresent = { backbuffer, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_PRESENT };
+        FluxionRHIBarrier toPresent = { backbuffer, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_PRESENT, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(cmd, &toPresent, 1);
 
         Fluxion_RHI_CommandList_End(cmd);
@@ -2322,7 +2376,20 @@ int main(int argc, char** argv)
         Fluxion_RenderGraph_Destroy(graph);
 
         frameIndex = (frameIndex + 1) % FLUXION_DEMO_FRAMES_IN_FLIGHT;
-    }
+    };
+
+    // The window's turn to ask for a frame, for the one platform whose
+    // resize takes the loop away. Where it does not, nothing calls this
+    // and the loop below draws every frame itself.
+    using FrameDrawer = decltype(drawOneFrame);
+    Fluxion_Window_SetDrawWhileResizing(
+        window, [](FluxionWindowHandle, void* userData) { (*(FrameDrawer*)userData)(); }, &drawOneFrame);
+
+    while (running) drawOneFrame();
+
+    // Nothing may call into the frame after this point: what it draws
+    // with is about to be destroyed.
+    Fluxion_Window_SetDrawWhileResizing(window, nullptr, nullptr);
 
     // No fence-drain loop: the frame loop is fully synchronous, so
     // nothing is in flight when it exits -- and waiting again on an

@@ -141,14 +141,15 @@ struct IRBuildOptions
     // so the caller passes it in rather than this module assuming a
     // fixed limit of its own.
     //
-    // Two hundred and fifty-six rather than a hundred and twenty-eight:
-    // one matrix is sixty-four bytes on its own, and a frame that carries
-    // a view-projection alongside a camera position, a light and a couple
-    // of camera settings passes the smaller figure without any of it
-    // being extravagant. Every backend guarantees at least sixteen
-    // kilobytes, so this is nowhere near a hardware limit -- it is a
-    // guard against a shader that has quietly grown a hundred parameters.
-    unsigned int maxUniformBufferBytesPerGroup = 256;
+    // Five hundred and twelve, and the figure has moved twice for the
+    // same reason: matrices. One is sixty-four bytes, and a frame that
+    // draws anything temporal carries three of them -- where the camera
+    // is, how to undo that, and where the camera WAS -- before a single
+    // colour or setting is counted. Every backend guarantees at least
+    // sixteen kilobytes, so this is nowhere near a hardware limit; it is
+    // a guard against a shader that has quietly grown a hundred
+    // parameters, and it only has to be looser than honest use.
+    unsigned int maxUniformBufferBytesPerGroup = 512;
 };
 
 // Builds the module-level IR metadata from an already-Analyze()'d

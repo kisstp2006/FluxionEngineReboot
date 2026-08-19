@@ -444,6 +444,8 @@ static bool Fluxion_TextureAsset_Upload(FluxionTextureAsset* asset, const Fluxio
     FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
     FluxionRHIBarrier toCopy;
+
+    memset(&toCopy, 0, sizeof(toCopy));
     toCopy.texture = texture;
     toCopy.buffer = noBuffer;
     // UNDEFINED, not COMMON. The texture was created on the line above
@@ -466,6 +468,8 @@ static bool Fluxion_TextureAsset_Upload(FluxionTextureAsset* asset, const Fluxio
     }
 
     FluxionRHIBarrier toRead;
+
+    memset(&toRead, 0, sizeof(toRead));
     toRead.texture = texture;
     toRead.buffer = noBuffer;
     toRead.before = FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION;
@@ -483,7 +487,19 @@ static bool Fluxion_TextureAsset_Upload(FluxionTextureAsset* asset, const Fluxio
     Fluxion_RHI_DestroyFence(fence);
     Fluxion_RHI_DestroyCommandList(commandList);
     Fluxion_RHI_DestroyBuffer(staging);
-    Fluxion_RHI_Device_CollectGarbage(context->device);
+    // AND NOTHING IS COLLECTED HERE. Reclaiming what a device has
+    // finished with belongs to the loop that draws frames, because only
+    // that loop knows what the frame around this upload still has in
+    // hand -- an upload happening in the middle of one has no idea.
+    //
+    // This used to end with a collect, and it cost the whole picture:
+    // on D3D12, ANY texture read again from disc while the program ran
+    // turned the frame black -- the sky, the floor and everything lit by
+    // them -- and it stayed black. Measured per asset, by touching one
+    // file's timestamp: the middle of the picture went from 185,186,189
+    // to 0,0,0 and the sky from 94,110,137 to 0,0,0. Not a leak: the
+    // staging buffer above is retired here and reclaimed by the frame's
+    // own collect, one frame later.
 
     FluxionRHITextureViewDesc viewDesc;
     viewDesc.texture = texture;

@@ -312,10 +312,10 @@ bool UploadCompressedLevel(const GpuFixture& fixture, FluxionRHITextureHandle te
     Fluxion_RHI_CommandList_Begin(commandList);
 
     FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
-    FluxionRHIBarrier toCopy = { texture, noBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
+    FluxionRHIBarrier toCopy = { texture, noBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(commandList, &toCopy, 1);
     Fluxion_RHI_CommandList_CopyBufferToTexture(commandList, staging, placement.stagingOffset, texture, 0, 0);
-    FluxionRHIBarrier toRead = { texture, noBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+    FluxionRHIBarrier toRead = { texture, noBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(commandList, &toRead, 1);
     Fluxion_RHI_CommandList_End(commandList);
 
@@ -575,7 +575,7 @@ void CompareOneFormatAgainstTheHardware(TestContext* ctx, const GpuFixture& fixt
         Fluxion_Renderer_EndFrame(renderer, cmd);
 
         FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
-        FluxionRHIBarrier toSource = { color, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE };
+        FluxionRHIBarrier toSource = { color, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(cmd, &toSource, 1);
         Fluxion_RHI_CommandList_CopyTextureToBuffer(cmd, color, 0, 0, readback, 0);
         Fluxion_RHI_CommandList_End(cmd);

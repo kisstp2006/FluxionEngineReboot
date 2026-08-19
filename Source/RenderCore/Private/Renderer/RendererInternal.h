@@ -243,6 +243,77 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeObjectLa
     return desc;
 }
 
+// --- What survives from one frame to the next (RenderHistory.c) -------------
+//
+// Everything temporal reads from here: the motion vectors this frame
+// wrote, and (once the depth pyramid lands beside them) what the frame
+// before this one could see.
+// How many levels a depth pyramid may have. Sixteen halvings take the
+// largest screen anybody draws down to a single texel, and the array is
+// fixed rather than allocated because a frame's size does not change
+// between one frame and the next often enough to be worth a heap.
+#define FLUXION_RENDER_HISTORY_MAX_PYRAMID_LEVELS 16
+
+typedef struct FluxionRenderHistory
+{
+    // Where each pixel of this frame was on the screen in the frame
+    // before it. Two channels, signed, in the coordinates a texture is
+    // sampled by -- see Fluxion/Pass/MotionVectorWrite.jsl.
+    FluxionRHITextureHandle motionTexture;
+    FluxionRHITextureViewHandle motionView;
+
+    // THE FRAME'S DEPTH, HALVED AGAIN AND AGAIN -- see DepthPyramidPass.c.
+    //
+    // Every texel of every level holds the FARTHEST depth of the area it
+    // covers, so a reader can ask "was everything drawn in this rectangle
+    // nearer than this" by looking at one or two texels instead of
+    // thousands. The occlusion culling asks exactly that.
+    FluxionRHITextureHandle pyramidTexture;
+
+    // Two views per level, because a level is written and read at
+    // different moments and one view cannot be both at once: one to
+    // attach, one to sample.
+    FluxionRHITextureViewHandle pyramidTargetViews[FLUXION_RENDER_HISTORY_MAX_PYRAMID_LEVELS];
+    FluxionRHITextureViewHandle pyramidSampleViews[FLUXION_RENDER_HISTORY_MAX_PYRAMID_LEVELS];
+
+    // And one more that covers every level at once, for the reader that
+    // chooses its level per object rather than per pass -- the occlusion
+    // culling, which picks the level a given object's rectangle fits in.
+    FluxionRHITextureViewHandle pyramidWholeView;
+    u32 pyramidLevels;
+
+    // WHETHER IT HAS EVER BEEN MADE READABLE. A texture nobody has drawn
+    // into is in no state at all, and a dispatch that BINDS it says it is
+    // readable whether or not the shader reads it -- so a new pyramid is
+    // moved into that state once, before anything binds it.
+    bool pyramidNeedsFirstTransition;
+
+    // Whether the pyramid holds the frame just gone. False until one has
+    // been built, and false again whenever the history itself is not
+    // readable -- what it holds then is a screen that no longer exists.
+    bool pyramidValid;
+
+    // What the textures above were made for. A frame of a different size
+    // makes them again, and makes the history unusable for that frame.
+    u32 width;
+    u32 height;
+
+    // The camera of the frame before this one, and whether there was
+    // one. Handed to the view each frame so that a shader can put this
+    // frame's geometry where it was.
+    FluxionMat4 previousViewProjection;
+    bool hasPreviousViewProjection;
+
+    // WHETHER LAST FRAME'S CONTENTS MAY BE READ AT ALL.
+    //
+    // False on the first frame and after a resize, because there is
+    // nothing behind the reprojection then. A camera that TELEPORTED is
+    // also nothing to reproject from -- but no threshold in metres can
+    // tell a teleport from a fast pan, so the engine does not guess:
+    // whoever moved the camera says so (Fluxion_Renderer_InvalidateHistory).
+    bool valid;
+} FluxionRenderHistory;
+
 // --- FluxionRenderer (Renderer.cpp) -- shared for real, not opaque -------
 //
 // Unlike the other object kinds in this module, FluxionRenderer carries
@@ -275,6 +346,17 @@ typedef struct FluxionRenderer
     // wants them, which is what lets a group of objects be one call.
     FluxionGPUSceneHandle gpuScene;
     FluxionRendererCullMode cullMode;
+
+    // --- WHAT SURVIVES FROM ONE FRAME TO THE NEXT (RenderHistory.c) ------
+    //
+    // Owned by the renderer and not by the view, because a view is made
+    // fresh every frame in this engine -- a history kept by something
+    // that is rebuilt each frame is not a history.
+    //
+    // ONE HISTORY PER RENDERER, which is one camera. Two cameras drawn
+    // through one renderer would reproject each other's frames; when
+    // there is a second camera, this becomes a table keyed by view.
+    FluxionRenderHistory history;
 
     // Incremented by ForwardOpaquePass.c's Execute for each draw call it
     // actually issues -- see Fluxion_Renderer_GetLastDrawCallCount.
@@ -386,6 +468,40 @@ typedef struct FluxionRenderer
     bool shadowPipelineBuilt;
 
     bool shadowFailed;
+
+    // Drawing where every pixel WAS. Its own program for the same reason
+    // the shadow pass has one: it wants two placements of a vertex and
+    // nothing about what the surface looks like.
+    FluxionShaderProgramHandle motionProgram;
+    FluxionRHIPipelineHandle motionPipeline;
+
+    // The frame layout this pass built its pipeline against. Kept because
+    // it has to be given back: a layout made and forgotten is an object
+    // the device still holds at shutdown, which one backend reports and
+    // the others do not.
+    FluxionRHIBindGroupLayoutHandle motionFrameLayout;
+
+    // Filling the depth pyramid: one small full-screen draw per level.
+    // Its own program, pipeline and three-vertex buffer, kept because
+    // rebuilding any of them per frame is what exhausts a descriptor
+    // pool -- measured, on the cull pass, in this same milestone.
+    FluxionShaderProgramHandle pyramidProgram;
+    FluxionRHIPipelineHandle pyramidPipeline;
+    FluxionRHIBindGroupLayoutHandle pyramidLayout;
+    FluxionRHISamplerHandle pyramidSampler;
+    FluxionRHIBufferHandle pyramidVertexBuffer;
+    FluxionRHIBufferHandle pyramidUniformBuffer;
+    FluxionRHIBindGroupHandle pyramidBindGroups[FLUXION_RENDER_HISTORY_MAX_PYRAMID_LEVELS];
+
+    // The depth view the groups above were built against. When the frame
+    // is resized its depth is a different texture, and a group still
+    // pointing at the old one reads a texture nobody draws into.
+    FluxionRHITextureViewHandle pyramidBoundDepthView;
+    bool pyramidFailed;
+    FluxionRHIVertexLayout motionVertexLayout;
+    bool motionPipelineBuilt;
+    bool motionFailed;
+
     FluxionRHIFormat skyboxColorFormat;
     FluxionRHIFormat skyboxDepthFormat;
 
@@ -487,6 +603,13 @@ bool FluxionRendererInternal_RenderView_GetShadow(FluxionRenderViewHandle view, 
 // projection is recorded in answer to this, and a flag left set would
 // have it recorded again on every frame that followed.
 bool FluxionRendererInternal_RenderView_TakeEnvironmentDirty(FluxionRenderViewHandle view);
+
+// --- What survives from one frame to the next (RenderHistory.c) -------------
+
+// Makes or remakes the history's textures for a frame of this size.
+// Called once per frame, before anything reads or writes them.
+bool FluxionRendererInternal_History_Begin(FluxionRenderer* renderer, u32 width, u32 height);
+void FluxionRendererInternal_History_Destroy(FluxionRenderer* renderer);
 
 // --- Cross-file internal accessors ------------------------------------------
 //
@@ -607,6 +730,22 @@ FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resolve(FluxionR
 // Called by Fluxion_ShaderProgram_Reload, which is the only thing that
 // can replace a live program's shaders.
 void FluxionRendererInternal_RenderPipeline_InvalidateVariantsUsingProgram(FluxionShaderProgramHandle program);
+
+// --- "DepthPyramidPass" registered pass type (DepthPyramidPass.c) ----------
+
+void FluxionDepthPyramidPass_Setup(FluxionRenderGraphBuilder* builder, void* userData);
+void FluxionDepthPyramidPass_Execute(FluxionRHICommandListHandle commandList, void* userData);
+void FluxionRendererInternal_DepthPyramid_Destroy(FluxionRenderer* renderer);
+
+// Makes the pyramid's texture and its per-level views for a frame of this
+// size, and answers whether there is one to draw into.
+bool FluxionRendererInternal_History_EnsurePyramid(FluxionRenderer* renderer, u32 width, u32 height);
+
+// --- "MotionVectorPass" registered pass type (MotionVectorPass.c) ----------
+
+void FluxionMotionVectorPass_Setup(FluxionRenderGraphBuilder* builder, void* userData);
+void FluxionMotionVectorPass_Execute(FluxionRHICommandListHandle commandList, void* userData);
+void FluxionRendererInternal_MotionVector_Destroy(FluxionRenderer* renderer);
 
 // --- "ForwardOpaquePass" registered pass type (ForwardOpaquePass.c) --------
 //

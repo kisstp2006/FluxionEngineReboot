@@ -62,6 +62,12 @@
 struct FluxionObject
 {
     Matrix4x4 model;
+
+    // Where this object was when the frame before this one was drawn.
+    // The same matrix as above for anything that did not move, so a
+    // shader may always read it -- see FluxionGPUSceneObject, whose bytes
+    // these are.
+    Matrix4x4 previousModel;
 };
 
 [Buffer(Object)] FluxionObject objects;
@@ -97,6 +103,13 @@ struct FluxionObject
 Matrix4x4 FluxionObjectModel()
 {
     return objects[visibleObjects[int(objectParams.x) + InstanceIndex]].model;
+}
+
+// The same instance, one frame ago. What a motion vector is made of, and
+// the reason the row carries two matrices.
+Matrix4x4 FluxionObjectPreviousModel()
+{
+    return objects[visibleObjects[int(objectParams.x) + InstanceIndex]].previousModel;
 }
 
 #endif

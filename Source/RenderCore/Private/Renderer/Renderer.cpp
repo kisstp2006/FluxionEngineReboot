@@ -375,6 +375,34 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     renderer->currentView = FluxionRenderViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->gpuScene = FluxionGPUSceneHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->cullMode = FLUXION_RENDERER_CULL_ON_HOST;
+
+    // What survives from one frame to the next, and what draws into it.
+    // The same sentinel for the same reason -- and this one was measured:
+    // a zeroed history handle looks like TEXTURE ZERO, so the first frame
+    // "remade" the history by destroying whatever really occupied that
+    // slot. In the sample that was the material's base colour map, and
+    // what it looked like was a material whose descriptor had never been
+    // written -- four steps away from anything to do with a history.
+    renderer->history.motionTexture = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->history.motionView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->motionProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->motionPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->motionFrameLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->history.pyramidTexture = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->pyramidProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->pyramidPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->pyramidLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->pyramidSampler = FluxionRHISamplerHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->pyramidVertexBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->pyramidUniformBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->pyramidBoundDepthView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    for (u32 i = 0; i < FLUXION_RENDER_HISTORY_MAX_PYRAMID_LEVELS; ++i)
+    {
+        renderer->history.pyramidTargetViews[i] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->history.pyramidSampleViews[i] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->history.pyramidWholeView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->pyramidBindGroups[i] = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
     renderer->debugVertexBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->debugVertexShader = FluxionRHIShaderHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->debugFragmentShader = FluxionRHIShaderHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -458,6 +486,24 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
         FLUXION_LOG_ERROR("Renderer", "Failed to register \"ForwardOpaquePass\" (already registered? Only one FluxionRenderer instance is supported at a time)");
     }
 
+    FluxionRenderGraphPassType pyramidPassType;
+    pyramidPassType.name = "DepthPyramidPass";
+    pyramidPassType.setup = FluxionDepthPyramidPass_Setup;
+    pyramidPassType.execute = FluxionDepthPyramidPass_Execute;
+    if (!Fluxion_RenderGraphPassRegistry_Register(&pyramidPassType))
+    {
+        FLUXION_LOG_ERROR("Renderer", "Failed to register \"DepthPyramidPass\" (already registered? Only one FluxionRenderer instance is supported at a time)");
+    }
+
+    FluxionRenderGraphPassType motionPassType;
+    motionPassType.name = "MotionVectorPass";
+    motionPassType.setup = FluxionMotionVectorPass_Setup;
+    motionPassType.execute = FluxionMotionVectorPass_Execute;
+    if (!Fluxion_RenderGraphPassRegistry_Register(&motionPassType))
+    {
+        FLUXION_LOG_ERROR("Renderer", "Failed to register \"MotionVectorPass\" (already registered? Only one FluxionRenderer instance is supported at a time)");
+    }
+
     FluxionRenderGraphPassType shadowPassType;
     shadowPassType.name = "ShadowPass";
     shadowPassType.setup = FluxionShadowPass_Setup;
@@ -485,9 +531,14 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
     FluxionRendererInternal_Irradiance_Destroy(renderer);
     FluxionRendererInternal_Prefilter_Destroy(renderer);
     FluxionRendererInternal_Shadow_Destroy(renderer);
+    FluxionRendererInternal_MotionVector_Destroy(renderer);
+    FluxionRendererInternal_DepthPyramid_Destroy(renderer);
+    FluxionRendererInternal_History_Destroy(renderer);
 
     Fluxion_RenderGraphPassRegistry_Unregister("ForwardOpaquePass");
     Fluxion_RenderGraphPassRegistry_Unregister("ShadowPass");
+    Fluxion_RenderGraphPassRegistry_Unregister("MotionVectorPass");
+    Fluxion_RenderGraphPassRegistry_Unregister("DepthPyramidPass");
 
     if (FLUXION_HANDLE_IS_VALID(renderer->gpuScene)) Fluxion_GPUScene_Destroy(renderer->gpuScene);
     if (FLUXION_HANDLE_IS_VALID(renderer->objectBindGroupLayout)) Fluxion_RHI_DestroyBindGroupLayout(renderer->objectBindGroupLayout);
@@ -539,6 +590,56 @@ extern "C" void Fluxion_Renderer_BeginFrame(FluxionRendererHandle rendererHandle
     Fluxion_GPUScene_Begin(renderer->gpuScene);
     renderer->debugVertexCount = 0;
     renderer->lastDrawCallCount = 0;
+
+    // --- what the frame before this one left behind ---------------------
+    //
+    // The history is the renderer's, and this is where it meets the view:
+    // the view is made fresh every frame and cannot remember anything, so
+    // the matrix it needs to say where a pixel WAS comes from here.
+    FluxionViewport viewport{};
+    if (FluxionRendererInternal_RenderView_GetViewport(view, &viewport) && viewport.width > 0.0f && viewport.height > 0.0f)
+    {
+        const u32 width = (u32)viewport.width;
+        const u32 height = (u32)viewport.height;
+
+        const bool sameSize = renderer->history.width == width && renderer->history.height == height;
+        if (FluxionRendererInternal_History_Begin(renderer, width, height))
+        {
+            // Readable only if there was a frame before this one AND it
+            // was the same shape. Everything else -- a camera that
+            // teleported -- is the caller's to say, because no threshold
+            // in metres tells a jump from a fast pan.
+            renderer->history.valid = renderer->history.hasPreviousViewProjection && sameSize;
+        }
+    }
+
+    if (renderer->history.hasPreviousViewProjection)
+    {
+        Fluxion_RenderView_SetPreviousViewProjection(view, renderer->history.previousViewProjection);
+    }
+}
+
+extern "C" void Fluxion_Renderer_InvalidateHistory(FluxionRendererHandle rendererHandle)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return;
+
+    renderer->history.valid = false;
+    renderer->history.hasPreviousViewProjection = false;
+}
+
+extern "C" bool Fluxion_Renderer_IsHistoryValid(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    return renderer != nullptr && renderer->history.valid;
+}
+
+extern "C" FluxionRHITextureViewHandle Fluxion_Renderer_GetMotionVectorView(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    return renderer->history.motionView;
 }
 
 extern "C" void Fluxion_Renderer_DrawMesh(FluxionRendererHandle rendererHandle, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material, FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform)
@@ -570,8 +671,8 @@ extern "C" void Fluxion_Renderer_SubmitRenderWorld(FluxionRendererHandle rendere
         // something does, every caller already goes through here.
         if (!object.visible) continue;
 
-        Fluxion_GPUScene_AddDetailed(renderer->gpuScene, object.mesh, object.material, object.pipeline, &object.transform, object.layerMask,
-                                     object.lodIndex);
+        Fluxion_GPUScene_AddMoving(renderer->gpuScene, object.mesh, object.material, object.pipeline, &object.transform,
+                                   &object.previousTransform, object.layerMask, object.lodIndex);
     }
 }
 
@@ -596,6 +697,43 @@ extern "C" void Fluxion_Renderer_UploadScene(FluxionRendererHandle rendererHandl
     cull.enabled = FluxionRendererInternal_RenderView_GetCamera(renderer->currentView, &cull.viewProjection,
                                                                 &cull.cameraPosition, &cull.cullDistance);
     cull.mode = (renderer->cullMode == FLUXION_RENDERER_CULL_ON_DEVICE) ? FLUXION_GPU_SCENE_CULL_GPU : FLUXION_GPU_SCENE_CULL_CPU;
+
+    // AND WHAT THE FRAME BEFORE THIS ONE COULD SEE.
+    //
+    // The pyramid the history holds is the PREVIOUS frame's -- this
+    // frame's is drawn later, by the pass that owns it -- so the camera
+    // that goes with it is the previous frame's too. Both come from the
+    // same place for that reason.
+    cull.occlusionPyramid = renderer->history.pyramidWholeView;
+    cull.occlusionSampler = renderer->pyramidSampler;
+    cull.previousViewProjection = renderer->history.previousViewProjection;
+    cull.pyramidWidth = (f32)renderer->history.width;
+    cull.pyramidHeight = (f32)renderer->history.height;
+    cull.pyramidLevels = renderer->history.pyramidLevels;
+
+    // Only when there IS a previous frame, and only when what it drew is
+    // still the screen this one is drawn on -- the same question the
+    // history answers about itself.
+    //
+    const bool occlusionIsTrustworthy = true;
+
+    cull.occlusionEnabled = renderer->history.valid && renderer->history.pyramidValid && occlusionIsTrustworthy;
+
+    // A PYRAMID NOBODY HAS DRAWN INTO IS STILL BOUND, by the cull pass
+    // below -- and a binding says the texture is readable whether or not
+    // the shader reads it. So a new one is moved into that state here,
+    // once, where there is a command list to say it in.
+    if (renderer->history.pyramidNeedsFirstTransition && FLUXION_HANDLE_IS_VALID(renderer->history.pyramidTexture))
+    {
+        FluxionRHIBarrier toRead{};
+        toRead.texture = renderer->history.pyramidTexture;
+        toRead.buffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        toRead.before = FLUXION_RHI_RESOURCE_STATE_UNDEFINED;
+        toRead.after = FLUXION_RHI_RESOURCE_STATE_SHADER_READ;
+        Fluxion_RHI_CommandList_Barrier(commandList, &toRead, 1);
+
+        renderer->history.pyramidNeedsFirstTransition = false;
+    }
 
     Fluxion_GPUScene_SetCulling(renderer->gpuScene, &cull);
     Fluxion_GPUScene_Upload(renderer->gpuScene, commandList, renderer->objectBindGroupLayout);
@@ -676,6 +814,13 @@ extern "C" void Fluxion_Renderer_EndFrame(FluxionRendererHandle rendererHandle, 
         }
     }
 
+    // THIS frame's camera becomes the previous one, and it is taken from
+    // the view rather than rebuilt from its parts: whoever reads it next
+    // frame has to get the matrix the shaders were given, not one built
+    // the same way a second time.
+    renderer->history.previousViewProjection = Fluxion_RenderView_GetViewProjection(renderer->currentView);
+    renderer->history.hasPreviousViewProjection = true;
+
     renderer->inFrame = false;
     renderer->debugVertexCount = 0;
 }
@@ -717,6 +862,28 @@ extern "C" void Fluxion_Renderer_SetDebugDrawDepthFormat(FluxionRendererHandle r
 extern "C" void* Fluxion_Renderer_GetForwardOpaquePassUserData(FluxionRendererHandle rendererHandle)
 {
     return Resolve(rendererHandle);
+}
+
+extern "C" FluxionRHITextureHandle Fluxion_Renderer_GetMotionVectorTexture(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    return renderer->history.motionTexture;
+}
+
+extern "C" FluxionRHITextureHandle Fluxion_Renderer_GetDepthPyramidTexture(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    return renderer->history.pyramidTexture;
+}
+
+extern "C" u32 Fluxion_Renderer_GetDepthPyramidLevelCount(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    return renderer != nullptr ? renderer->history.pyramidLevels : 0;
 }
 
 extern "C" void Fluxion_Renderer_SetCullMode(FluxionRendererHandle rendererHandle, FluxionRendererCullMode mode)

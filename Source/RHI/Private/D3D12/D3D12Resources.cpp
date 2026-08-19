@@ -397,6 +397,14 @@ void Fluxion_RHID3D12_FinalizeTextureView(u32 index)
     Fluxion_RHID3D12_PoolFinalize(s_textureViewSlots, index);
 }
 
+// Which texture this view is of -- see Fluxion_RHI_GetTextureViewTexture.
+FluxionRHITextureHandle Fluxion_RHID3D12_GetTextureViewTexture(FluxionRHITextureViewHandle view)
+{
+    FluxionRHITextureHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    const FluxionRHID3D12TextureView* viewState = Fluxion_RHID3D12_ResolveTextureView(view);
+    return viewState != nullptr ? viewState->texture : invalid;
+}
+
 void Fluxion_RHID3D12_DestroyTextureView(FluxionRHITextureViewHandle view)
 {
     if (!Fluxion_RHID3D12_PoolIsValid(s_textureViewSlots, FLUXION_RHI_D3D12_MAX_TEXTURE_VIEWS, view.index, view.generation))

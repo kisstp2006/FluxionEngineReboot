@@ -42,10 +42,13 @@
 #include <Fluxion/Assets/VirtualFileSystem.h>
 
 #include <Fluxion/Foundation/Assert.h>
+#include <Fluxion/Foundation/Atomic.h>
 #include <Fluxion/Foundation/Log.h>
 #include <Fluxion/Foundation/Hashing.h>
 #include <Fluxion/Platform/File.h>
+#include <Fluxion/Platform/Process.h>
 
+#include <stdio.h>
 #include <string.h>
 
 #define FLUXION_VFS_LOG_CATEGORY "Vfs"
@@ -530,6 +533,20 @@ static u64 Fluxion_VfsDirectorySource_GetRevision(FluxionVfsSource* source, cons
     return revision != 0 ? revision : 1;
 }
 
+// BESIDE THE TARGET, THEN MOVED ONTO IT, never written where it lives.
+//
+// A file written in place is a half-written file for as long as the write
+// takes, and everything that watches for changes reads it in exactly that
+// window sooner or later. What comes back is not an error -- it is the
+// beginning of the right file followed by whatever was there before,
+// which parses, and then means something else. Measured: an asset whose
+// name came back as four bytes of rubbish, and a program that shut itself
+// down over a file that was perfectly good a moment later.
+//
+// The name carries the process that is writing, because two programs
+// writing the same asset at the same time must not share a scratch file
+// -- each finishes its own and moves it, and the reader sees one of them
+// whole rather than both in pieces.
 static bool Fluxion_VfsDirectorySource_WriteAll(FluxionVfsSource* source, const char* relative, const void* data, usize size)
 {
     const FluxionVfsDirectorySource* self = (const FluxionVfsDirectorySource*)source;
@@ -537,8 +554,20 @@ static bool Fluxion_VfsDirectorySource_WriteAll(FluxionVfsSource* source, const 
     if (!Fluxion_VfsDirectorySource_BuildPath(self, relative, full, sizeof(full))) return false;
     if (!Fluxion_VfsDirectorySource_MakeParents(full, self->rootLength)) return false;
 
+    static FluxionAtomicI32 s_writeCounter;
+    const i32 ticket = Fluxion_AtomicI32_Increment(&s_writeCounter);
+
+    char scratch[FLUXION_VFS_MAX_PATH];
+    const int scratchLength =
+        snprintf(scratch, sizeof(scratch), "%s.%u.%d.part", full, Fluxion_Platform_GetCurrentProcessId(), ticket);
+    if (scratchLength <= 0 || (usize)scratchLength >= sizeof(scratch))
+    {
+        FLUXION_LOG_ERROR(FLUXION_VFS_LOG_CATEGORY, "\"%s\" cannot be written: its name leaves no room for a scratch file beside it", full);
+        return false;
+    }
+
     FluxionFile file;
-    if (!Fluxion_Platform_FileOpen(&file, full, FLUXION_FILE_OPEN_WRITE)) return false;
+    if (!Fluxion_Platform_FileOpen(&file, scratch, FLUXION_FILE_OPEN_WRITE)) return false;
 
     // Same reasoning as the read above: a write may take fewer bytes than
     // it was offered.
@@ -556,7 +585,17 @@ static bool Fluxion_VfsDirectorySource_WriteAll(FluxionVfsSource* source, const 
     }
 
     Fluxion_Platform_FileClose(&file);
-    return ok;
+
+    // A scratch file that never became the real one is rubbish on the
+    // disc, and it is named after this process, so nothing else will ever
+    // clean it up.
+    if (!ok || !Fluxion_Platform_FileReplace(scratch, full))
+    {
+        Fluxion_Platform_FileDelete(scratch);
+        return false;
+    }
+
+    return true;
 }
 
 static void Fluxion_VfsDirectorySource_Destroy(FluxionVfsSource* source)

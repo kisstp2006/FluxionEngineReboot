@@ -140,6 +140,16 @@ bool Fluxion_Platform_FileDelete(const char* path)
     return DeleteFileA(path) != 0;
 }
 
+bool Fluxion_Platform_FileReplace(const char* from, const char* to)
+{
+    if (from == NULL || to == NULL) return false;
+
+    // WRITE_THROUGH as well as REPLACE_EXISTING: the move is only worth
+    // making if what arrives is the whole file, and this asks for the
+    // contents to be on the disc before the name points at them.
+    return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+}
+
 bool Fluxion_Platform_FileStat(const char* path, u64* outModifiedTime, u64* outSize)
 {
     if (path == NULL || outModifiedTime == NULL || outSize == NULL) return false;

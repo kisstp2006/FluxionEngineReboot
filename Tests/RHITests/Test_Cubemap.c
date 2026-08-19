@@ -176,6 +176,7 @@ static void Fluxion_Test_CubemapOnBackend(TestContext* ctx, FluxionRHIBackendTyp
 
         FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
         FluxionRHIBarrier toCopy;
+        memset(&toCopy, 0, sizeof(toCopy));
         toCopy.texture = cube;
         toCopy.buffer = noBuffer;
         toCopy.before = FLUXION_RHI_RESOURCE_STATE_UNDEFINED;

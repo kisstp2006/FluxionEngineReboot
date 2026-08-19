@@ -206,6 +206,7 @@ FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device,
     // invisible until a stricter backend or tool calls it out.
     FluxionRHITextureHandle noTexture = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     FluxionRHIBarrier preCopyBarriers[2];
+    memset(&preCopyBarriers, 0, sizeof(preCopyBarriers));
     u32 preCopyCount = 0;
     preCopyBarriers[preCopyCount].texture = noTexture;
     preCopyBarriers[preCopyCount].buffer = vertexBuffer;
@@ -226,6 +227,8 @@ FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device,
     if (hasIndices) Fluxion_RHI_CommandList_CopyBuffer(uploadCommandList, stagingBuffer, desc->vertexDataSize, indexBuffer, 0, desc->indexDataSize);
 
     FluxionRHIBarrier postUploadBarriers[2];
+
+    memset(&postUploadBarriers, 0, sizeof(postUploadBarriers));
     u32 barrierCount = 0;
     postUploadBarriers[barrierCount].texture = noTexture;
     postUploadBarriers[barrierCount].buffer = vertexBuffer;
@@ -251,7 +254,10 @@ FluxionMeshBufferHandle Fluxion_MeshBuffer_Create(FluxionRHIDeviceHandle device,
     Fluxion_RHI_DestroyCommandList(uploadCommandList);
     Fluxion_RHI_DestroyBuffer(stagingBuffer);
     FluxionRendererInternal_RecordGpuFree(true, stagingDesc.size);
-    Fluxion_RHI_Device_CollectGarbage(device);
+    // NOTHING IS COLLECTED HERE, for the reason written out beside the
+    // texture upload in TextureAsset.c: reclaiming belongs to the loop
+    // that draws frames. Measured the same way, with a mesh read again
+    // from disc: the picture went black and stayed black on D3D12.
 
     FluxionMeshBufferRecord* record = &s_meshBuffers[index];
     u32 generation = record->generation;

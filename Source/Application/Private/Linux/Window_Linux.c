@@ -456,6 +456,17 @@ FluxionNativeWindowHandle Fluxion_Window_GetNativeHandle(FluxionWindowHandle han
     return native;
 }
 
+// NOTHING TO GIVE A TURN TO. Resizing here is a stream of ordinary
+// events, and the caller's own loop keeps running through all of it --
+// so the frames the other platform has to ask for arrive by themselves.
+// Kept so that a caller writes the same code either way.
+void Fluxion_Window_SetDrawWhileResizing(FluxionWindowHandle handle, FluxionWindowDrawFrameFn callback, void* userData)
+{
+    FLUXION_UNUSED(handle);
+    FLUXION_UNUSED(callback);
+    FLUXION_UNUSED(userData);
+}
+
 void* Fluxion_WindowSystem_GetNativeDisplayHandle(void)
 {
     return (void*)s_display;

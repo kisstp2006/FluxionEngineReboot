@@ -163,6 +163,19 @@ typedef struct FluxionFrameConstants
     // place the engine writes down that one backend stores texture rows
     // the other way up. w unused.
     FluxionVec4 shadowAtlasParams;
+
+    // WHERE THE CAMERA WAS LAST FRAME, as one matrix.
+    //
+    // Everything temporal starts here: a point of this frame's geometry
+    // put through this lands where that point was on the screen a frame
+    // ago, and the difference between the two is a motion vector. The
+    // camera's own movement is in it, which is why one matrix is enough
+    // for a still object seen from a moving camera.
+    //
+    // A view that was never told about a previous frame carries this
+    // frame's matrix here, and then nothing has moved -- which is the
+    // right answer for a first frame and for a test that draws one.
+    FluxionMat4 previousViewProjection;
 } FluxionFrameConstants;
 
 // THE ORDER OF THE FIELDS ABOVE IS THE LAYOUT. It has to be the order
@@ -261,6 +274,23 @@ typedef struct FluxionRenderViewDesc
 } FluxionRenderViewDesc;
 
 FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device, const FluxionRenderViewDesc* desc);
+
+// Where the camera was when the frame before this one was drawn.
+//
+// NOT IN THE DESCRIPTION, because a view is made fresh every frame and a
+// description that carried it would make every caller keep the answer.
+// The renderer keeps it instead and sets it here -- see
+// Fluxion_Renderer_BeginFrame -- so the two can never disagree about
+// which frame "previous" means.
+//
+// Before Fluxion_RenderView_UpdateFrameConstants, which is what puts it
+// where a shader can read it.
+void Fluxion_RenderView_SetPreviousViewProjection(FluxionRenderViewHandle view, FluxionMat4 previousViewProjection);
+
+// This frame's, worked out the same way the frame constants do it -- so
+// that whoever keeps it for next frame keeps the same matrix the shaders
+// were given, rather than one built from the same parts a second time.
+FluxionMat4 Fluxion_RenderView_GetViewProjection(FluxionRenderViewHandle view);
 void Fluxion_RenderView_Destroy(FluxionRenderViewHandle view);
 
 // Recomputes viewProjection = projectionMatrix * viewMatrix and uploads

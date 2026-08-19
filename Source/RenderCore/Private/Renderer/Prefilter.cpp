@@ -334,7 +334,7 @@ extern "C" void FluxionRendererInternal_Prefilter_Project(FluxionRenderer* rende
     // and the state every draw since left it in on a refill.
     const bool refilling = FluxionRendererInternal_RenderView_MarkPrefilteredFilled(view);
 
-    FluxionRHIBarrier targetToCopy;
+    FluxionRHIBarrier targetToCopy{};
     targetToCopy.texture = target;
     targetToCopy.buffer = noBuffer;
     targetToCopy.before = refilling ? FLUXION_RHI_RESOURCE_STATE_SHADER_READ : FLUXION_RHI_RESOURCE_STATE_UNDEFINED;
@@ -345,7 +345,7 @@ extern "C" void FluxionRendererInternal_Prefilter_Project(FluxionRenderer* rende
     {
         const u32 width = MipWidth(mip);
 
-        FluxionRHIBarrier scratchToWrite;
+        FluxionRHIBarrier scratchToWrite{};
         scratchToWrite.texture = noTexture;
         scratchToWrite.buffer = renderer->environmentScratchBuffer;
         scratchToWrite.before = mip == 0 ? FLUXION_RHI_RESOURCE_STATE_UNDEFINED : FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE;
@@ -422,7 +422,7 @@ extern "C" void FluxionRendererInternal_Dfg_Compute(FluxionRenderer* renderer, F
     const FluxionRHITextureHandle noTexture = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     const FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
-    FluxionRHIBarrier scratchToWrite;
+    FluxionRHIBarrier scratchToWrite{};
     scratchToWrite.texture = noTexture;
     scratchToWrite.buffer = renderer->environmentScratchBuffer;
     scratchToWrite.before = FLUXION_RHI_RESOURCE_STATE_UNDEFINED;
@@ -439,7 +439,7 @@ extern "C" void FluxionRendererInternal_Dfg_Compute(FluxionRenderer* renderer, F
     scratchToCopy.before = FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE;
     scratchToCopy.after = FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE;
 
-    FluxionRHIBarrier targetToCopy;
+    FluxionRHIBarrier targetToCopy{};
     targetToCopy.texture = target;
     targetToCopy.buffer = noBuffer;
     targetToCopy.before = FLUXION_RHI_RESOURCE_STATE_UNDEFINED;

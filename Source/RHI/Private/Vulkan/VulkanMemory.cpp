@@ -396,6 +396,14 @@ static void Fluxion_RHIVulkan_FinalizeTextureView(u32 index)
     Fluxion_RHIVulkan_PoolFinalize(s_viewSlots, index);
 }
 
+// Which texture this view is of -- see Fluxion_RHI_GetTextureViewTexture.
+FluxionRHITextureHandle Fluxion_RHIVulkan_GetTextureViewTexture(FluxionRHITextureViewHandle view)
+{
+    FluxionRHITextureHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    const FluxionRHIVulkanTextureView* viewState = Fluxion_RHIVulkan_ResolveTextureView(view);
+    return viewState != nullptr ? viewState->texture : invalid;
+}
+
 void Fluxion_RHIVulkan_DestroyTextureView(FluxionRHITextureViewHandle view)
 {
     if (!Fluxion_RHIVulkan_PoolIsValid(s_viewSlots, FLUXION_RHI_VULKAN_MAX_TEXTURE_VIEWS, view.index, view.generation))

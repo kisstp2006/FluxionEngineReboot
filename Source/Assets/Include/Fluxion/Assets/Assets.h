@@ -107,6 +107,22 @@ FluxionAssetState Fluxion_Assets_GetState(FluxionAssetHandle handle);
 
 // NULL until the state is ready. Not stable across a Release that drops
 // the last reference, which is what makes the count worth keeping.
+//
+// NOR ACROSS Fluxion_Assets_Update, which is where a file that changed on
+// disc becomes the object this returns: the new one is put in place and
+// the old one is let go of in the same breath, so a pointer taken before
+// that call and read after it is a pointer into freed memory.
+//
+// It does not read as freed memory, which is what makes it worth saying.
+// Measured: an asset whose name came back as three bytes of rubbish and a
+// program that shut itself down over a render graph that was perfectly
+// good -- from a pointer taken forty lines above the call and used a
+// hundred lines below it.
+//
+// So: ask again after Update, or call Update where nothing is holding
+// what it returns. The second is what a frame usually wants, and it is
+// one line at the top of the frame rather than a rule to remember at
+// every use.
 void* Fluxion_Assets_GetObject(FluxionAssetHandle handle);
 
 FluxionAssetTypeId Fluxion_Assets_GetType(FluxionAssetHandle handle);

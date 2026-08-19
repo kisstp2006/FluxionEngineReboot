@@ -162,7 +162,7 @@ void TheRowsReachTheDevice(TestContext* ctx, FluxionRHIBackendType backend, cons
 
     const FluxionRHITextureHandle noTexture = Fluxion::Foundation::NoHandle<FluxionRHITextureHandle>();
     FluxionRHIBarrier toSource = { noTexture, Fluxion_GPUScene_GetObjectBuffer(scene),
-                                   FLUXION_RHI_RESOURCE_STATE_SHADER_READ, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE };
+                                   FLUXION_RHI_RESOURCE_STATE_SHADER_READ, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(cmd, &toSource, 1);
     Fluxion_RHI_CommandList_CopyBuffer(cmd, Fluxion_GPUScene_GetObjectBuffer(scene), 0, readback, 0, sizeof(FluxionGPUSceneObject));
     Fluxion_RHI_CommandList_End(cmd);
@@ -288,7 +288,7 @@ void TwoLevelsAreTwoBatches(TestContext* ctx, FluxionRHIBackendType backend, con
 
     const FluxionRHITextureHandle noTexture = Fluxion::Foundation::NoHandle<FluxionRHITextureHandle>();
     FluxionRHIBarrier toSource = { noTexture, Fluxion_GPUScene_GetIndirectBuffer(scene), FLUXION_RHI_RESOURCE_STATE_COMMON,
-                                   FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE };
+                                   FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(cmd, &toSource, 1);
     Fluxion_RHI_CommandList_CopyBuffer(cmd, Fluxion_GPUScene_GetIndirectBuffer(scene), 0, readback, 0, commandBytes);
     Fluxion_RHI_CommandList_End(cmd);

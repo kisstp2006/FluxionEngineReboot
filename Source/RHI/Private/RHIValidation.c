@@ -542,15 +542,24 @@ static void Fluxion_RHIValidation_CommandListBarrier(FluxionRHICommandListHandle
                 barrier->texture.index < FLUXION_RHIVAL_MAX_OBJECTS)
             {
                 FluxionRHIResourceState tracked = s_textureState[barrier->texture.index];
+
+                // A BARRIER ABOUT SOME MIP LEVELS IS NEITHER CHECKED NOR
+                // RECORDED. What is tracked here is one state per
+                // texture, and a mip chain being built has several at
+                // once -- so the honest thing is to say nothing about it
+                // rather than to record whichever level moved last as the
+                // state of the whole thing.
+                const bool wholeTexture = barrier->mipLevelCount == 0;
+
                 // Declared UNDEFINED is always acceptable: it means
                 // "discard, whatever was there", and every backend
                 // honors that reading.
-                if (barrier->before != FLUXION_RHI_RESOURCE_STATE_UNDEFINED && barrier->before != tracked)
+                if (wholeTexture && barrier->before != FLUXION_RHI_RESOURCE_STATE_UNDEFINED && barrier->before != tracked)
                 {
                     Fluxion_RHIValidation_Report("Barrier: a texture's declared before-state disagrees with the state it was last transitioned to (forwarded anyway -- see the log for both states)");
                     FLUXION_LOG_ERROR("RHI.Validation", "  declared before=%d, tracked=%d", (int)barrier->before, (int)tracked);
                 }
-                s_textureState[barrier->texture.index] = barrier->after;
+                if (wholeTexture) s_textureState[barrier->texture.index] = barrier->after;
             }
         }
         else if (FLUXION_HANDLE_IS_VALID(barrier->buffer))

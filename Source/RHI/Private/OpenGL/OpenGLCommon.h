@@ -94,6 +94,13 @@
         WINGDIAPI const GLubyte* APIENTRY glGetString(GLenum name);
         WINGDIAPI void APIENTRY glFinish(void);
         WINGDIAPI void APIENTRY glDeleteTextures(GLsizei n, const GLuint* textures);
+
+        // Its counterpart, and the reason it is needed rather than the
+        // newer glCreateTextures: a view of part of a texture is made
+        // with glTextureView, which insists on a name that has been
+        // generated and given no target -- which is precisely what the
+        // newer call does not produce.
+        WINGDIAPI void APIENTRY glGenTextures(GLsizei n, GLuint* textures);
         WINGDIAPI void APIENTRY glPixelStorei(GLenum pname, GLint param);
     }
 #else
@@ -258,9 +265,6 @@ void Fluxion_RHIOpenGL_CommandListWriteTimestamp(FluxionRHICommandListHandle com
 bool Fluxion_RHIOpenGL_QueryPoolGetResults(FluxionRHIQueryPoolHandle queryPool, u32 firstQuery, u32 queryCount, u64* outTicks);
 u64 Fluxion_RHIOpenGL_GetTimestampFrequency(FluxionRHIDeviceHandle device);
 
-// True once the default-framebuffer sentinel texture/view has been
-// handed out -- CommandList_BeginRendering
-// checks this to know when to bind FBO 0 instead of building a real FBO.
 struct FluxionRHIOpenGLTexture
 {
     GLuint name = 0;
@@ -268,16 +272,33 @@ struct FluxionRHIOpenGLTexture
     u32 width = 0, height = 0, depth = 1;
     u32 mipLevels = 1, arrayLayers = 1;
     FluxionRHIFormat format = FLUXION_RHI_FORMAT_UNKNOWN;
-    bool isDefaultFramebufferSentinel = false;
+
+    // The picture the window shows, which the swapchain owns and hands
+    // out -- destroyed with the swapchain rather than by whoever holds
+    // the handle.
+    bool isSwapchainImage = false;
 };
 
 FluxionRHITextureHandle Fluxion_RHIOpenGL_CreateTexture(FluxionRHIDeviceHandle device, const FluxionRHITextureDesc* desc);
 void Fluxion_RHIOpenGL_DestroyTexture(FluxionRHITextureHandle texture);
 FluxionRHIOpenGLTexture* Fluxion_RHIOpenGL_ResolveTexture(FluxionRHITextureHandle texture);
-// Used by the swapchain to hand out its sentinel texture(s) without going
-// through the normal storage-allocating Create path.
-bool Fluxion_RHIOpenGL_AllocateSentinelTextureSlot(FluxionRHITextureHandle* outHandle);
-void Fluxion_RHIOpenGL_FreeTextureSlotDirect(FluxionRHITextureHandle handle);
+// THE PICTURE THE WINDOW SHOWS, AS A TEXTURE.
+//
+// This backend cannot put the window's own buffers and a texture in one
+// framebuffer -- so a frame drawn straight to the window is a frame whose
+// depth texture is never written, and everything that reads the frame's
+// depth afterwards reads nothing. Measured, with occlusion culling: 784
+// objects down to one.
+//
+// So nothing is ever drawn straight to the window. The swapchain owns a
+// colour texture the size of the window, every pass renders into a real
+// framebuffer, and presenting copies that texture onto the window.
+bool Fluxion_RHIOpenGL_CreateSwapchainTexture(u32 width, u32 height, FluxionRHIFormat format, FluxionRHITextureHandle* outHandle);
+// Same handle, new size: the window changed. The GL name changes with it,
+// so anything holding a view of the old one has to ask again -- which is
+// true of the window's picture on every backend.
+bool Fluxion_RHIOpenGL_ResizeSwapchainTexture(FluxionRHITextureHandle handle, u32 width, u32 height);
+void Fluxion_RHIOpenGL_DestroySwapchainTexture(FluxionRHITextureHandle handle);
 
 struct FluxionRHIOpenGLTextureView
 {
@@ -289,6 +310,7 @@ struct FluxionRHIOpenGLTextureView
 
 FluxionRHITextureViewHandle Fluxion_RHIOpenGL_CreateTextureView(FluxionRHIDeviceHandle device, const FluxionRHITextureViewDesc* desc);
 void Fluxion_RHIOpenGL_DestroyTextureView(FluxionRHITextureViewHandle view);
+FluxionRHITextureHandle Fluxion_RHIOpenGL_GetTextureViewTexture(FluxionRHITextureViewHandle view);
 FluxionRHIOpenGLTextureView* Fluxion_RHIOpenGL_ResolveTextureView(FluxionRHITextureViewHandle view);
 
 struct FluxionRHIOpenGLSampler

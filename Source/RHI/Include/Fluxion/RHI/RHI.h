@@ -114,6 +114,15 @@ void Fluxion_RHI_DestroyDevice(FluxionRHIDeviceHandle device);
 // timeline has actually completed. A backend with nothing GPU-timeline-
 // bound to defer against (e.g. the Null backend) may treat this as a
 // no-op.
+//
+// ONCE PER FRAME, FROM THE LOOP THAT DRAWS THEM, and nowhere else. What
+// may be reclaimed is decided by how far the GPU has got, and a submit
+// that waits for itself moves that mark forward -- so a call made from
+// inside something that uploads, in the middle of a frame, frees what
+// that frame is still holding. It does not fail: it draws black.
+// Measured, from an upload that ended with a collect, on a texture read
+// again from disc while the program ran -- the whole picture, from
+// 185,186,189 in the middle to 0,0,0, and it stayed there.
 void Fluxion_RHI_Device_CollectGarbage(FluxionRHIDeviceHandle device);
 
 // Returns which backend the device belongs to. Useful for callers that
@@ -282,6 +291,20 @@ typedef struct FluxionRHIBarrier
     FluxionRHIBufferHandle buffer;
     FluxionRHIResourceState before;
     FluxionRHIResourceState after;
+
+    // WHICH MIP LEVELS THIS IS ABOUT. Zero and zero mean all of them,
+    // which is what every barrier written before this field existed says,
+    // and what almost every barrier means.
+    //
+    // It exists because generating a mip chain cannot be said any other
+    // way: level three is written while level two is read, so the two
+    // are in different states at the same moment, and a barrier that
+    // could only speak about a whole texture would move the level being
+    // written along with the one being read. Added at the END of the
+    // struct on purpose -- several callers build one of these with a
+    // positional initializer.
+    u32 baseMipLevel;
+    u32 mipLevelCount;
 } FluxionRHIBarrier;
 
 void Fluxion_RHI_CommandList_Barrier(FluxionRHICommandListHandle commandList, const FluxionRHIBarrier* barriers, u32 barrierCount);
@@ -330,6 +353,15 @@ typedef struct FluxionRHITextureViewDesc
 
 FluxionRHITextureViewHandle Fluxion_RHI_CreateTextureView(FluxionRHIDeviceHandle device, const FluxionRHITextureViewDesc* desc);
 void Fluxion_RHI_DestroyTextureView(FluxionRHITextureViewHandle view);
+
+// WHICH TEXTURE THIS IS A VIEW OF.
+//
+// A barrier names a texture, and several things in this engine are handed
+// a view and nothing else -- a render target is a set of views, so a pass
+// given one cannot otherwise move the thing behind it between states. The
+// view already knows; this is it saying so, rather than every caller
+// carrying a second copy of the answer that can disagree with the first.
+FluxionRHITextureHandle Fluxion_RHI_GetTextureViewTexture(FluxionRHITextureViewHandle view);
 
 FluxionRHISamplerHandle Fluxion_RHI_CreateSampler(FluxionRHIDeviceHandle device, const FluxionRHISamplerDesc* desc);
 void Fluxion_RHI_DestroySampler(FluxionRHISamplerHandle sampler);

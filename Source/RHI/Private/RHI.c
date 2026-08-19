@@ -416,6 +416,13 @@ void Fluxion_RHI_DestroyTextureView(FluxionRHITextureViewHandle view)
     s_backend->DestroyTextureView(view);
 }
 
+FluxionRHITextureHandle Fluxion_RHI_GetTextureViewTexture(FluxionRHITextureViewHandle view)
+{
+    FluxionRHITextureHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    if (s_backend == NULL || s_backend->GetTextureViewTexture == NULL) return invalid;
+    return s_backend->GetTextureViewTexture(view);
+}
+
 FluxionRHISamplerHandle Fluxion_RHI_CreateSampler(FluxionRHIDeviceHandle device, const FluxionRHISamplerDesc* desc)
 {
     if (s_backend == NULL) { FluxionRHISamplerHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 }; return invalid; }

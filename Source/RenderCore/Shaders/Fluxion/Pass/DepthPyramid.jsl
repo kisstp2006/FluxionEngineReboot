@@ -1,0 +1,123 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_PASS_DEPTH_PYRAMID_INCLUDED
+#define FLUXION_PASS_DEPTH_PYRAMID_INCLUDED
+
+// ONE LEVEL OF THE DEPTH PYRAMID: the level above it, halved.
+//
+// Each texel here holds the FARTHEST depth of the area it covers.
+//
+// FARTHEST, NOT NEAREST, and the difference is the whole test. What a
+// reader asks is "is this object behind everything that was drawn here",
+// and that has to be true at EVERY pixel of the area -- so what it must be
+// compared against is the furthest thing drawn in it. A pyramid of nearest
+// depths answers a different question, and answering it instead culls
+// objects that are plainly visible: measured, in a scene of 784 cubes on a
+// floor, it left five of them.
+//
+// An average would be worse than either: it belongs to no surface, so the
+// comparison would be against a depth nothing in the scene has.
+//
+// EVERYTHING HERE IS DONE IN COORDINATES, NOT IN TEXEL INDICES, and that
+// is not a style choice. Which row of a render target the top of the
+// screen lands in differs between backends; a shader that works out
+// "which texel am I" from its own coordinate is right on one of them and
+// vertically mirrored on the others -- and a mirrored pyramid culls by
+// what is on the opposite side of the picture, which measured out as
+// seven objects surviving from seven hundred. Sampling the source AT THE
+// SAME COORDINATE has no such assumption in it: whatever orientation this
+// pass rasterises in, the source was written in it too.
+//
+// Drawn rather than dispatched. A compute shader writing a texture needs a
+// storage-image binding, and this contract has none -- what it has is
+// render targets and a way to sample one mip level, which is enough: one
+// small full-screen draw per level.
+
+// x, y: how many texels the level being READ has.
+// z, w: how many this one has.
+[Uniform(Global)] Vector4 pyramidSizes;
+
+[Texture(Global)] Texture2D pyramidSource;
+
+[Input] Vector2 vUV;
+[Target(0)] Vector4 fragDepth;
+
+void main() {
+  Vector2 sourceSize = Vector2(pyramidSizes.x, pyramidSizes.y);
+  Vector2 destSize = Vector2(pyramidSizes.z, pyramidSizes.w);
+
+  // How far one texel of the level being read is, as a coordinate.
+  Vector2 texel = Vector2(1.0 / sourceSize.x, 1.0 / sourceSize.y);
+
+  // The four the halving covers: half a source texel either way from
+  // where this one sits.
+  float furthest = textureLod(pyramidSource, vUV + Vector2(-0.5 * texel.x, -0.5 * texel.y), 0.0).x;
+  furthest = max(furthest, textureLod(pyramidSource, vUV + Vector2(0.5 * texel.x, -0.5 * texel.y), 0.0).x);
+  furthest = max(furthest, textureLod(pyramidSource, vUV + Vector2(-0.5 * texel.x, 0.5 * texel.y), 0.0).x);
+  furthest = max(furthest, textureLod(pyramidSource, vUV + Vector2(0.5 * texel.x, 0.5 * texel.y), 0.0).x);
+
+  // AND THE ROW AN ODD SIZE LEAVES OVER. Halving 5 gives 2, and the fifth
+  // row of the source belongs to no pair of texels -- left out, it is a
+  // row of the picture no level above ever hears about, and something
+  // hiding exactly there is culled while it is on screen.
+  //
+  // Taken from BOTH sides rather than from the end the arithmetic says,
+  // because which end that is depends on the orientation this pass
+  // rasterises in -- and reaching one texel too far can only make this
+  // value larger, which culls LESS. Wrong in the direction that costs
+  // time rather than in the direction that loses geometry.
+  if (sourceSize.x > destSize.x * 2.0)
+  {
+    furthest = max(furthest, textureLod(pyramidSource, vUV + Vector2(-1.5 * texel.x, 0.0), 0.0).x);
+    furthest = max(furthest, textureLod(pyramidSource, vUV + Vector2(1.5 * texel.x, 0.0), 0.0).x);
+  }
+
+  if (sourceSize.y > destSize.y * 2.0)
+  {
+    furthest = max(furthest, textureLod(pyramidSource, vUV + Vector2(0.0, -1.5 * texel.y), 0.0).x);
+    furthest = max(furthest, textureLod(pyramidSource, vUV + Vector2(0.0, 1.5 * texel.y), 0.0).x);
+  }
+
+  return Vector4(furthest, furthest, furthest, furthest);
+}
+
+#endif

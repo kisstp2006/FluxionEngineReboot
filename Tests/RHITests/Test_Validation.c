@@ -155,14 +155,14 @@ void Test_Validation_Run(TestContext* ctx)
 
     Fluxion_RHI_CommandList_Begin(cmd);
     FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
-    FluxionRHIBarrier lying = { texture, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+    FluxionRHIBarrier lying = { texture, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(cmd, &lying, 1);
     TEST_CHECK(ctx, Fluxion_RHI_Validation_GetErrorCount() == 1);
 
     // The tracker updated to the barrier's after-state, so a follow-up
     // that declares SHADER_READ is clean -- a tracker that reported once
     // and then lost the thread would fail here.
-    FluxionRHIBarrier honest = { texture, noBuffer, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE };
+    FluxionRHIBarrier honest = { texture, noBuffer, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(cmd, &honest, 1);
     TEST_CHECK(ctx, Fluxion_RHI_Validation_GetErrorCount() == 1);
     Fluxion_RHI_CommandList_End(cmd);

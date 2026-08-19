@@ -76,6 +76,11 @@ typedef struct FluxionRenderObject
     // one boundary that uploads it.
     FluxionMat4 transform;
 
+    // And where it was when the frame before this one was drawn. The
+    // same as above for anything that has not moved, and for anything
+    // whose past nobody keeps.
+    FluxionMat4 previousTransform;
+
     FluxionMeshBufferHandle mesh;
     FluxionMaterialHandle material;
     FluxionRenderPipelineHandle pipeline;

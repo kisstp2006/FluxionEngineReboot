@@ -1,0 +1,84 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+
+#ifndef FLUXION_PASS_MOTION_VECTOR_INCLUDED
+#define FLUXION_PASS_MOTION_VECTOR_INCLUDED
+
+#include "Fluxion/Frame.jsl"
+#include "Fluxion/Object.jsl"
+
+// WHERE EACH PIXEL WAS A FRAME AGO.
+//
+// The vertex half. It puts the same vertex through two matrices -- this
+// frame's placement and this frame's camera, then last frame's placement
+// and last frame's camera -- and hands both answers to the fragment
+// stage, which turns the pair into a direction on the screen.
+//
+// The two are carried as clip positions rather than as a finished vector
+// because the divide by w has to happen PER PIXEL. Doing it here and
+// interpolating the result would interpolate a division, which is not
+// the same thing and is wrong exactly where the geometry is steep.
+//
+// Its own vertex stage rather than the shared one: no other pass needs
+// last frame's placement, and every varying costs every pass that shares
+// the file.
+
+[Input] Vector3 position;
+
+[Output] Vector4 vCurrentClip;
+[Output] Vector4 vPreviousClip;
+[Output] Vector4 Position;
+
+void main() {
+  Vector4 currentClip = viewProjection * (FluxionObjectModel() * Vector4(position, 1.0));
+  Vector4 previousClip = previousViewProjection * (FluxionObjectPreviousModel() * Vector4(position, 1.0));
+
+  vCurrentClip = currentClip;
+  vPreviousClip = previousClip;
+
+  // The geometry itself goes where it goes this frame -- the depth test
+  // this pass shares with the frame's depth buffer only agrees if this
+  // is the position the other passes produce.
+  Position = currentClip;
+}
+
+#endif

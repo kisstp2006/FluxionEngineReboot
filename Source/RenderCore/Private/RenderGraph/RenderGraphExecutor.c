@@ -43,6 +43,7 @@
 
 #include <Fluxion/Core/Diagnostics/Profiler.h>
 #include <Fluxion/Foundation/Assert.h>
+#include <string.h>
 
 void Fluxion_RenderGraph_Execute(FluxionRenderGraph* graph, FluxionRHICommandListHandle commandList)
 {
@@ -111,6 +112,8 @@ void Fluxion_RenderGraph_Execute(FluxionRenderGraph* graph, FluxionRHICommandLis
             const FluxionRenderGraphBarrierPlan* plan = &graph->barriers[barrierStart + i];
 
             FluxionRHIBarrier barrier;
+
+            memset(&barrier, 0, sizeof(barrier));
             barrier.texture = invalidTexture;
             barrier.buffer = invalidBuffer;
             barrier.before = plan->before;

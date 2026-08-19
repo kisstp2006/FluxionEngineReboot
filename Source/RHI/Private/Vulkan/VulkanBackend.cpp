@@ -540,7 +540,26 @@ static void Fluxion_RHIVulkan_DestroyDevice(FluxionRHIDeviceHandle device)
     if (deviceState == nullptr) return;
 
     vkDeviceWaitIdle(deviceState->device);
-    Fluxion_RHIVulkan_CollectGarbage(device); // flush everything now that the device is idle
+
+    // EVERYTHING RETIRED IS FREE NOW, whatever the timeline says.
+    //
+    // The ordinary sweep frees what the device has provably finished
+    // with, and it reads that from the timeline value -- so a resource
+    // retired AFTER the last submission is never freed by it: nothing
+    // will ever signal a value that high. That is the right answer while
+    // the device is running and the wrong one here, where the wait above
+    // has just made "finished" true of everything.
+    //
+    // Measured rather than reasoned: without this, a renderer holding
+    // textures it made in its last frame leaves them allocated, and the
+    // allocator says so at shutdown -- as an assertion inside a third
+    // party's header, four steps from anything that named a texture.
+    extern void Fluxion_RHIVulkan_FinalizeRetired(FluxionRHIVulkanDevice * deviceState, FluxionRHIVulkanRetiredEntry::Kind kind, u32 index);
+    for (u32 i = 0; i < deviceState->retiredCount; ++i)
+    {
+        Fluxion_RHIVulkan_FinalizeRetired(deviceState, deviceState->retired[i].kind, deviceState->retired[i].index);
+    }
+    deviceState->retiredCount = 0;
 
     if (deviceState->bindGroupPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(deviceState->device, deviceState->bindGroupPool, nullptr);
     if (deviceState->emptyBindGroupLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(deviceState->device, deviceState->emptyBindGroupLayout, nullptr);
@@ -750,6 +769,7 @@ static const FluxionRHIBackendVTable s_vulkanVTable = {
     Fluxion_RHIVulkan_DestroyTexture,
     Fluxion_RHIVulkan_CreateTextureView,
     Fluxion_RHIVulkan_DestroyTextureView,
+    Fluxion_RHIVulkan_GetTextureViewTexture,
     Fluxion_RHIVulkan_CreateSampler,
     Fluxion_RHIVulkan_DestroySampler,
 

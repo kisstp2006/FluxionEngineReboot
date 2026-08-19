@@ -77,6 +77,17 @@ typedef struct FluxionGPUSceneObject
     // Already transposed for the shading languages, exactly like the
     // frame constants -- see Fluxion_RenderView_UpdateFrameConstants.
     FluxionMat4 model;
+
+    // WHERE IT WAS LAST FRAME, and the row is twice the size for it.
+    //
+    // That is the price of everything temporal, paid here rather than in
+    // a second buffer: a motion vector is this frame's position against
+    // last frame's, and a pass that had to fetch the two from different
+    // places would need both to be indexed the same way anyway.
+    //
+    // An object nobody tells about its past carries the same matrix
+    // twice, which reads as standing still.
+    FluxionMat4 previousModel;
 } FluxionGPUSceneObject;
 
 // One draw: what to bind, and which run of rows it covers.
@@ -173,6 +184,23 @@ typedef struct FluxionGPUSceneCullDesc
     // False turns the whole thing off: every object is drawn, which is
     // what a program with no camera at all (a test, a tool) wants.
     bool enabled;
+
+    // --- and what the frame before this one could see -------------------
+    //
+    // The depth pyramid of the PREVIOUS frame, with the camera that drew
+    // it. An object that was behind everything a frame ago is not drawn
+    // this frame -- which is one frame late by construction, and cheap:
+    // four texel reads instead of a second pass over the geometry.
+    //
+    // Left invalid (or with occlusion false) when there is no previous
+    // frame to be hidden by, which is what the history itself answers.
+    FluxionRHITextureViewHandle occlusionPyramid;
+    FluxionRHISamplerHandle occlusionSampler;
+    FluxionMat4 previousViewProjection;
+    f32 pyramidWidth;
+    f32 pyramidHeight;
+    u32 pyramidLevels;
+    bool occlusionEnabled;
 } FluxionGPUSceneCullDesc;
 
 FluxionGPUSceneHandle Fluxion_GPUScene_Create(FluxionRHIDeviceHandle device);
@@ -199,6 +227,13 @@ bool Fluxion_GPUScene_Add(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle m
 // wrong about a mesh, and the object still has to be drawn.
 bool Fluxion_GPUScene_AddDetailed(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
                                   FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, u32 layerMask, u32 lodIndex);
+
+// And where it was when the frame before this one was drawn. NULL means
+// "where it is now", which is what a caller with no memory of last frame
+// can honestly say, and what everything did before there was a past.
+bool Fluxion_GPUScene_AddMoving(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
+                                FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, const FluxionMat4* previousTransform,
+                                u32 layerMask, u32 lodIndex);
 
 bool Fluxion_GPUScene_AddLayered(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
                                  FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, u32 layerMask);

@@ -315,6 +315,7 @@ void Fluxion_RHID3D12_FreeTextureSlotDirect(FluxionRHITextureHandle handle);
 
 FluxionRHITextureViewHandle Fluxion_RHID3D12_CreateTextureView(FluxionRHIDeviceHandle device, const FluxionRHITextureViewDesc* desc);
 void Fluxion_RHID3D12_DestroyTextureView(FluxionRHITextureViewHandle view);
+FluxionRHITextureHandle Fluxion_RHID3D12_GetTextureViewTexture(FluxionRHITextureViewHandle view);
 FluxionRHID3D12TextureView* Fluxion_RHID3D12_ResolveTextureView(FluxionRHITextureViewHandle view);
 
 FluxionRHISamplerHandle Fluxion_RHID3D12_CreateSampler(FluxionRHIDeviceHandle device, const FluxionRHISamplerDesc* desc);

@@ -71,7 +71,8 @@ typedef struct FluxionGPUSceneEntry
     FluxionMeshBufferHandle mesh;
     FluxionMaterialHandle material;
     FluxionRenderPipelineHandle pipeline;
-    FluxionMat4 model; // already transposed
+    FluxionMat4 model;         // already transposed
+    FluxionMat4 previousModel; // and so is this one
 
     // Where this object is and how far it reaches, worked out once when
     // it was added rather than once per pass that wants to know.
@@ -209,6 +210,23 @@ typedef struct FluxionGPUSceneRecord
     // that culls nothing and draws nothing.
     FluxionRHIBindGroupHandle cullBindGroup;
 
+    // A PYRAMID-SHAPED NOTHING, for a frame that has none.
+    //
+    // The cull shader samples the pyramid whether or not the occlusion
+    // test is switched on, and a binding that points at nothing is a
+    // dispatch the driver refuses. One texel, never read (the shader's
+    // own switch sees to that), and the reason it exists at all is that
+    // a caller with no history should not have to invent one.
+    FluxionRHITextureHandle cullNoPyramidTexture;
+    FluxionRHITextureViewHandle cullNoPyramidView;
+    FluxionRHISamplerHandle cullNoPyramidSampler;
+    bool cullNoPyramidReadable;
+
+    // WHICH PYRAMID THAT GROUP POINTS AT. One of its bindings is a
+    // texture the renderer remakes whenever the frame changes size, and a
+    // group still pointing at the old one reads a screen that is gone.
+    FluxionRHITextureViewHandle cullBoundPyramid;
+
     // Whether the failure below has already been said once. Said at all,
     // because a frame that cannot bind its cull pass draws nothing and
     // has nothing else to point at; said once, because a pool that is
@@ -237,6 +255,13 @@ static void Fluxion_GPUSceneInternal_ForgetCullBindGroup(FluxionGPUSceneRecord* 
 {
     if (FLUXION_HANDLE_IS_VALID(record->cullBindGroup)) Fluxion_RHI_DestroyBindGroup(record->cullBindGroup);
     record->cullBindGroup = (FluxionRHIBindGroupHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    // Which pyramid it pointed at is forgotten with it; the STAND-IN is
+    // not touched here. It belongs to the scene rather than to the group,
+    // and forgetting it here is what made a new one every frame -- one
+    // texture per frame, never freed, which the allocator only reports at
+    // shutdown.
+    record->cullBoundPyramid = (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
 }
 
 static void Fluxion_GPUSceneInternal_DestroyObjectBuffers(FluxionGPUSceneRecord* record)
@@ -567,6 +592,16 @@ typedef struct FluxionGPUSceneCullUniform
     FluxionVec4 planes[6];
     FluxionVec4 eye;    // xyz where it is, w how far it sees
     FluxionVec4 counts; // x how many objects
+
+    // THE ORDER HERE IS THE LAYOUT, and it has to be the order
+    // Fluxion/Pass/GPUCull.jsl declares these in -- the same rule the
+    // frame constants live by. Both went at the END for that reason.
+    //
+    // Where the camera was when the pyramid below was drawn, and what
+    // that pyramid is: its first level's size, how many levels it has,
+    // and whether it may be read at all.
+    FluxionMat4 previousViewProjection;
+    FluxionVec4 pyramidParams;
 } FluxionGPUSceneCullUniform;
 
 // The bindings the pass declares, in the order the shader compiler hands
@@ -580,16 +615,78 @@ static FluxionRHIBindGroupLayoutDesc Fluxion_GPUSceneInternal_MakeCullLayoutDesc
     desc.entries[0].type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
     desc.entries[0].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_COMPUTE;
 
-    for (u32 i = 1; i <= 6; ++i)
+    // THE TEXTURE COMES BEFORE THE BUFFERS, AND TAKES TWO NUMBERS. That
+    // is the order the shader compiler hands bindings out in -- the
+    // group's uniform block first, then each texture with its sampler,
+    // then the storage buffers -- so a layout in any other order
+    // describes a shader nobody wrote.
+    desc.entries[1].binding = 1;
+    desc.entries[1].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    desc.entries[1].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_COMPUTE;
+
+    desc.entries[2].binding = 2;
+    desc.entries[2].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    desc.entries[2].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_COMPUTE;
+
+    for (u32 i = 3; i <= 8; ++i)
     {
         desc.entries[i].binding = i;
         desc.entries[i].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
         desc.entries[i].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_COMPUTE;
     }
 
-    desc.entryCount = 7;
+    desc.entryCount = 9;
     desc.debugName = "Fluxion.GPUScene.CullBindGroupLayout";
     return desc;
+}
+
+// The stand-in above, made the first time anything asks for it.
+static bool Fluxion_GPUSceneInternal_EnsureNoPyramid(FluxionGPUSceneRecord* record)
+{
+    if (FLUXION_HANDLE_IS_VALID(record->cullNoPyramidView) && FLUXION_HANDLE_IS_VALID(record->cullNoPyramidSampler)) return true;
+
+    FluxionRHITextureDesc textureDesc;
+    memset(&textureDesc, 0, sizeof(textureDesc));
+    textureDesc.width = 1;
+    textureDesc.height = 1;
+    textureDesc.depth = 1;
+    textureDesc.mipLevels = 1;
+    textureDesc.arrayLayers = 1;
+    textureDesc.sampleCount = 1;
+    textureDesc.format = FLUXION_RHI_FORMAT_R32_FLOAT;
+    textureDesc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_SAMPLED;
+    textureDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
+    textureDesc.debugName = "Fluxion.GPUScene.NoPyramid";
+    record->cullNoPyramidTexture = Fluxion_RHI_CreateTexture(record->device, &textureDesc);
+    if (!FLUXION_HANDLE_IS_VALID(record->cullNoPyramidTexture)) return false;
+
+    FluxionRHITextureViewDesc viewDesc;
+    memset(&viewDesc, 0, sizeof(viewDesc));
+    viewDesc.texture = record->cullNoPyramidTexture;
+    viewDesc.format = textureDesc.format;
+    viewDesc.mipLevelCount = 1;
+    viewDesc.arrayLayerCount = 1;
+    record->cullNoPyramidView = Fluxion_RHI_CreateTextureView(record->device, &viewDesc);
+
+    FluxionRHISamplerDesc samplerDesc;
+    memset(&samplerDesc, 0, sizeof(samplerDesc));
+    samplerDesc.minFilter = FLUXION_RHI_FILTER_NEAREST;
+    samplerDesc.magFilter = FLUXION_RHI_FILTER_NEAREST;
+    samplerDesc.mipFilter = FLUXION_RHI_FILTER_NEAREST;
+    samplerDesc.addressModeU = FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerDesc.addressModeV = FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerDesc.addressModeW = FLUXION_RHI_ADDRESS_MODE_CLAMP_TO_EDGE;
+
+    // ONE, not zero. A zeroed description says "no anisotropy" nowhere:
+    // one is what that means, and zero is a number the contract does not
+    // have -- which comes back as no sampler at all, and then as a
+    // binding nobody wrote, four steps away.
+    samplerDesc.maxAnisotropy = 1.0f;
+    samplerDesc.debugName = "Fluxion.GPUScene.NoPyramidSampler";
+    record->cullNoPyramidSampler = Fluxion_RHI_CreateSampler(record->device, &samplerDesc);
+
+    record->cullNoPyramidReadable = false;
+    return FLUXION_HANDLE_IS_VALID(record->cullNoPyramidView) && FLUXION_HANDLE_IS_VALID(record->cullNoPyramidSampler);
 }
 
 static bool Fluxion_GPUSceneInternal_EnsureCullPipeline(FluxionGPUSceneRecord* record)
@@ -729,6 +826,30 @@ static void Fluxion_GPUSceneInternal_RecordCull(FluxionGPUSceneRecord* record, F
 {
     const FluxionRHITextureHandle noTexture = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
+    // WHAT THE SHADER SAMPLES, which is not always a pyramid: it reads
+    // one whether or not the occlusion test is switched on, so a frame
+    // without a history binds the one-texel stand-in instead. A binding
+    // that points at nothing is a dispatch the driver refuses -- not a
+    // test that quietly does nothing.
+    const bool useHistory = record->cull.occlusionEnabled && FLUXION_HANDLE_IS_VALID(record->cull.occlusionPyramid) &&
+                            FLUXION_HANDLE_IS_VALID(record->cull.occlusionSampler);
+
+    if (!useHistory && !Fluxion_GPUSceneInternal_EnsureNoPyramid(record)) return;
+
+    const FluxionRHITextureViewHandle pyramidView = useHistory ? record->cull.occlusionPyramid : record->cullNoPyramidView;
+    const FluxionRHISamplerHandle pyramidSampler = useHistory ? record->cull.occlusionSampler : record->cullNoPyramidSampler;
+
+    // The stand-in has never been drawn into, and a texture in no state
+    // at all cannot be bound. Said once, here, where there is a command
+    // list to say it in.
+    if (!useHistory && !record->cullNoPyramidReadable)
+    {
+        FluxionRHIBarrier toRead = { record->cullNoPyramidTexture, (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 },
+                                     FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 };
+        Fluxion_RHI_CommandList_Barrier(commandList, &toRead, 1);
+        record->cullNoPyramidReadable = true;
+    }
+
     // What the compute reads, across first. The commands are already on
     // their way (the caller copied them, with the instance counts at
     // zero) and the visible list is written entirely by the shader, so
@@ -745,35 +866,50 @@ static void Fluxion_GPUSceneInternal_RecordCull(FluxionGPUSceneRecord* record, F
         if (copies[i].size == 0) continue;
 
         FluxionRHIBarrier toCopy = { noTexture, copies[i].storage, FLUXION_RHI_RESOURCE_STATE_COMMON,
-                                     FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
+                                     FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &toCopy, 1);
 
         Fluxion_RHI_CommandList_CopyBuffer(commandList, copies[i].staging, 0, copies[i].storage, 0, copies[i].size);
 
         FluxionRHIBarrier toRead = { noTexture, copies[i].storage, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION,
-                                     FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+                                     FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &toRead, 1);
     }
 
     // The two the shader WRITES: the commands it counts into, and the
     // list it fills.
     FluxionRHIBarrier toWrite[2] = {
-        { noTexture, record->indirectBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE },
+        { noTexture, record->indirectBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, 0, 0 },
         { noTexture, record->visibleStorage,
           record->objectStorageWritten ? FLUXION_RHI_RESOURCE_STATE_SHADER_READ : FLUXION_RHI_RESOURCE_STATE_COMMON,
-          FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE },
+          FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, 0, 0 },
     };
     Fluxion_RHI_CommandList_Barrier(commandList, toWrite, 2);
 
+    if (record->cullBoundPyramid.index != pyramidView.index || record->cullBoundPyramid.generation != pyramidView.generation)
+    {
+        Fluxion_GPUSceneInternal_ForgetCullBindGroup(record);
+        record->cullBoundPyramid = pyramidView;
+    }
+
     if (!FLUXION_HANDLE_IS_VALID(record->cullBindGroup))
     {
-        FluxionRHIBindGroupEntry entries[7];
+        FluxionRHIBindGroupEntry entries[9];
         memset(entries, 0, sizeof(entries));
 
         entries[0].binding = 0;
         entries[0].type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
         entries[0].buffer = record->cullUniform;
         entries[0].bufferSize = sizeof(FluxionGPUSceneCullUniform);
+
+        // What the frame before this one could see, and how to read it.
+        entries[1].binding = 1;
+        entries[1].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+        entries[1].textureView = pyramidView;
+
+        entries[2].binding = 2;
+        entries[2].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+        entries[2].sampler = pyramidSampler;
 
         const struct { FluxionRHIBufferHandle buffer; u32 stride; } storages[6] = {
             { record->cullSphereStorage, (u32)sizeof(FluxionVec4) },
@@ -786,16 +922,16 @@ static void Fluxion_GPUSceneInternal_RecordCull(FluxionGPUSceneRecord* record, F
 
         for (u32 i = 0; i < 6; ++i)
         {
-            entries[i + 1].binding = i + 1;
-            entries[i + 1].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-            entries[i + 1].buffer = storages[i].buffer;
-            entries[i + 1].bufferElementStride = storages[i].stride;
+            entries[i + 3].binding = i + 3;
+            entries[i + 3].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+            entries[i + 3].buffer = storages[i].buffer;
+            entries[i + 3].bufferElementStride = storages[i].stride;
         }
 
         FluxionRHIBindGroupDesc bindGroupDesc;
         bindGroupDesc.layout = record->cullLayout;
         bindGroupDesc.entries = entries;
-        bindGroupDesc.entryCount = 7;
+        bindGroupDesc.entryCount = 9;
 
         record->cullBindGroup = Fluxion_RHI_CreateBindGroup(record->device, &bindGroupDesc);
         if (FLUXION_HANDLE_IS_VALID(record->cullBindGroup)) record->cullBindGroupFailed = false;
@@ -815,8 +951,8 @@ static void Fluxion_GPUSceneInternal_RecordCull(FluxionGPUSceneRecord* record, F
         // the rest of the frame expects to find them -- a state left
         // half changed is a validation error every frame after this one.
         FluxionRHIBarrier undo[2] = {
-            { noTexture, record->indirectBuffer, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, FLUXION_RHI_RESOURCE_STATE_COMMON },
-            { noTexture, record->visibleStorage, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, FLUXION_RHI_RESOURCE_STATE_SHADER_READ },
+            { noTexture, record->indirectBuffer, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, FLUXION_RHI_RESOURCE_STATE_COMMON, 0, 0 },
+            { noTexture, record->visibleStorage, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 },
         };
         Fluxion_RHI_CommandList_Barrier(commandList, undo, 2);
         return;
@@ -834,8 +970,8 @@ static void Fluxion_GPUSceneInternal_RecordCull(FluxionGPUSceneRecord* record, F
     // from here", and COMMON is what every backend maps to something
     // that covers it.
     FluxionRHIBarrier toRead[2] = {
-        { noTexture, record->visibleStorage, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, FLUXION_RHI_RESOURCE_STATE_SHADER_READ },
-        { noTexture, record->indirectBuffer, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, FLUXION_RHI_RESOURCE_STATE_COMMON },
+        { noTexture, record->visibleStorage, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 },
+        { noTexture, record->indirectBuffer, FLUXION_RHI_RESOURCE_STATE_SHADER_WRITE, FLUXION_RHI_RESOURCE_STATE_COMMON, 0, 0 },
     };
     Fluxion_RHI_CommandList_Barrier(commandList, toRead, 2);
 
@@ -844,14 +980,14 @@ static void Fluxion_GPUSceneInternal_RecordCull(FluxionGPUSceneRecord* record, F
     if (FLUXION_HANDLE_IS_VALID(record->commandReadback) && record->batchCount > 0)
     {
         FluxionRHIBarrier toSource = { noTexture, record->indirectBuffer, FLUXION_RHI_RESOURCE_STATE_COMMON,
-                                       FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE };
+                                       FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &toSource, 1);
 
         Fluxion_RHI_CommandList_CopyBuffer(commandList, record->indirectBuffer, 0, record->commandReadback, 0,
                                            (usize)record->batchCount * sizeof(FluxionRHIDrawIndexedIndirectCommand));
 
         FluxionRHIBarrier backToDraw = { noTexture, record->indirectBuffer, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE,
-                                         FLUXION_RHI_RESOURCE_STATE_COMMON };
+                                         FLUXION_RHI_RESOURCE_STATE_COMMON, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &backToDraw, 1);
 
         record->readbackBatchCount = record->batchCount;
@@ -909,6 +1045,9 @@ FluxionGPUSceneHandle Fluxion_GPUScene_Create(FluxionRHIDeviceHandle device)
     record->cullLayout = (FluxionRHIBindGroupLayoutHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->cullPipeline = (FluxionRHIPipelineHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->cullBindGroup = (FluxionRHIBindGroupHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->cullNoPyramidTexture = (FluxionRHITextureHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->cullNoPyramidView = (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->cullNoPyramidSampler = (FluxionRHISamplerHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
 
     if (!Fluxion_GPUSceneInternal_MakeObjectBuffers(record, FLUXION_GPU_SCENE_INITIAL_OBJECTS) ||
         !Fluxion_GPUSceneInternal_MakeBatchBuffers(record, FLUXION_GPU_SCENE_INITIAL_OBJECTS) ||
@@ -935,6 +1074,9 @@ void Fluxion_GPUScene_Destroy(FluxionGPUSceneHandle scene)
     Fluxion_GPUSceneInternal_DestroyObjectBuffers(record);
     Fluxion_GPUSceneInternal_DestroyCullBuffers(record);
     Fluxion_GPUSceneInternal_ForgetCullBindGroup(record);
+    if (FLUXION_HANDLE_IS_VALID(record->cullNoPyramidView)) Fluxion_RHI_DestroyTextureView(record->cullNoPyramidView);
+    if (FLUXION_HANDLE_IS_VALID(record->cullNoPyramidTexture)) Fluxion_RHI_DestroyTexture(record->cullNoPyramidTexture);
+    if (FLUXION_HANDLE_IS_VALID(record->cullNoPyramidSampler)) Fluxion_RHI_DestroySampler(record->cullNoPyramidSampler);
     if (FLUXION_HANDLE_IS_VALID(record->cullUniform)) Fluxion_RHI_DestroyBuffer(record->cullUniform);
     if (FLUXION_HANDLE_IS_VALID(record->cullPipeline)) Fluxion_RHI_DestroyPipeline(record->cullPipeline);
     if (FLUXION_HANDLE_IS_VALID(record->cullLayout)) Fluxion_RHI_DestroyBindGroupLayout(record->cullLayout);
@@ -983,6 +1125,9 @@ void Fluxion_GPUScene_Destroy(FluxionGPUSceneHandle scene)
     record->cullLayout = (FluxionRHIBindGroupLayoutHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->cullPipeline = (FluxionRHIPipelineHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
     record->cullBindGroup = (FluxionRHIBindGroupHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->cullNoPyramidTexture = (FluxionRHITextureHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->cullNoPyramidView = (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    record->cullNoPyramidSampler = (FluxionRHISamplerHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
 }
 
 void Fluxion_GPUScene_Begin(FluxionGPUSceneHandle scene)
@@ -1058,6 +1203,13 @@ bool Fluxion_GPUScene_AddLayered(FluxionGPUSceneHandle scene, FluxionMeshBufferH
 bool Fluxion_GPUScene_AddDetailed(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
                                   FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, u32 layerMask, u32 lodIndex)
 {
+    return Fluxion_GPUScene_AddMoving(scene, mesh, material, pipeline, transform, NULL, layerMask, lodIndex);
+}
+
+bool Fluxion_GPUScene_AddMoving(FluxionGPUSceneHandle scene, FluxionMeshBufferHandle mesh, FluxionMaterialHandle material,
+                                FluxionRenderPipelineHandle pipeline, const FluxionMat4* transform, const FluxionMat4* previousTransform,
+                                u32 layerMask, u32 lodIndex)
+{
     FluxionGPUSceneRecord* record = Fluxion_GPUSceneInternal_Resolve(scene);
     if (record == NULL) return false;
 
@@ -1081,6 +1233,11 @@ bool Fluxion_GPUScene_AddDetailed(FluxionGPUSceneHandle scene, FluxionMeshBuffer
     // above are worked out from the matrix as it arrived, because that
     // is the one the arithmetic is written for.
     entry->model = Fluxion_Mat4_Transposed(world);
+
+    // Where it was, or where it is when nobody remembers -- see
+    // Fluxion_GPUScene_AddMoving.
+    entry->previousModel = previousTransform != NULL ? Fluxion_Mat4_Transposed(*previousTransform) : entry->model;
+
     entry->layerMask = layerMask;
 
     // Clamped rather than refused -- see Fluxion_GPUScene_AddDetailed.
@@ -1173,6 +1330,7 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
     for (u32 i = 0; i < record->entryCount; ++i)
     {
         rows[i].model = record->entries[record->order[i]].model;
+        rows[i].previousModel = record->entries[record->order[i]].previousModel;
     }
     Fluxion_RHI_UnmapBuffer(record->objectStaging);
 
@@ -1326,6 +1484,21 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
         uniform.eye.w = record->cull.cullDistance;
         uniform.counts.x = (f32)record->entryCount;
 
+        // WHAT THE FRAME BEFORE THIS ONE SAW, and from where. Transposed
+        // like every other matrix that crosses this boundary, and
+        // switched off outright when there is nothing behind it: the
+        // shader then skips the test rather than reading a screen that no
+        // longer exists.
+        uniform.previousViewProjection = Fluxion_Mat4_Transposed(record->cull.previousViewProjection);
+
+        const bool occlusion = record->cull.occlusionEnabled && FLUXION_HANDLE_IS_VALID(record->cull.occlusionPyramid) &&
+                               FLUXION_HANDLE_IS_VALID(record->cull.occlusionSampler) && record->cull.pyramidLevels > 0;
+
+        uniform.pyramidParams.x = record->cull.pyramidWidth;
+        uniform.pyramidParams.y = record->cull.pyramidHeight;
+        uniform.pyramidParams.z = (f32)record->cull.pyramidLevels;
+        uniform.pyramidParams.w = occlusion ? 1.0f : 0.0f;
+
         void* mappedUniform = Fluxion_RHI_MapBuffer(record->cullUniform);
         if (mappedUniform == NULL) return;
         memcpy(mappedUniform, &uniform, sizeof(uniform));
@@ -1464,7 +1637,7 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
 
     FluxionRHIBarrier toCopy = { noTexture, record->objectStorage,
                                  record->objectStorageWritten ? FLUXION_RHI_RESOURCE_STATE_SHADER_READ : FLUXION_RHI_RESOURCE_STATE_COMMON,
-                                 FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
+                                 FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(commandList, &toCopy, 1);
 
     Fluxion_RHI_CommandList_CopyBuffer(commandList, record->objectStaging, 0, record->objectStorage, 0,
@@ -1475,14 +1648,14 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
     if (!record->everyRowUploaded)
     {
         FluxionRHIBarrier everyRowToCopy = { noTexture, record->everyRowStorage, FLUXION_RHI_RESOURCE_STATE_COMMON,
-                                             FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
+                                             FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &everyRowToCopy, 1);
 
         Fluxion_RHI_CommandList_CopyBuffer(commandList, record->everyRowStaging, 0, record->everyRowStorage, 0,
                                            (usize)record->objectCapacity * sizeof(u32));
 
         FluxionRHIBarrier everyRowToRead = { noTexture, record->everyRowStorage, FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION,
-                                             FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+                                             FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &everyRowToRead, 1);
 
         record->everyRowUploaded = true;
@@ -1492,7 +1665,7 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
     {
         FluxionRHIBarrier visibleToCopy = { noTexture, record->visibleStorage,
                                             record->objectStorageWritten ? FLUXION_RHI_RESOURCE_STATE_SHADER_READ : FLUXION_RHI_RESOURCE_STATE_COMMON,
-                                            FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
+                                            FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &visibleToCopy, 1);
 
         Fluxion_RHI_CommandList_CopyBuffer(commandList, record->visibleStaging, 0, record->visibleStorage, 0,
@@ -1501,12 +1674,12 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
                                                : (usize)record->entryCount * sizeof(u32));
 
         FluxionRHIBarrier visibleToRead = { noTexture, record->visibleStorage,
-                                            FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+                                            FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &visibleToRead, 1);
     }
 
     FluxionRHIBarrier toRead = { noTexture, record->objectStorage,
-                                 FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+                                 FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(commandList, &toRead, 1);
 
     // The commands, across. Both paths write them the same way -- what
@@ -1514,7 +1687,7 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
     // the answer.
     FluxionRHIBarrier commandsToCopy = { noTexture, record->indirectBuffer,
                                          record->indirectWritten ? FLUXION_RHI_RESOURCE_STATE_COMMON : FLUXION_RHI_RESOURCE_STATE_COMMON,
-                                         FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
+                                         FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(commandList, &commandsToCopy, 1);
 
     Fluxion_RHI_CommandList_CopyBuffer(commandList, record->indirectStaging, 0, record->indirectBuffer, 0,
@@ -1531,7 +1704,7 @@ void Fluxion_GPUScene_Upload(FluxionGPUSceneHandle scene, FluxionRHICommandListH
         // maps to something that covers a draw reading its own arguments
         // -- on the strictest of them, memory reads at any stage.
         FluxionRHIBarrier commandsToDraw = { noTexture, record->indirectBuffer,
-                                             FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_COMMON };
+                                             FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, FLUXION_RHI_RESOURCE_STATE_COMMON, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &commandsToDraw, 1);
     }
 

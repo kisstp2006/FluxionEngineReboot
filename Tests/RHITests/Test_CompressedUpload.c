@@ -164,6 +164,8 @@ static void Fluxion_Test_UploadOneCompressedTexture(TestContext* ctx, FluxionRHI
     FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
     FluxionRHIBarrier toCopy;
+
+    memset(&toCopy, 0, sizeof(toCopy));
     toCopy.texture = texture;
     toCopy.buffer = noBuffer;
     // The texture was made a moment ago and holds nothing, which is what
@@ -179,6 +181,8 @@ static void Fluxion_Test_UploadOneCompressedTexture(TestContext* ctx, FluxionRHI
     }
 
     FluxionRHIBarrier toRead;
+
+    memset(&toRead, 0, sizeof(toRead));
     toRead.texture = texture;
     toRead.buffer = noBuffer;
     toRead.before = FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION;

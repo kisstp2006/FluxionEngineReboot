@@ -63,7 +63,23 @@ typedef struct FluxionWindowSlot
     bool cursorVisible;
     LONG savedStyle;
     RECT savedRect;
+
+    // See Fluxion_Window_SetDrawWhileResizing. `drawing` guards against
+    // the callback being entered from inside itself: what it draws can
+    // take longer than the timer's period, and a second timer message
+    // waiting behind the first would otherwise start a frame in the
+    // middle of a frame.
+    FluxionWindowDrawFrameFn drawWhileResizing;
+    void* drawWhileResizingUserData;
+    bool drawing;
 } FluxionWindowSlot;
+
+// The timer that gives the caller its turn while a drag is holding the
+// loop. Its period is short enough to look continuous and long enough
+// that a frame taking longer than one period is the ordinary case rather
+// than a backlog.
+#define FLUXION_WINDOW_RESIZE_TIMER_ID 1u
+#define FLUXION_WINDOW_RESIZE_TIMER_MILLISECONDS 15u
 
 static FluxionAllocator* s_allocator = NULL;
 static FluxionEventQueue* s_eventQueue = NULL;
@@ -118,6 +134,29 @@ static LRESULT CALLBACK Fluxion_WndProc(HWND hwnd, UINT message, WPARAM wParam, 
         case WM_CLOSE:
             event.type = FLUXION_EVENT_WINDOW_CLOSE_REQUESTED;
             Fluxion_EventQueue_Push(s_eventQueue, &event);
+            return 0;
+
+        case WM_ENTERSIZEMOVE:
+            // The drag begins here and the loop below this call does not
+            // return until it ends -- so the turn has to come from a
+            // timer, which is delivered inside that loop.
+            if (s_slots[index].drawWhileResizing != NULL)
+            {
+                SetTimer(hwnd, FLUXION_WINDOW_RESIZE_TIMER_ID, FLUXION_WINDOW_RESIZE_TIMER_MILLISECONDS, NULL);
+            }
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+
+        case WM_EXITSIZEMOVE:
+            KillTimer(hwnd, FLUXION_WINDOW_RESIZE_TIMER_ID);
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+
+        case WM_TIMER:
+            if (wParam == FLUXION_WINDOW_RESIZE_TIMER_ID && s_slots[index].drawWhileResizing != NULL && !s_slots[index].drawing)
+            {
+                s_slots[index].drawing = true;
+                s_slots[index].drawWhileResizing(event.window, s_slots[index].drawWhileResizingUserData);
+                s_slots[index].drawing = false;
+            }
             return 0;
 
         case WM_SIZE:
@@ -404,6 +443,14 @@ FluxionNativeWindowHandle Fluxion_Window_GetNativeHandle(FluxionWindowHandle han
     FluxionNativeWindowHandle native;
     native.value = slot ? (void*)slot->hwnd : NULL;
     return native;
+}
+
+void Fluxion_Window_SetDrawWhileResizing(FluxionWindowHandle handle, FluxionWindowDrawFrameFn callback, void* userData)
+{
+    FluxionWindowSlot* slot = Fluxion_ResolveSlot(handle);
+    if (!slot) return;
+    slot->drawWhileResizing = callback;
+    slot->drawWhileResizingUserData = userData;
 }
 
 void* Fluxion_WindowSystem_GetNativeDisplayHandle(void)

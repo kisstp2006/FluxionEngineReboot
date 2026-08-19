@@ -493,6 +493,7 @@ static const FluxionRHIBackendVTable s_openglVTable = {
     Fluxion_RHIOpenGL_DestroyTexture,
     Fluxion_RHIOpenGL_CreateTextureView,
     Fluxion_RHIOpenGL_DestroyTextureView,
+    Fluxion_RHIOpenGL_GetTextureViewTexture,
     Fluxion_RHIOpenGL_CreateSampler,
     Fluxion_RHIOpenGL_DestroySampler,
 

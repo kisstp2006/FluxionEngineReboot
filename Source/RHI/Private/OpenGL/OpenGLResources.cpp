@@ -254,7 +254,7 @@ void Fluxion_RHIOpenGL_DestroyTexture(FluxionRHITextureHandle texture)
         return;
     }
     FluxionRHIOpenGLTexture* textureState = &s_textures[texture.index];
-    if (textureState->name != 0 && !textureState->isDefaultFramebufferSentinel)
+    if (textureState->name != 0 && !textureState->isSwapchainImage)
     {
         Fluxion_RHIOpenGL_BindingCacheForgetTexture(textureState->name);
         glDeleteTextures(1, &textureState->name);
@@ -263,19 +263,68 @@ void Fluxion_RHIOpenGL_DestroyTexture(FluxionRHITextureHandle texture)
     Fluxion_RHIOpenGL_PoolFree(s_textureSlots, FLUXION_RHI_OPENGL_MAX_TEXTURES, texture.index, texture.generation);
 }
 
-bool Fluxion_RHIOpenGL_AllocateSentinelTextureSlot(FluxionRHITextureHandle* outHandle)
+// One level, no array: the window's picture, as ordinary a texture as any
+// other so that every path that renders into one works on it unchanged.
+static void Fluxion_RHIOpenGL_AllocateSwapchainStorage(FluxionRHIOpenGLTexture* textureState, u32 width, u32 height)
 {
+    textureState->target = GL_TEXTURE_2D;
+    textureState->width = width;
+    textureState->height = height;
+    textureState->depth = 1;
+    textureState->mipLevels = 1;
+    textureState->arrayLayers = 1;
+
+    glCreateTextures(GL_TEXTURE_2D, 1, &textureState->name);
+    glTextureStorage2D(textureState->name, 1, Fluxion_RHIOpenGL_MapSizedInternalFormat(textureState->format), (GLsizei)width, (GLsizei)height);
+    Fluxion_RHIOpenGL_LabelObject(GL_TEXTURE, textureState->name, "Swapchain.Image");
+}
+
+bool Fluxion_RHIOpenGL_CreateSwapchainTexture(u32 width, u32 height, FluxionRHIFormat format, FluxionRHITextureHandle* outHandle)
+{
+    if (outHandle == nullptr || width == 0 || height == 0) return false;
+
     u32 index, generation;
     if (!Fluxion_RHIOpenGL_PoolAllocate(s_textureSlots, FLUXION_RHI_OPENGL_MAX_TEXTURES, &index, &generation)) return false;
+
     s_textures[index] = FluxionRHIOpenGLTexture{};
-    s_textures[index].isDefaultFramebufferSentinel = true;
+    s_textures[index].format = format;
+    s_textures[index].isSwapchainImage = true;
+    Fluxion_RHIOpenGL_AllocateSwapchainStorage(&s_textures[index], width, height);
+
     outHandle->index = index;
     outHandle->generation = generation;
     return true;
 }
 
-void Fluxion_RHIOpenGL_FreeTextureSlotDirect(FluxionRHITextureHandle handle)
+bool Fluxion_RHIOpenGL_ResizeSwapchainTexture(FluxionRHITextureHandle handle, u32 width, u32 height)
 {
+    FluxionRHIOpenGLTexture* textureState = Fluxion_RHIOpenGL_ResolveTexture(handle);
+    if (textureState == nullptr || !textureState->isSwapchainImage || width == 0 || height == 0) return false;
+    if (textureState->width == width && textureState->height == height) return true;
+
+    // Storage allocated once cannot be resized, so the name goes with it
+    // -- and the cache is told, because GL hands freed names straight back
+    // out and a cache that still holds one skips the next bind of it.
+    if (textureState->name != 0)
+    {
+        Fluxion_RHIOpenGL_BindingCacheForgetTexture(textureState->name);
+        glDeleteTextures(1, &textureState->name);
+        textureState->name = 0;
+    }
+
+    Fluxion_RHIOpenGL_AllocateSwapchainStorage(textureState, width, height);
+    return true;
+}
+
+void Fluxion_RHIOpenGL_DestroySwapchainTexture(FluxionRHITextureHandle handle)
+{
+    FluxionRHIOpenGLTexture* textureState = Fluxion_RHIOpenGL_ResolveTexture(handle);
+    if (textureState != nullptr && textureState->name != 0)
+    {
+        Fluxion_RHIOpenGL_BindingCacheForgetTexture(textureState->name);
+        glDeleteTextures(1, &textureState->name);
+    }
+    if (textureState != nullptr) *textureState = FluxionRHIOpenGLTexture{};
     Fluxion_RHIOpenGL_PoolFree(s_textureSlots, FLUXION_RHI_OPENGL_MAX_TEXTURES, handle.index, handle.generation);
 }
 
@@ -306,16 +355,6 @@ FluxionRHITextureViewHandle Fluxion_RHIOpenGL_CreateTextureView(FluxionRHIDevice
     *viewState = FluxionRHIOpenGLTextureView{};
     viewState->texture = desc->texture;
 
-    if (textureState->isDefaultFramebufferSentinel)
-    {
-        // The default-framebuffer sentinel has no real GL texture object
-        // -- its view is likewise a sentinel,
-        // recognized the same way by CommandListBeginRendering.
-        viewState->name = 0;
-        viewState->target = 0;
-        viewState->ownsName = false;
-    }
-    else
     {
         // A whole-resource, same-format view is just the owning texture's
         // own name -- glTextureView is only used for the general case
@@ -335,7 +374,13 @@ FluxionRHITextureViewHandle Fluxion_RHIOpenGL_CreateTextureView(FluxionRHIDevice
         else
         {
             GLuint viewName = 0;
-            glCreateTextures(textureState->target, 1, &viewName); // glTextureView requires a pre-created (unstorage'd) name
+
+            // GENERATED, NOT CREATED. The newer call gives the name its
+            // target there and then, and a name that already has one is
+            // exactly what glTextureView refuses -- measured, as an
+            // invalid-operation the first time anything asked for a view
+            // of a single mip level.
+            glGenTextures(1, &viewName);
             GLenum internalFormat = Fluxion_RHIOpenGL_MapSizedInternalFormat(desc->format != FLUXION_RHI_FORMAT_UNKNOWN ? desc->format : textureState->format);
             u32 mipCount = desc->mipLevelCount > 0 ? desc->mipLevelCount : (textureState->mipLevels - desc->baseMipLevel);
             u32 layerCount = desc->arrayLayerCount > 0 ? desc->arrayLayerCount : (textureState->arrayLayers - desc->baseArrayLayer);
@@ -350,6 +395,14 @@ FluxionRHITextureViewHandle Fluxion_RHIOpenGL_CreateTextureView(FluxionRHIDevice
     handle.index = index;
     handle.generation = generation;
     return handle;
+}
+
+// Which texture this view is of -- see Fluxion_RHI_GetTextureViewTexture.
+FluxionRHITextureHandle Fluxion_RHIOpenGL_GetTextureViewTexture(FluxionRHITextureViewHandle view)
+{
+    FluxionRHITextureHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    const FluxionRHIOpenGLTextureView* viewState = Fluxion_RHIOpenGL_ResolveTextureView(view);
+    return viewState != nullptr ? viewState->texture : invalid;
 }
 
 void Fluxion_RHIOpenGL_DestroyTextureView(FluxionRHITextureViewHandle view)

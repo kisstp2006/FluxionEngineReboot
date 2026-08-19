@@ -515,7 +515,7 @@ Rgb RenderOne(TestContext* ctx, LightingRig& rig, const Configuration& configura
     Fluxion_Renderer_EndFrame(rig.renderer, cmd);
 
     FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
-    FluxionRHIBarrier toSource = { rig.color, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE };
+    FluxionRHIBarrier toSource = { rig.color, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(cmd, &toSource, 1);
     Fluxion_RHI_CommandList_CopyTextureToBuffer(cmd, rig.color, 0, 0, rig.readback, 0);
     Fluxion_RHI_CommandList_End(cmd);
@@ -1170,7 +1170,7 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
 
         FluxionRHIBufferHandle noBuffer = Fluxion::Foundation::NoHandle<FluxionRHIBufferHandle>();
         FluxionRHIBarrier toCopy = { skyTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED,
-                                     FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION };
+                                     FLUXION_RHI_RESOURCE_STATE_COPY_DESTINATION, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(upload, &toCopy, 1);
         for (u32 face = 0; face < FLUXION_RHI_CUBE_FACE_COUNT; ++face)
         {
@@ -1442,7 +1442,7 @@ void RenderShadowScene(TestContext* ctx, LightingRig& rig, FluxionMeshBufferHand
     Fluxion_Renderer_EndFrame(rig.renderer, cmd);
 
     const FluxionRHIBufferHandle noBuffer = Fluxion::Foundation::NoHandle<FluxionRHIBufferHandle>();
-    FluxionRHIBarrier toSource = { rig.color, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE };
+    FluxionRHIBarrier toSource = { rig.color, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, 0, 0 };
     Fluxion_RHI_CommandList_Barrier(cmd, &toSource, 1);
     Fluxion_RHI_CommandList_CopyTextureToBuffer(cmd, rig.color, 0, 0, rig.readback, 0);
     Fluxion_RHI_CommandList_End(cmd);

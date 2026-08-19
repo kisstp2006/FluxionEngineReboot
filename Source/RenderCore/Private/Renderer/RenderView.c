@@ -60,6 +60,12 @@ typedef struct FluxionRenderViewRecord
 
     FluxionMat4 viewMatrix;
     FluxionMat4 projectionMatrix;
+
+    // The one the frame before this used, and whether anybody said so.
+    // Nobody saying means "the same as this frame", which reads as
+    // nothing having moved.
+    FluxionMat4 previousViewProjection;
+    bool hasPreviousViewProjection;
     FluxionViewport viewport;
     FluxionScissorRect scissor;
     FluxionRenderTargetHandle renderTarget;
@@ -664,6 +670,23 @@ void Fluxion_RenderView_Destroy(FluxionRenderViewHandle view)
     ++record->generation;
 }
 
+void Fluxion_RenderView_SetPreviousViewProjection(FluxionRenderViewHandle view, FluxionMat4 previousViewProjection)
+{
+    FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return;
+
+    record->previousViewProjection = previousViewProjection;
+    record->hasPreviousViewProjection = true;
+}
+
+FluxionMat4 Fluxion_RenderView_GetViewProjection(FluxionRenderViewHandle view)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return Fluxion_Mat4_Identity();
+
+    return Fluxion_Mat4_Multiply(record->projectionMatrix, record->viewMatrix);
+}
+
 void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
 {
     FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
@@ -711,6 +734,12 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
     // column-major. Before this lived here, every caller had to remember
     // it -- and the three callers had settled on three different answers,
     // each one working only on the inputs it happened to be given.
+    // The previous frame's, before this one is transposed away -- and
+    // this frame's own when nobody said otherwise, which is a frame
+    // where nothing has moved.
+    constants.previousViewProjection =
+        Fluxion_Mat4_Transposed(record->hasPreviousViewProjection ? record->previousViewProjection : constants.viewProjection);
+
     constants.viewProjection = Fluxion_Mat4_Transposed(constants.viewProjection);
     constants.inverseViewProjection = Fluxion_Mat4_Transposed(constants.inverseViewProjection);
 
@@ -1138,7 +1167,7 @@ void Fluxion_RenderView_UploadLighting(FluxionRenderViewHandle view, FluxionRHIC
         const FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
         FluxionRHIBarrier toTarget = { record->shadowAtlasTexture, noBuffer,
-                                       FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE };
+                                       FLUXION_RHI_RESOURCE_STATE_UNDEFINED, FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &toTarget, 1);
 
         FluxionRHIRenderingAttachment depthAttachment;
@@ -1157,7 +1186,7 @@ void Fluxion_RenderView_UploadLighting(FluxionRenderViewHandle view, FluxionRHIC
         Fluxion_RHI_CommandList_EndRendering(commandList);
 
         FluxionRHIBarrier toRead = { record->shadowAtlasTexture, noBuffer,
-                                     FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE, FLUXION_RHI_RESOURCE_STATE_SHADER_READ };
+                                     FLUXION_RHI_RESOURCE_STATE_DEPTH_WRITE, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 };
         Fluxion_RHI_CommandList_Barrier(commandList, &toRead, 1);
 
         record->shadowAtlasPrepared = true;

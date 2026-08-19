@@ -71,6 +71,9 @@ engine_add_test(
         Test_ComparisonSamplingGPU.cpp
         Test_ShadowPassGPU.cpp
         Test_GPUCullGPU.cpp
+        Test_MotionVectorGPU.cpp
+        Test_DepthPyramidGPU.cpp
+        Test_OcclusionCullGPU.cpp
         Test_Exposure.c
         Test_StandardMaterialCompiles.cpp
     DEPENDENCIES

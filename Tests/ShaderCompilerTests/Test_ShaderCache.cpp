@@ -243,12 +243,13 @@ void Test_ShaderCache_Run(TestContext& ctx)
             // laid out, which the reflection carries.
             //
             // The number has to be one the default is NOT, or this checks
-            // nothing: it once said 256, and the day the default became
-            // 256 this stopped being a different request at all and
-            // started failing -- correctly, which is the only reason it
-            // was noticed.
+            // nothing: it has now been overtaken twice -- it said 256 and
+            // the default became 256, then it said 512 and the default
+            // became 512. Both times this failed, correctly, which is the
+            // only reason either was noticed. So it is a number no budget
+            // would be chosen for: not a power of two, and not round.
             ArtifactRequest otherBudget = MakeRequest(ArtifactTarget::Glsl);
-            otherBudget.compile.irOptions.maxUniformBufferBytesPerGroup = 512;
+            otherBudget.compile.irOptions.maxUniformBufferBytesPerGroup = 336;
             missedAndCompiled(kSource, otherBudget);
 
             // The same source under a different name: the name reaches

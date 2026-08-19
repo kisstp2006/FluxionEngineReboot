@@ -79,6 +79,22 @@ bool  Fluxion_Platform_FileSeek(FluxionFile* file, i64 offset);
 bool  Fluxion_Platform_FileExists(const char* path);
 bool  Fluxion_Platform_FileDelete(const char* path);
 
+// PUTS `from` WHERE `to` IS, IN ONE STEP, replacing whatever was there.
+// False leaves both where they were.
+//
+// One step is the point. A file written in place does not exist as a
+// half-written file for a moment -- it exists as one for as long as the
+// write takes, and anything that reads it in that moment reads nonsense
+// that looks like data. Writing beside the target and then moving it
+// here means a reader sees the old file or the new one, never a mixture.
+//
+// Measured, before this existed: two copies of the same program running
+// at once, one rewriting the assets while the other's file watcher read
+// them back, produced an asset whose name was four bytes of rubbish --
+// and the program that read it shut itself down over a file that was
+// perfectly good a moment later.
+bool  Fluxion_Platform_FileReplace(const char* from, const char* to);
+
 // When a file was last written and how large it is, WITHOUT opening it
 // -- for noticing change. The time is in whatever unit the platform
 // keeps, comparable only with an earlier answer for the same file. Both

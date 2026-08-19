@@ -96,6 +96,27 @@ void Fluxion_Window_SetCursorVisible(FluxionWindowHandle handle, bool visible);
 
 FluxionNativeWindowHandle Fluxion_Window_GetNativeHandle(FluxionWindowHandle handle);
 
+// DRAWS ONE FRAME, called from inside the window itself.
+typedef void (*FluxionWindowDrawFrameFn)(FluxionWindowHandle window, void* userData);
+
+// A frame drawn while the user is dragging the window's edge.
+//
+// Dragging an edge starts a loop belonging to the windowing system, and
+// it does not end until the mouse is let go. A caller's own loop -- the
+// one that polls events and draws -- gets no turn in all that time, so
+// the picture stops dead and the window shows whatever it last had,
+// stretched. This is the turn it does not otherwise get: the window
+// calls back while the drag is happening, and what the callback draws is
+// what the user sees follow the mouse.
+//
+// Not every platform needs it. Where dragging does not take the loop
+// away, nothing calls this and the caller's own loop keeps drawing --
+// which is the same behaviour by a shorter road.
+//
+// The callback draws; it must NOT poll events, because the events are
+// what it is being called from the middle of.
+void Fluxion_Window_SetDrawWhileResizing(FluxionWindowHandle handle, FluxionWindowDrawFrameFn callback, void* userData);
+
 // A second native escape hatch, at the window-*system* level rather than
 // per-window: some native surface APIs (e.g. Vulkan's
 // vkCreateXlibSurfaceKHR) need the connection/display object a window

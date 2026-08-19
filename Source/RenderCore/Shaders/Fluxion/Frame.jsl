@@ -98,6 +98,11 @@
 // w: unused.
 [Uniform(Frame)] Vector4 shadowAtlasParams;
 
+// Where the camera was one frame ago. A point put through this lands
+// where it was on the screen then, which is the whole of a motion vector
+// and the whole of reprojection. See FluxionFrameConstants.
+[Uniform(Frame)] Matrix4x4 previousViewProjection;
+
 // One light, packed.
 //
 // Four vectors of four, with everything folded into their components by

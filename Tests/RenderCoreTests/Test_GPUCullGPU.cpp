@@ -248,8 +248,8 @@ bool RunOnce(TestContext* ctx, FluxionRHIDeviceHandle device, FluxionRHIQueueHan
     // Both buffers are left by Upload in the state the frame draws from,
     // so both are borrowed for a copy and handed straight back.
     FluxionRHIBarrier toSource[2] = {
-        { noTexture, Fluxion_GPUScene_GetVisibleBuffer(scene), FLUXION_RHI_RESOURCE_STATE_SHADER_READ, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE },
-        { noTexture, Fluxion_GPUScene_GetIndirectBuffer(scene), FLUXION_RHI_RESOURCE_STATE_COMMON, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE },
+        { noTexture, Fluxion_GPUScene_GetVisibleBuffer(scene), FLUXION_RHI_RESOURCE_STATE_SHADER_READ, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, 0, 0 },
+        { noTexture, Fluxion_GPUScene_GetIndirectBuffer(scene), FLUXION_RHI_RESOURCE_STATE_COMMON, FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, 0, 0 },
     };
     Fluxion_RHI_CommandList_Barrier(cmd, toSource, 2);
 
@@ -257,8 +257,8 @@ bool RunOnce(TestContext* ctx, FluxionRHIDeviceHandle device, FluxionRHIQueueHan
     Fluxion_RHI_CommandList_CopyBuffer(cmd, Fluxion_GPUScene_GetIndirectBuffer(scene), 0, readback, visibleBytes, commandBytes);
 
     FluxionRHIBarrier backAgain[2] = {
-        { noTexture, Fluxion_GPUScene_GetVisibleBuffer(scene), FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, FLUXION_RHI_RESOURCE_STATE_SHADER_READ },
-        { noTexture, Fluxion_GPUScene_GetIndirectBuffer(scene), FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, FLUXION_RHI_RESOURCE_STATE_COMMON },
+        { noTexture, Fluxion_GPUScene_GetVisibleBuffer(scene), FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 },
+        { noTexture, Fluxion_GPUScene_GetIndirectBuffer(scene), FLUXION_RHI_RESOURCE_STATE_COPY_SOURCE, FLUXION_RHI_RESOURCE_STATE_COMMON, 0, 0 },
     };
     Fluxion_RHI_CommandList_Barrier(cmd, backAgain, 2);
 

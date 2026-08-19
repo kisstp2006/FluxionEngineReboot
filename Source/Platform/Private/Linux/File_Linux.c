@@ -44,6 +44,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -125,6 +126,12 @@ bool Fluxion_Platform_FileExists(const char* path)
 bool Fluxion_Platform_FileDelete(const char* path)
 {
     return unlink(path) == 0;
+}
+
+bool Fluxion_Platform_FileReplace(const char* from, const char* to)
+{
+    if (from == NULL || to == NULL) return false;
+    return rename(from, to) == 0;
 }
 
 bool Fluxion_Platform_FileStat(const char* path, u64* outModifiedTime, u64* outSize)

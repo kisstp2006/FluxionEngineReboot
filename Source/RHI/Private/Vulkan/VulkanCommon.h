@@ -260,6 +260,7 @@ void Fluxion_RHIVulkan_FreeTextureSlotDirect(FluxionRHITextureHandle handle);
 
 FluxionRHITextureViewHandle Fluxion_RHIVulkan_CreateTextureView(FluxionRHIDeviceHandle device, const FluxionRHITextureViewDesc* desc);
 void Fluxion_RHIVulkan_DestroyTextureView(FluxionRHITextureViewHandle view);
+FluxionRHITextureHandle Fluxion_RHIVulkan_GetTextureViewTexture(FluxionRHITextureViewHandle view);
 FluxionRHIVulkanTextureView* Fluxion_RHIVulkan_ResolveTextureView(FluxionRHITextureViewHandle view);
 
 FluxionRHISamplerHandle Fluxion_RHIVulkan_CreateSampler(FluxionRHIDeviceHandle device, const FluxionRHISamplerDesc* desc);

@@ -591,6 +591,7 @@ static const FluxionRHIBackendVTable s_d3d12VTable = {
     Fluxion_RHID3D12_DestroyTexture,
     Fluxion_RHID3D12_CreateTextureView,
     Fluxion_RHID3D12_DestroyTextureView,
+    Fluxion_RHID3D12_GetTextureViewTexture,
     Fluxion_RHID3D12_CreateSampler,
     Fluxion_RHID3D12_DestroySampler,
 

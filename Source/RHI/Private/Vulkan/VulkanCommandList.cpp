@@ -648,7 +648,13 @@ void Fluxion_RHIVulkan_CommandListBarrier(FluxionRHICommandListHandle commandLis
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.image = texture->image;
-            barrier.subresourceRange = { (VkImageAspectFlags)(isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, texture->mipLevels, 0, texture->arrayLayers };
+            // The levels this barrier is about -- all of them unless the
+            // caller named some, which is what a mip chain being built
+            // needs. See FluxionRHIBarrier.
+            const uint32_t baseMip = barriers[i].mipLevelCount > 0 ? barriers[i].baseMipLevel : 0;
+            const uint32_t mipCount = barriers[i].mipLevelCount > 0 ? barriers[i].mipLevelCount : texture->mipLevels;
+
+            barrier.subresourceRange = { (VkImageAspectFlags)(isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), baseMip, mipCount, 0, texture->arrayLayers };
             imageBarriers[imageCount++] = barrier;
         }
         else if (FLUXION_HANDLE_IS_VALID(barriers[i].buffer))

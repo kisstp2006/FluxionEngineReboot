@@ -168,40 +168,6 @@ void Fluxion_RHIOpenGL_CommandListBeginRendering(FluxionRHICommandListHandle com
     FluxionRHIOpenGLDevice* deviceState = Fluxion_RHIOpenGL_SoleDevice();
     if (deviceState == nullptr) return;
 
-    // If the first color attachment is the default-framebuffer sentinel,
-    // this frame renders straight to FBO 0 -- no
-    // real GL framebuffer object is built.
-    bool usesDefaultFramebuffer = false;
-    if (desc->colorAttachmentCount > 0)
-    {
-        FluxionRHIOpenGLTextureView* view = Fluxion_RHIOpenGL_ResolveTextureView(desc->colorAttachments[0].view);
-        if (view != nullptr && view->name == 0)
-        {
-            FluxionRHIOpenGLTexture* texture = Fluxion_RHIOpenGL_ResolveTexture(view->texture);
-            usesDefaultFramebuffer = texture != nullptr && texture->isDefaultFramebufferSentinel;
-        }
-    }
-
-    if (usesDefaultFramebuffer)
-    {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        s_commandListState[commandList.index].currentFBO = 0;
-        if (desc->colorAttachments[0].clear)
-        {
-            const f32* c = desc->colorAttachments[0].clearColor;
-            glClearColor(c[0], c[1], c[2], c[3]);
-            GLbitfield clearBits = GL_COLOR_BUFFER_BIT;
-            if (desc->depthAttachment != nullptr && desc->depthAttachment->clear)
-            {
-                clearBits |= GL_DEPTH_BUFFER_BIT;
-                Fluxion_RHIOpenGL_AllowDepthClear(deviceState);
-            }
-            glClear(clearBits);
-        }
-        glViewport(0, 0, (GLsizei)desc->width, (GLsizei)desc->height);
-        return;
-    }
-
     GLuint fbo = 0;
     glCreateFramebuffers(1, &fbo);
 
@@ -649,7 +615,19 @@ void Fluxion_RHIOpenGL_QueueSubmit(FluxionRHIQueueHandle queue, const FluxionRHI
 struct FluxionRHIOpenGLSwapchain
 {
     FluxionWindowHandle window{};
-    FluxionRHITextureHandle sentinelTexture{};
+
+    // WHAT EVERY PASS DRAWS INTO, and what presenting copies onto the
+    // window. Not the window's own buffers: those cannot share a
+    // framebuffer with a texture here, and a pass that draws to them
+    // leaves the depth texture it named untouched.
+    FluxionRHITextureHandle colorTexture{};
+    FluxionRHIFormat format = FLUXION_RHI_FORMAT_UNKNOWN;
+
+    // Kept rather than made every frame: it is read from once per
+    // present, and its only attachment is a texture that changes just
+    // when the window is resized.
+    GLuint presentFBO = 0;
+    GLuint presentFBOTexture = 0;
 #if defined(_WIN32)
     HDC hdc = nullptr;
 #else
@@ -711,7 +689,8 @@ FluxionRHISwapchainHandle Fluxion_RHIOpenGL_CreateSwapchain(FluxionRHIDeviceHand
     }
 #endif
 
-    if (!Fluxion_RHIOpenGL_AllocateSentinelTextureSlot(&sc->sentinelTexture))
+    sc->format = desc->format;
+    if (!Fluxion_RHIOpenGL_CreateSwapchainTexture(sc->width, sc->height, sc->format, &sc->colorTexture))
     {
         Fluxion_RHIOpenGL_PoolFree(s_swapchainSlots, FLUXION_RHI_OPENGL_MAX_SWAPCHAINS, index, generation);
         return invalid;
@@ -731,7 +710,8 @@ void Fluxion_RHIOpenGL_DestroySwapchain(FluxionRHISwapchainHandle swapchain)
         return;
     }
     FluxionRHIOpenGLSwapchain* sc = &s_swapchains[swapchain.index];
-    Fluxion_RHIOpenGL_FreeTextureSlotDirect(sc->sentinelTexture);
+    if (sc->presentFBO != 0) glDeleteFramebuffers(1, &sc->presentFBO);
+    Fluxion_RHIOpenGL_DestroySwapchainTexture(sc->colorTexture);
 #if defined(_WIN32)
     if (sc->hdc != nullptr)
     {
@@ -747,6 +727,20 @@ u32 Fluxion_RHIOpenGL_SwapchainAcquireNextImage(FluxionRHISwapchainHandle swapch
 {
     FLUXION_UNUSED(signalSemaphore); // no real acquire semantics -- semaphores are no-op placeholders in this backend
     if (!Fluxion_RHIOpenGL_PoolIsValid(s_swapchainSlots, FLUXION_RHI_OPENGL_MAX_SWAPCHAINS, swapchain.index, swapchain.generation)) return 0;
+
+    // HERE, ONCE A FRAME, rather than where the size is asked for: this
+    // is the call that says a frame is about to be drawn, so it is the
+    // one moment where changing what it draws into is safe.
+    FluxionRHIOpenGLSwapchain* sc = &s_swapchains[swapchain.index];
+    u32 width = 0, height = 0;
+    Fluxion_Window_GetSize(sc->window, &width, &height);
+    if (width > 0 && height > 0)
+    {
+        sc->width = width;
+        sc->height = height;
+        Fluxion_RHIOpenGL_ResizeSwapchainTexture(sc->colorTexture, width, height);
+    }
+
     return 0; // WGL/GLX double-buffer automatically; there is only ever one logical "image"
 }
 
@@ -755,7 +749,7 @@ FluxionRHITextureHandle Fluxion_RHIOpenGL_SwapchainGetTexture(FluxionRHISwapchai
     FLUXION_UNUSED(imageIndex);
     FluxionRHITextureHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     if (!Fluxion_RHIOpenGL_PoolIsValid(s_swapchainSlots, FLUXION_RHI_OPENGL_MAX_SWAPCHAINS, swapchain.index, swapchain.generation)) return invalid;
-    return s_swapchains[swapchain.index].sentinelTexture;
+    return s_swapchains[swapchain.index].colorTexture;
 }
 
 void Fluxion_RHIOpenGL_SwapchainPresent(FluxionRHISwapchainHandle swapchain, u32 imageIndex, FluxionRHISemaphoreHandle waitSemaphore)
@@ -768,6 +762,32 @@ void Fluxion_RHIOpenGL_SwapchainPresent(FluxionRHISwapchainHandle swapchain, u32
         return;
     }
     FluxionRHIOpenGLSwapchain* sc = &s_swapchains[swapchain.index];
+
+    // THE COPY THAT PUTS THE FRAME ON THE SCREEN. Both sides are the same
+    // size and the same way up -- the window's buffers and a texture
+    // rendered here both start at the bottom row -- so this is a straight
+    // copy with nothing to decide.
+    FluxionRHIOpenGLTexture* image = Fluxion_RHIOpenGL_ResolveTexture(sc->colorTexture);
+    if (image != nullptr && image->name != 0)
+    {
+        if (sc->presentFBO == 0) glCreateFramebuffers(1, &sc->presentFBO);
+        if (sc->presentFBOTexture != image->name)
+        {
+            glNamedFramebufferTexture(sc->presentFBO, GL_COLOR_ATTACHMENT0, image->name, 0);
+            glNamedFramebufferReadBuffer(sc->presentFBO, GL_COLOR_ATTACHMENT0);
+            sc->presentFBOTexture = image->name;
+        }
+
+        // A copy is clipped by the scissor the way a draw is, and the
+        // pass that ran last is under no obligation to have left it off.
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, sc->presentFBO);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, (GLint)image->width, (GLint)image->height, 0, 0, (GLint)image->width, (GLint)image->height,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
 #if defined(_WIN32)
     if (sc->hdc != nullptr) SwapBuffers(sc->hdc);
 #else

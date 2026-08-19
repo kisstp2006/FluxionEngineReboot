@@ -187,7 +187,7 @@ extern "C" void FluxionRendererInternal_Irradiance_Project(FluxionRenderer* rend
 
     // Into a state a compute shader may write. What it was before is
     // whatever last read it -- on the first pass, nothing at all.
-    FluxionRHIBarrier toWrite;
+    FluxionRHIBarrier toWrite{};
     toWrite.texture = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     toWrite.buffer = target;
     toWrite.before = FLUXION_RHI_RESOURCE_STATE_UNDEFINED;

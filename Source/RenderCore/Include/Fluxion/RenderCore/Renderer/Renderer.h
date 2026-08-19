@@ -175,6 +175,44 @@ u32 Fluxion_Renderer_GetLastDrawCallCount(FluxionRendererHandle renderer);
 // draw-call count of one.
 u32 Fluxion_Renderer_GetVisibleObjectCount(FluxionRendererHandle renderer);
 
+// --- What survives from one frame to the next -----------------------------
+//
+// A renderer keeps the frame before this one: where every pixel was (the
+// motion vectors), and in time what it could see. Everything temporal --
+// reprojection, anti-aliasing that accumulates, reflections that reuse
+// last frame's colour -- reads from there.
+
+// Whether last frame's contents may be read at all this frame. False on
+// the first frame and after the frame changes size.
+bool Fluxion_Renderer_IsHistoryValid(FluxionRendererHandle renderer);
+
+// SAY SO WHEN THE CAMERA DID NOT MOVE BUT JUMPED -- a cut, a teleport, a
+// level load. There is nothing behind a reprojection then, and no
+// threshold in metres can tell a jump from a fast pan, so the engine does
+// not guess: whoever moved the camera knows.
+void Fluxion_Renderer_InvalidateHistory(FluxionRendererHandle renderer);
+
+// Where each pixel of this frame was on the screen in the frame before
+// it, as a texture a later pass samples: two signed channels, in the
+// coordinates a texture is read by. Invalid until a frame has been begun.
+FluxionRHITextureViewHandle Fluxion_Renderer_GetMotionVectorView(FluxionRendererHandle renderer);
+
+// The same thing as a texture, which is what a render graph binds to the
+// name a pass writes ("MotionVectorPass.Motion"). Made at the first
+// Fluxion_Renderer_BeginFrame and remade whenever the frame changes size.
+FluxionRHITextureHandle Fluxion_Renderer_GetMotionVectorTexture(FluxionRendererHandle renderer);
+
+// The frame's depth, halved again and again -- every texel of every level
+// the CLOSEST depth of what it covers. What a render graph binds to
+// "DepthPyramidPass.Pyramid", and what the occlusion culling reads.
+//
+// THE PASS THAT FILLS IT SAMPLES THE FRAME'S DEPTH, so the depth texture
+// a caller provides has to have been made with SAMPLED usage. Without it
+// the frame has no pyramid and nothing is culled by what stands in front
+// of it -- which is slower, and not wrong.
+FluxionRHITextureHandle Fluxion_Renderer_GetDepthPyramidTexture(FluxionRendererHandle renderer);
+u32 Fluxion_Renderer_GetDepthPyramidLevelCount(FluxionRendererHandle renderer);
+
 // --- Where the culling happens --------------------------------------------
 //
 // Not a rendering decision the renderer makes on its own: a pipeline

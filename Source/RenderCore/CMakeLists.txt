@@ -63,6 +63,10 @@ engine_embed_shader_library(
         Fluxion/Pass/Vertex.jsl
         Fluxion/Pass/GPUCull.jsl
         Fluxion/Pass/IrradianceProject.jsl
+        Fluxion/Pass/FullscreenVertex.jsl
+        Fluxion/Pass/DepthPyramid.jsl
+        Fluxion/Pass/MotionVector.jsl
+        Fluxion/Pass/MotionVectorWrite.jsl
         Fluxion/Pass/ShadowDepth.jsl
         Fluxion/Pass/ShadowDepthWrite.jsl
         Fluxion/Pass/SpecularPrefilter.jsl

@@ -101,6 +101,7 @@ typedef struct FluxionRHIBackendVTable
     void (*DestroyTexture)(FluxionRHITextureHandle texture);
     FluxionRHITextureViewHandle (*CreateTextureView)(FluxionRHIDeviceHandle device, const FluxionRHITextureViewDesc* desc);
     void (*DestroyTextureView)(FluxionRHITextureViewHandle view);
+    FluxionRHITextureHandle (*GetTextureViewTexture)(FluxionRHITextureViewHandle view);
     FluxionRHISamplerHandle (*CreateSampler)(FluxionRHIDeviceHandle device, const FluxionRHISamplerDesc* desc);
     void (*DestroySampler)(FluxionRHISamplerHandle sampler);
 

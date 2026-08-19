@@ -180,6 +180,8 @@ void Test_D3D12Backend_Run(TestContext* ctx)
     Fluxion_RHI_CommandList_CopyBuffer(commandList, stagingBuffer, 0, gpuBuffer, 0, 256);
 
     FluxionRHIBarrier barrier;
+
+    memset(&barrier, 0, sizeof(barrier));
     FluxionRHITextureHandle invalidTexture = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     barrier.texture = invalidTexture;
     barrier.buffer = gpuBuffer;

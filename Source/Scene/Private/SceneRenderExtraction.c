@@ -265,6 +265,12 @@ bool Fluxion_Scene_ExtractRenderWorld(FluxionSceneHandle scene, f32 aspect, Flux
             }
 
             object.transform = transforms[i].worldMatrix;
+
+            // Kept by the transform update itself, one step behind for
+            // every object whether it moved or not -- so a thing that
+            // stopped reports no motion rather than the motion it had
+            // two steps ago. See FluxionTransform.
+            object.previousTransform = transforms[i].previousWorldMatrix;
             object.layerMask = renderers[i].layerMask != 0 ? renderers[i].layerMask : 0xFFFFFFFFu;
 
             // WHICH LEVEL OF DETAIL, decided here and nowhere else.
