@@ -94,12 +94,12 @@ namespace
 constexpr u32 kWidth = 64;
 constexpr u32 kHeight = 64;
 
-// The square covers the middle quarter of the frame: x and y from 16 to
-// 48. What is read back afterwards is well outside it.
-constexpr u32 kInsideX = 32;
-constexpr u32 kInsideY = 32;
-constexpr u32 kBesideX = 8;
-constexpr u32 kBesideY = 32;
+// The square is a quarter of the frame wide and sits off the middle
+// vertically. WHICH ROW that lands on is not something this test decides:
+// a texture's first row is the top of the picture on one backend and the
+// bottom on another, so the square is FOUND rather than assumed, and
+// everything after that is measured relative to where it actually is.
+constexpr u32 kColumn = 32;
 
 // How bright the square is, in the units everything before the camera is
 // in. Far above the threshold the first two frames use, and far below the
@@ -184,12 +184,18 @@ FluxionMat4 TranslationOf(f32 x, f32 y, f32 z)
     return m;
 }
 
-// A quarter of the screen, in the plane the camera looks at.
+// A quarter of the screen wide, and DELIBERATELY OFF THE MIDDLE.
+//
+// A square in the centre is its own mirror image, and a chain that turned
+// the glow upside down would put it back exactly where it belonged --
+// which is how a whole backend's worth of that fault went unnoticed until
+// somebody looked at a picture and saw a floor in the sky. Off-centre,
+// the glow has a side it belongs on.
 const BloomVertex kQuad[4] = {
-    { { -0.25f, -0.25f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } },
-    { { 0.25f, -0.25f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
-    { { 0.25f, 0.25f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
-    { { -0.25f, 0.25f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+    { { -0.25f, 0.15f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } },
+    { { 0.25f, 0.15f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
+    { { 0.25f, 0.65f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+    { { -0.25f, 0.65f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
 };
 
 const u16 kQuadIndices[6] = { 0, 1, 2, 0, 2, 3 };
@@ -349,6 +355,22 @@ f32 Brightness(const std::vector<f32>& pixels, u32 x, u32 y)
     return (pixels[at] + pixels[at + 1] + pixels[at + 2]) / 3.0f;
 }
 
+// The rows the square covers, down one column of the picture. Found by
+// looking, because which end of the texture the top of the frame is at
+// differs between backends -- and a test that assumed one of them would
+// pass on that backend and be meaningless on the other.
+bool FindSquareRows(const std::vector<f32>& pixels, u32* outFirst, u32* outLast)
+{
+    bool found = false;
+    for (u32 y = 0; y < kHeight; ++y)
+    {
+        if (Brightness(pixels, kColumn, y) <= kEmissive * 0.5f) continue;
+        if (!found) { *outFirst = y; found = true; }
+        *outLast = y;
+    }
+    return found;
+}
+
 void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char* backendName)
 {
     if (!Fluxion_RHI_IsBackendAvailable(backend)) return;
@@ -437,7 +459,7 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
     meshDesc.vertexLayout.attributes[3].offset = offsetof(BloomVertex, uv);
     meshDesc.vertexLayout.attributeCount = 4;
     meshDesc.vertexLayout.stride = sizeof(BloomVertex);
-    meshDesc.bounds = FluxionAABB{ FluxionVec3{ -0.25f, -0.25f, 0.0f }, FluxionVec3{ 0.25f, 0.25f, 0.0f } };
+    meshDesc.bounds = FluxionAABB{ FluxionVec3{ -0.25f, 0.15f, 0.0f }, FluxionVec3{ 0.25f, 0.65f, 0.0f } };
     meshDesc.debugName = "BloomGPU.Quad";
     FluxionMeshBufferHandle mesh = Fluxion_MeshBuffer_Create(device, queue, &meshDesc);
 
@@ -513,31 +535,71 @@ void CheckOnBackend(TestContext* ctx, FluxionRHIBackendType backend, const char*
 
     if (ok)
     {
-        const f32 besideWithout = Brightness(withoutGlow, kBesideX, kBesideY);
-        const f32 besideWith = Brightness(withGlow, kBesideX, kBesideY);
-        const f32 besideAbove = Brightness(aboveThreshold, kBesideX, kBesideY);
-        const f32 insideWithout = Brightness(withoutGlow, kInsideX, kInsideY);
+        u32 squareFirst = 0;
+        u32 squareLast = 0;
+        const bool foundSquare = FindSquareRows(withoutGlow, &squareFirst, &squareLast);
+        TEST_CHECK(ctx, foundSquare);
 
-        FLUXION_LOG_INFO("RenderCoreTests",
-                         "%s: the square holds %.2f; a pixel beside it reads %.4f with no glow, %.4f with it, and %.4f once the "
-                         "threshold is above what the square emits.",
-                         backendName, (f64)insideWithout, (f64)besideWithout, (f64)besideWith, (f64)besideAbove);
+        if (foundSquare)
+        {
+            // A ROW JUST PAST THE SQUARE, and the row where the square
+            // WOULD be if the chain had turned the picture over.
+            //
+            // A glow reaches both sides -- it is wider than the square
+            // that made it -- so "the other side is dark" is not the
+            // question. The question is whether it is strongest NEAR the
+            // thing that emitted it. A chain that mirrored somewhere puts
+            // the peak at the reflection instead, which is what a floor
+            // appearing in the sky looks like from a pixel's point of
+            // view.
+            const u32 gap = 3;
+            const i32 nearRow = (i32)squareLast + (i32)gap;
+            const i32 mirroredRow = (i32)kHeight - 1 - (i32)((squareFirst + squareLast) / 2u);
 
-        // THE SQUARE IS THERE AT ALL. Everything below is about a pixel
-        // beside it, and all of it would pass on an empty picture.
-        TEST_CHECK(ctx, insideWithout > kEmissive * 0.5f);
+            TEST_CHECK(ctx, nearRow < (i32)kHeight && mirroredRow >= 0);
 
-        // AND NOTHING IS BESIDE IT UNTIL THE GLOW PUTS IT THERE.
-        TEST_CHECK(ctx, besideWithout < 0.01f);
+            if (nearRow < (i32)kHeight && mirroredRow >= 0)
+            {
+                const f32 insideWithout = Brightness(withoutGlow, kColumn, (squareFirst + squareLast) / 2u);
+                const f32 nearWithout = Brightness(withoutGlow, kColumn, (u32)nearRow);
+                const f32 nearWith = Brightness(withGlow, kColumn, (u32)nearRow);
+                const f32 nearAbove = Brightness(aboveThreshold, kColumn, (u32)nearRow);
+                const f32 mirroredWith = Brightness(withGlow, kColumn, (u32)mirroredRow);
 
-        // WHICH IS THE WHOLE POINT: light landing where the thing that
-        // emitted it is not.
-        TEST_CHECK(ctx, besideWith > besideWithout + 0.01f);
+                FLUXION_LOG_INFO("RenderCoreTests",
+                                 "%s: the square holds %.2f over rows %u..%u; three rows past it reads %.4f with no glow, "
+                                 "%.4f with it, and %.4f once the threshold is above the square. Where its reflection "
+                                 "would be: %.4f.",
+                                 backendName, (f64)insideWithout, squareFirst, squareLast, (f64)nearWithout, (f64)nearWith,
+                                 (f64)nearAbove, (f64)mirroredWith);
 
-        // AND IT IS THE SQUARE'S LIGHT, not a constant this pass adds:
-        // raised above what the square emits, the threshold leaves the
-        // picture as it was.
-        TEST_CHECK(ctx, besideAbove < besideWithout + 0.01f);
+                // THE SQUARE IS THERE AT ALL. Everything below is about
+                // pixels beside it, and all of it would pass on an empty
+                // picture.
+                TEST_CHECK(ctx, insideWithout > kEmissive * 0.5f);
+
+                // AND NOTHING IS BESIDE IT UNTIL THE GLOW PUTS IT THERE.
+                TEST_CHECK(ctx, nearWithout < 0.01f);
+
+                // WHICH IS THE WHOLE POINT: light landing where the thing
+                // that emitted it is not.
+                TEST_CHECK(ctx, nearWith > nearWithout + 0.01f);
+
+                // AND IT IS STRONGEST NEXT TO WHAT MADE IT. Where the
+                // square's reflection would be, the glow must be weaker --
+                // a chain that turned the picture over somewhere puts the
+                // peak there instead, which is a fault that costs a whole
+                // backend its picture and that a square in the MIDDLE of
+                // the frame cannot see at all, because the middle is its
+                // own reflection.
+                TEST_CHECK(ctx, nearWith > mirroredWith * 1.5f);
+
+                // AND IT IS THE SQUARE'S LIGHT, not a constant this pass
+                // adds: raised above what the square emits, the threshold
+                // leaves the picture as it was.
+                TEST_CHECK(ctx, nearAbove < nearWithout + 0.01f);
+            }
+        }
     }
 
     Fluxion_Renderer_Destroy(renderer);

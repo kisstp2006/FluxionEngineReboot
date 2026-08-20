@@ -223,6 +223,12 @@ u32 Fluxion_Renderer_GetDepthPyramidLevelCount(FluxionRendererHandle renderer);
 // eight-bit screen is not a worse picture, it is no picture: a pipeline
 // cannot write into a target it was not built for.
 //
+// AND THE SAME IS TRUE TURNING IT OFF. Pipelines built for the scene's
+// sixteen-bit target cannot write into the caller's screen either, so
+// this is not a switch to put in front of a person at run time unless
+// the application has built BOTH -- it is a decision about what a frame
+// is made of, taken once, before anything that draws the scene exists.
+//
 // What it buys is everything that reads the picture as light rather than
 // as a colour: what glows and by how much, how bright the frame is on
 // average, what a reflection carries. None of that can be read once the

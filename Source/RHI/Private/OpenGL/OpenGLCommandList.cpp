@@ -688,6 +688,9 @@ FluxionRHISwapchainHandle Fluxion_RHIOpenGL_CreateSwapchain(FluxionRHIDeviceHand
     }
 #endif
 
+    // The drawable is current now, which is what this belongs to.
+    Fluxion_RHIOpenGL_SetSwapInterval(desc->vsync);
+
     sc->format = desc->format;
     if (!Fluxion_RHIOpenGL_CreateSwapchainTexture(sc->width, sc->height, sc->format, &sc->colorTexture))
     {

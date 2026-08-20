@@ -110,6 +110,20 @@ carry. Adding a dependency means adding a row here *and* an entry there — see
 | [D3D12MemoryAllocator (D3D12MA)](https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator) | GPU memory sub-allocation in the D3D12 RHI backend | [MIT](LICENSES/MIT.txt) |
 | The Khronos Group `glcorearb.h` / `wglext.h` / `glxext.h` | GL 1.2+ and WGL/GLX extension declarations in the OpenGL RHI backend | [MIT](LICENSES/MIT.txt) |
 | The Khronos Group `khrplatform.h` | Fixed-width types the GL headers are declared in terms of | [MIT wording variant](LICENSES/LicenseRef-Khronos-MIT-Materials.txt) |
+| [Nuklear](https://github.com/Immediate-Mode-UI/Nuklear) | The developer panels behind `Fluxion::DebugUI` — sliders and switches for turning a number while watching what it does | [MIT](LICENSES/MIT.txt), or public domain, at the user's choice |
+
+Nuklear offers two alternatives and this repository takes **MIT**: its MIT text
+is `LICENSES/MIT.txt` word for word under Micha Mettke's copyright line, while
+its public-domain alternative is the Unlicense text with the closing pointer to
+<http://unlicense.org/> left off — near enough to be the same offer, not near
+enough to be the same file. Taking the alternative whose text is already here
+means nothing new has to be shipped for it.
+
+`nuklear.h` also **embeds** Sean Barrett's `stb_rect_pack` and `stb_truetype`,
+each carrying the same two alternatives under their own copyright line. They
+are what bakes the panels' font, so they are compiled, not merely present —
+there are three such notices inside that one file and all three are reproduced
+in [`ThirdParty/nuklear/LICENSE`](ThirdParty/nuklear/LICENSE).
 
 The two Khronos rows are split because the files do not agree with each other:
 the three generated headers carry `SPDX-License-Identifier: MIT`, while the

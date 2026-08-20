@@ -723,6 +723,12 @@ static bool FluxionBloom_Build(FluxionRenderer* renderer, FluxionRHICommandListH
         uniform.step.x = 1.0f / (f32)sourceWidth;
         uniform.step.y = 1.0f / (f32)sourceHeight;
         uniform.step.z = (step == 0) ? 1.0f : 0.0f;
+
+        // Which way this backend's rows run -- the same answer the
+        // resolve is given, for the same reason, and every step of the
+        // chain needs it rather than just the first.
+        uniform.step.w = Fluxion_RHI_GetDeviceBackendType(renderer->device) == FLUXION_RHI_BACKEND_OPENGL ? 1.0f : 0.0f;
+
         uniform.curve = curve;
 
         memcpy(uniforms + (usize)step * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE, &uniform, sizeof(uniform));

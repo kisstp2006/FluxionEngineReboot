@@ -642,6 +642,13 @@ typedef struct FluxionRHISwapchainDesc
     u32 height;
     FluxionRHIFormat format;
     u32 bufferCount; // frames-in-flight, e.g. 2 or 3
+
+    // Hold each presented frame until the display has shown it. A REQUEST
+    // RATHER THAN A GUARANTEE: on OpenGL it goes through an extension no
+    // core version includes, and a driver without it -- or a system-wide
+    // setting that overrides the application -- presents at whatever rate
+    // it likes. A caller measuring frame times should measure them, not
+    // infer them from this field.
     bool vsync;
 } FluxionRHISwapchainDesc;
 

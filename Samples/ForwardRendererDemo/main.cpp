@@ -98,6 +98,7 @@
 #include <Fluxion/Script/Script.hpp>
 #include <Fluxion/ShaderCompiler/Backends/DXC/DXCAdapter.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -1676,6 +1677,22 @@ int main(int argc, char** argv)
     bool running = true;
     u32 frameIndex = 0;
 
+    // THE VIEW OUTLIVES THE FRAME, and that is not a detail.
+    //
+    // A view owns a shadow atlas, a prefiltered environment chain, a
+    // lookup table and the bind groups naming them -- megabytes of device
+    // memory that have nothing to do with where the camera is standing.
+    // Building one per frame allocated and freed all of it to move a
+    // matrix, and made the sample stutter: measured here, seventeen and a
+    // half milliseconds of GPU time and eleven of processor time a frame,
+    // against about one for everything the frame actually draws.
+    //
+    // It also cost the picture its lighting. The environment is worked
+    // out once per view and kept until the sky changes -- so a view that
+    // was new every frame had it worked out every frame, which is where
+    // those seventeen milliseconds went.
+    FluxionRenderViewHandle frameView = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+
     // Said once, not once a frame.
     bool reportedTooManyLights = false;
 
@@ -1714,7 +1731,6 @@ int main(int argc, char** argv)
     // engine keeps a copy. The first two start from what the pipeline
     // asked for and can then be turned off by hand -- which is the whole
     // reason to have a panel at all.
-    bool uiPostProcess = true;
     bool uiBloom = true;
     f32 uiBloomIntensity = 0.5f;
     f32 uiBloomThreshold = 0.0f; // filled from the exposure on the first frame
@@ -1747,6 +1763,7 @@ int main(int argc, char** argv)
         Fluxion_Input_BeginFrame();
 
         Fluxion_WindowSystem_PollEvents();
+
 
         // THE TOP OF THE FRAME, AND NOT LATER. This does two things: it
         // hands what a worker decoded to the device this thread owns, and
@@ -2079,14 +2096,29 @@ int main(int argc, char** argv)
         // between two of them.
         Fluxion_RenderPipelineAsset_ApplyToRenderer(pipelineAsset, renderer);
 
-        // AND THE PANEL AFTER IT. The pipeline asset is what a shipped
-        // build would go by; the panel is somebody sitting in front of it
-        // turning things off to see what they cost. Whoever speaks last
-        // wins, and while a panel is open that is the person.
-        Fluxion_Renderer_SetPostProcessEnabled(renderer, uiPostProcess);
-        Fluxion_Renderer_SetBloomEnabled(renderer, uiBloom && uiPostProcess);
+        // AND THE PANEL AFTER IT, for the parts a person may turn off
+        // while watching. The pipeline asset is what a shipped build
+        // would go by; the panel is somebody sitting in front of it.
+        //
+        // THE CHAIN ITSELF IS NOT ONE OF THOSE PARTS. Every pipeline in
+        // this sample -- every material included -- was built for the
+        // target the chain puts the scene in, and a pipeline cannot write
+        // into a different one. Switching the chain off here would not
+        // dim the picture, it would end it. What a panel can honestly
+        // offer is what the chain DOES, one effect at a time.
+        Fluxion_Renderer_SetBloomEnabled(renderer, uiBloom);
 
-        FluxionRenderViewHandle frameView = Fluxion_RenderView_Create(device, &viewDesc);
+        // The living view is told this frame's description. It refuses
+        // only when the description asks for a shadow atlas of a size it
+        // was not built with -- which is what switching pipelines does,
+        // and the one case that genuinely needs a new view.
+        // The first frame has no view yet, which is the same branch: the
+        // update refuses a handle that names nothing.
+        if (!Fluxion_RenderView_UpdateDescription(frameView, &viewDesc))
+        {
+            if (FLUXION_HANDLE_IS_VALID(frameView)) Fluxion_RenderView_Destroy(frameView);
+            frameView = Fluxion_RenderView_Create(device, &viewDesc);
+        }
 
         // The lights, read out of the scene rather than written here.
         //
@@ -2245,6 +2277,18 @@ int main(int argc, char** argv)
         FluxionRHICommandListHandle cmd = commandLists[frameIndex];
         Fluxion_RHI_CommandList_Begin(cmd);
 
+        // Cleared before either mark is written into it: a query keeps
+        // last frame's answer until something says otherwise, and reading
+        // one that was never reset is reading whatever was left behind.
+        Fluxion_RHI_CommandList_ResetQueryPool(cmd, gpuTimeQueries, 0, 2);
+
+        // THE FIRST MARK IS HERE, AT THE TOP OF THE RECORDING, and not
+        // in front of the first pass. It once was, and what sat between
+        // the two -- the whole of the image-based lighting, rebuilt every
+        // frame -- was therefore invisible: the sample reported a third
+        // of a millisecond a frame while the device spent seventeen.
+        Fluxion_RHI_CommandList_WriteTimestamp(cmd, gpuTimeQueries, 0);
+
         // Inside the recording, before anything draws with this view: the
         // buffer a shader reads is GPU-only, so the list reaches it as a
         // recorded copy rather than as a write.
@@ -2342,6 +2386,7 @@ int main(int argc, char** argv)
             std::exit(1);
         }
 
+
         // One turn of the scene, taken here rather than at the top of the
         // loop: a component's Update is where the cube is turned, where
         // its colour is chosen and where the draw is asked for, and a
@@ -2365,8 +2410,7 @@ int main(int argc, char** argv)
             FLUXION_LOG_ERROR("ForwardRendererDemo", "Render graph compilation failed -- this is a real bug, not a transient condition.");
             std::exit(1);
         }
-        Fluxion_RHI_CommandList_ResetQueryPool(cmd, gpuTimeQueries, 0, 2);
-        Fluxion_RHI_CommandList_WriteTimestamp(cmd, gpuTimeQueries, 0);
+
         // --- THE PANEL FOR THIS FRAME -------------------------------------
         //
         // Built before the drawing, because what it writes -- the toggles
@@ -2389,9 +2433,6 @@ int main(int argc, char** argv)
 
             if (uiPanelWanted && Fluxion_DebugUI_BeginPanel("Post-processing", 16.0f, 16.0f, 320.0f, 300.0f))
             {
-                Fluxion_DebugUI_Row(24.0f, 1);
-                Fluxion_DebugUI_Checkbox("Chain on", &uiPostProcess);
-
                 Fluxion_DebugUI_Row(24.0f, 1);
                 Fluxion_DebugUI_Checkbox("Bloom", &uiBloom);
 
@@ -2524,7 +2565,6 @@ int main(int argc, char** argv)
         // here, since the WaitForFence above already confirmed the GPU
         // is done with this frame's work.
         Fluxion_RHI_Device_CollectGarbage(device);
-        Fluxion_RenderView_Destroy(frameView);
         Fluxion_RenderTarget_Destroy(frameTarget);
         Fluxion_RHI_DestroyTextureView(backbufferView);
         Fluxion_RenderGraph_Destroy(graph);
@@ -2549,6 +2589,17 @@ int main(int argc, char** argv)
     // nothing is in flight when it exits -- and waiting again on an
     // already-reset fence blocks until the timeout for work that was
     // never submitted.
+    // The view outlived the loop, so it is let go once the loop is over.
+    // The collection after it is not optional: destroying an RHI object
+    // hands it to the device's garbage rather than freeing it, and the
+    // sweep that used to pick a view up ran at the top of a frame there
+    // will not be another of.
+    if (FLUXION_HANDLE_IS_VALID(frameView))
+    {
+        Fluxion_RenderView_Destroy(frameView);
+        Fluxion_RHI_Device_CollectGarbage(device);
+    }
+
     FLUXION_LOG_INFO("ForwardRendererDemo", "Closing.");
 
     // Before anything built this run is destroyed. A backend whose cache

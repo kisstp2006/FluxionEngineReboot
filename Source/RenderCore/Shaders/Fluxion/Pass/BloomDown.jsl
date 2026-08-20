@@ -59,7 +59,15 @@
 
 // x, y: how far one texel of the source is, as a coordinate.
 // z: one on the first step, when what glows is still to be chosen.
-// w: unused.
+// w: one when this backend's first texture row is the last screen row.
+//
+//    EVERY FULL-SCREEN PASS TURNS THE PICTURE OVER on that backend --
+//    clip space counts up and the framebuffer's rows count down, so a
+//    fragment at the top reads the bottom of what it samples. Two such
+//    passes cancel and nobody notices; a CHAIN of them does not, because
+//    the way back up adds each level onto one that was turned over an
+//    odd number of times relative to it. Measured, without this: the
+//    floor's glow appeared in the sky, mirrored, only on OpenGL.
 [Uniform(Global)] Vector4 bloomStep;
 
 // x: the brightness a pixel must reach before any of it glows.
@@ -93,15 +101,19 @@ Vector3 BloomSelect(Vector3 color, float threshold, float knee)
 }
 
 void main() {
+  // Read from where this fragment IS, whichever way this backend counts
+  // its rows -- see bloomStep.w.
+  Vector2 uv = Vector2(vUV.x, bloomStep.w > 0.5 ? 1.0 - vUV.y : vUV.y);
+
   // The four the halving covers: half a source texel either way. Each is
   // a bilinear read, so each already averages the four texels around it
   // -- sixteen texels for four reads.
   Vector2 offset = Vector2(0.5 * bloomStep.x, 0.5 * bloomStep.y);
 
-  Vector3 sum = textureLod(bloomSource, vUV + Vector2(-offset.x, -offset.y), 0.0).xyz;
-  sum = sum + textureLod(bloomSource, vUV + Vector2(offset.x, -offset.y), 0.0).xyz;
-  sum = sum + textureLod(bloomSource, vUV + Vector2(-offset.x, offset.y), 0.0).xyz;
-  sum = sum + textureLod(bloomSource, vUV + Vector2(offset.x, offset.y), 0.0).xyz;
+  Vector3 sum = textureLod(bloomSource, uv + Vector2(-offset.x, -offset.y), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, uv + Vector2(offset.x, -offset.y), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, uv + Vector2(-offset.x, offset.y), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, uv + Vector2(offset.x, offset.y), 0.0).xyz;
 
   Vector3 color = sum * 0.25;
 

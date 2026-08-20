@@ -447,6 +447,27 @@ bool Fluxion_DebugUI_Init(const FluxionDebugUIDesc* desc)
     if (desc == NULL || s_ui.ready) return s_ui.ready;
 
     memset(&s_ui, 0, sizeof(s_ui));
+
+    // ZERO IS NOT "NOTHING": a handle of {0, 0} names the FIRST slot of
+    // whatever it points into, and a shutdown that ran after a failure
+    // would destroy somebody else's texture with it. Said explicitly,
+    // because a struct cleared to zero is otherwise a struct full of
+    // valid-looking handles.
+    const FluxionRHITextureHandle noTexture = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    const FluxionRHITextureViewHandle noView = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    const FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    s_ui.atlasTexture = noTexture;
+    s_ui.atlasView = noView;
+    s_ui.sampler = (FluxionRHISamplerHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    s_ui.program = (FluxionShaderProgramHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    s_ui.pipeline = (FluxionRHIPipelineHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    s_ui.layout = (FluxionRHIBindGroupLayoutHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    s_ui.bindGroup = (FluxionRHIBindGroupHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    s_ui.uniformBuffer = noBuffer;
+    s_ui.vertexBuffer = noBuffer;
+    s_ui.indexBuffer = noBuffer;
+
     s_ui.device = desc->device;
     s_ui.queue = desc->queue;
     s_ui.colorFormat = desc->colorFormat;

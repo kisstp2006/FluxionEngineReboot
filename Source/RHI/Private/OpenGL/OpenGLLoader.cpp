@@ -59,6 +59,8 @@ FLUXION_GL_FUNCTIONS(FLUXION_GL_DEFINE)
 #undef FLUXION_GL_DEFINE
 
 #if defined(_WIN32)
+typedef BOOL (WINAPI* FluxionWglSwapIntervalProc)(int);
+static FluxionWglSwapIntervalProc wglSwapIntervalEXT_ = nullptr;
 static PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB_ = nullptr;
 static PFNWGLCHOOSEPIXELFORMATARBPROC wglChoosePixelFormatARB_ = nullptr;
 
@@ -73,6 +75,8 @@ static void* Fluxion_RHIOpenGL_GetProc(const char* name)
     return p;
 }
 #else
+typedef void (*FluxionGlxSwapIntervalProc)(Display*, GLXDrawable, int);
+static FluxionGlxSwapIntervalProc glXSwapIntervalEXT_ = nullptr;
 static PFNGLXCREATECONTEXTATTRIBSARBPROC glXCreateContextAttribsARB_ = nullptr;
 
 static void* Fluxion_RHIOpenGL_GetProc(const char* name)
@@ -86,6 +90,12 @@ void Fluxion_RHIOpenGL_LoadFunctions(void)
 #define FLUXION_GL_LOAD(type, name) name = (type)Fluxion_RHIOpenGL_GetProc(#name);
     FLUXION_GL_FUNCTIONS(FLUXION_GL_LOAD)
 #undef FLUXION_GL_LOAD
+
+#if !defined(_WIN32)
+    // Here rather than beside the context attributes: this one is looked
+    // up through the ordinary GL loader, and only once a context exists.
+    glXSwapIntervalEXT_ = (FluxionGlxSwapIntervalProc)Fluxion_RHIOpenGL_GetProc("glXSwapIntervalEXT");
+#endif
 }
 
 // --- KHR_debug callback -----------------------------------------------------
@@ -202,6 +212,9 @@ static bool Fluxion_RHIOpenGL_LoadWGLExtensions(void)
     wglMakeCurrent(dummyHdc, dummyContext);
 
     wglCreateContextAttribsARB_ = (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
+    // Not required: a driver without it presents at whatever rate it
+    // presents at, which is what this backend did everywhere until now.
+    wglSwapIntervalEXT_ = (FluxionWglSwapIntervalProc)wglGetProcAddress("wglSwapIntervalEXT");
     wglChoosePixelFormatARB_ = (PFNWGLCHOOSEPIXELFORMATARBPROC)wglGetProcAddress("wglChoosePixelFormatARB");
 
     wglMakeCurrent(nullptr, nullptr);
@@ -494,3 +507,25 @@ bool Fluxion_RHIOpenGL_MakeCurrent(FluxionRHIOpenGLDevice* deviceState, ::Window
 }
 
 #endif
+
+// HOW MANY REFRESHES A PRESENTED FRAME IS HELD FOR: one to follow the
+// display, none to go as fast as the device can. Asked for here rather
+// than at context creation because it belongs to the drawable, and a
+// swapchain is what this engine calls a drawable.
+//
+// FAILING IS ALLOWED, AND SILENT ON PURPOSE. The extension is not part
+// of any core version, and a driver that does not offer it presents at
+// whatever rate it chooses -- which is exactly what happened here before
+// this existed, on every driver, with the description's field read and
+// dropped.
+void Fluxion_RHIOpenGL_SetSwapInterval(bool vsync)
+{
+#if defined(_WIN32)
+    if (wglSwapIntervalEXT_ != nullptr) wglSwapIntervalEXT_(vsync ? 1 : 0);
+#else
+    if (glXSwapIntervalEXT_ == nullptr) return;
+    Display* display = glXGetCurrentDisplay();
+    const GLXDrawable drawable = glXGetCurrentDrawable();
+    if (display != nullptr && drawable != 0) glXSwapIntervalEXT_(display, drawable, vsync ? 1 : 0);
+#endif
+}

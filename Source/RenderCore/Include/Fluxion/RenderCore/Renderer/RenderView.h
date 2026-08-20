@@ -310,6 +310,25 @@ void Fluxion_RenderView_SetPreviousViewProjection(FluxionRenderViewHandle view, 
 // that whoever keeps it for next frame keeps the same matrix the shaders
 // were given, rather than one built from the same parts a second time.
 FluxionMat4 Fluxion_RenderView_GetViewProjection(FluxionRenderViewHandle view);
+// THE NEXT FRAME'S DESCRIPTION, WITHOUT BUILDING THE VIEW AGAIN.
+//
+// A view owns real memory on the device -- a shadow atlas, a prefiltered
+// environment chain, a lookup table, bind groups naming all of it -- and
+// none of that depends on where the camera is standing. Making a view per
+// frame therefore allocates and frees megabytes to move a matrix, which
+// in this engine's own sample cost more than every pass in the frame put
+// together.
+//
+// Returns false, and changes nothing, when the description asks for a
+// shadow atlas of a different size or tiling: that is the one part of a
+// view that is a texture rather than a number, and a caller who wants a
+// different one wants a different view. Everything else is taken.
+//
+// What a view was told SEPARATELY it keeps: its environment, its lights,
+// the matrix it was drawn with last frame. A description does not carry
+// those, and this does not clear them.
+bool Fluxion_RenderView_UpdateDescription(FluxionRenderViewHandle view, const FluxionRenderViewDesc* desc);
+
 void Fluxion_RenderView_Destroy(FluxionRenderViewHandle view);
 
 // Recomputes viewProjection = projectionMatrix * viewMatrix and uploads

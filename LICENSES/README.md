@@ -40,6 +40,8 @@ that a copy can be checked against the source it came from rather than trusted.
 | [D3D12MemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator) | `ThirdParty/d3d12ma/` | [MIT](MIT.txt) | Copyright (c) 2019-2026 Advanced Micro Devices, Inc. |
 | Khronos `glcorearb.h`, `glxext.h`, `wglext.h` | `ThirdParty/glheaders/GL/` | [MIT](MIT.txt) | Copyright 2013-2026 The Khronos Group Inc. |
 | Khronos `khrplatform.h` | `ThirdParty/glheaders/KHR/` | [LicenseRef-Khronos-MIT-Materials](LicenseRef-Khronos-MIT-Materials.txt) | Copyright (c) 2008-2018 The Khronos Group Inc. |
+| [Nuklear](https://github.com/Immediate-Mode-UI/Nuklear) | `ThirdParty/nuklear/` | [MIT](MIT.txt) — chosen from its two alternatives | Copyright (c) 2017 Micha Mettke |
+| `stb_rect_pack` and `stb_truetype`, embedded inside `nuklear.h` | `ThirdParty/nuklear/nuklear.h` | [MIT](MIT.txt) — chosen from the same two alternatives | Copyright (c) 2017 Sean Barrett |
 
 Every copyright line above was read out of the file it belongs to, and the
 license texts were copied from files in this repository rather than fetched or
@@ -47,6 +49,25 @@ typed from memory — `MIT.txt` is the body of `ThirdParty/vma/LICENSE.txt` with
 the copyright line replaced by the placeholder the SPDX text uses, and the two
 AMD copies were checked against each other and are byte-identical below that
 line.
+
+## Nuklear offers two licenses and this repository picks one
+
+`nuklear.h` ends with "This software is available under 2 licenses -- choose
+whichever you prefer": MIT, or a public-domain dedication. **MIT is the one
+taken here**, for a reason that is about texts rather than preference: the MIT
+alternative is `MIT.txt` word for word, so nothing new has to be shipped for
+it, while the public-domain alternative is the Unlicense text **minus its
+closing line** pointing at <http://unlicense.org/> — the same offer in
+substance, but not the same file as `Unlicense.txt`, and this directory's rule
+is one file per text rather than one per intent.
+
+**The same header carries two more notices that are not Nuklear's.** It embeds
+Sean Barrett's `stb_rect_pack` and `stb_truetype` — the code that bakes the
+panels' font, so it is compiled and not merely carried along. Each has the same
+two alternatives under Barrett's own copyright, and MIT is taken there too. All
+three notices are reproduced in `ThirdParty/nuklear/LICENSE`, which is the
+authoritative copy; the table above lists Nuklear and the stb pair separately
+because they are separate copyright holders.
 
 ## The two Khronos entries are not the same license
 

@@ -213,6 +213,64 @@ void Test_RenderView_Run(TestContext* ctx)
         TEST_CHECK(ctx, Fluxion_RenderView_SetShadows(view, NULL, 0) == 0);
     }
 
+    // --- The next frame's camera, without building the view again -----
+    //
+    // A view owns a shadow atlas, a prefiltered environment chain and a
+    // lookup table -- and a frame loop that made one per frame spent more
+    // time allocating and freeing them than drawing. What this checks is
+    // the part that makes keeping a view possible: that being handed a
+    // new description moves the camera and leaves the memory alone.
+    {
+        const FluxionRHITextureHandle atlasBefore = Fluxion_RenderView_GetShadowAtlasTexture(view);
+        const FluxionMat4 beforeMatrix = Fluxion_RenderView_GetViewProjection(view);
+
+        FluxionVec3 sideways = { 3.0f, 0.0f, 0.0f };
+        FluxionRenderViewDesc moved = viewDesc;
+        moved.viewMatrix = Fluxion_Mat4_Translation(sideways);
+
+        TEST_CHECK(ctx, Fluxion_RenderView_UpdateDescription(view, &moved));
+
+        const FluxionMat4 afterMatrix = Fluxion_RenderView_GetViewProjection(view);
+        TEST_CHECK(ctx, memcmp(&afterMatrix, &beforeMatrix, sizeof(FluxionMat4)) != 0);
+
+        // AND THE SAME TEXTURE IS STILL THERE. This is the whole claim:
+        // the same atlas, not an equal one -- a rebuilt view would hand
+        // back a different handle, and would have paid for it.
+        const FluxionRHITextureHandle atlasAfter = Fluxion_RenderView_GetShadowAtlasTexture(view);
+        TEST_CHECK(ctx, atlasAfter.index == atlasBefore.index && atlasAfter.generation == atlasBefore.generation);
+
+        // A DIFFERENT ATLAS IS REFUSED, AND CHANGES NOTHING. That one is
+        // a texture rather than a number, and the frame bind group names
+        // it -- a caller asking for another size is asking for another
+        // view, and has to be told so rather than quietly given the old
+        // size back.
+        u32 atlasSize = 0;
+        u32 tileSize = 0;
+        Fluxion_RenderView_GetShadowAtlasSize(view, &atlasSize, &tileSize);
+        TEST_CHECK(ctx, atlasSize > tileSize && tileSize != 0);
+
+        FluxionVec3 further = { 9.0f, 0.0f, 0.0f };
+        FluxionRenderViewDesc resized = moved;
+        resized.shadowAtlasSize = atlasSize / 2u;
+        resized.shadowTileSize = tileSize;
+        resized.viewMatrix = Fluxion_Mat4_Translation(further);
+
+        TEST_CHECK(ctx, !Fluxion_RenderView_UpdateDescription(view, &resized));
+
+        // Refused means refused entirely: the camera it also carried did
+        // not arrive either.
+        const FluxionMat4 afterRefusal = Fluxion_RenderView_GetViewProjection(view);
+        TEST_CHECK(ctx, memcmp(&afterRefusal, &afterMatrix, sizeof(FluxionMat4)) == 0);
+
+        // And a description that names no atlas at all takes the one the
+        // view has -- the ordinary case, where a caller fills in a camera
+        // and leaves the rest at zero.
+        FluxionRenderViewDesc silent = moved;
+        silent.shadowAtlasSize = 0;
+        silent.shadowTileSize = 0;
+        TEST_CHECK(ctx, Fluxion_RenderView_UpdateDescription(view, &silent));
+    }
+
     Fluxion_RenderView_Destroy(view);
     Fluxion_RenderTarget_Destroy(renderTarget);
     Fluxion_RHI_DestroyTextureView(colorView);

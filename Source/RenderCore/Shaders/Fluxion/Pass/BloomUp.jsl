@@ -57,7 +57,16 @@
 // visible as square edges in the glow.
 
 // x, y: how far one texel of the source is, as a coordinate.
-// z, w: unused.
+// z: unused here.
+// w: one when this backend's first texture row is the last screen row.
+//
+//    EVERY FULL-SCREEN PASS TURNS THE PICTURE OVER on that backend --
+//    clip space counts up and the framebuffer's rows count down, so a
+//    fragment at the top reads the bottom of what it samples. Two such
+//    passes cancel and nobody notices; a CHAIN of them does not, because
+//    the way back up adds each level onto one that was turned over an
+//    odd number of times relative to it. Measured, without this: the
+//    floor's glow appeared in the sky, mirrored, only on OpenGL.
 [Uniform(Global)] Vector4 bloomStep;
 [Uniform(Global)] Vector4 bloomCurve;
 
@@ -67,20 +76,22 @@
 [Target(0)] Vector4 fragColor;
 
 void main() {
+  Vector2 uv = Vector2(vUV.x, bloomStep.w > 0.5 ? 1.0 - vUV.y : vUV.y);
+
   float dx = bloomStep.x;
   float dy = bloomStep.y;
 
-  Vector3 sum = textureLod(bloomSource, vUV + Vector2(-dx, -dy), 0.0).xyz;
-  sum = sum + textureLod(bloomSource, vUV + Vector2(0.0, -dy), 0.0).xyz * 2.0;
-  sum = sum + textureLod(bloomSource, vUV + Vector2(dx, -dy), 0.0).xyz;
+  Vector3 sum = textureLod(bloomSource, uv + Vector2(-dx, -dy), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, uv + Vector2(0.0, -dy), 0.0).xyz * 2.0;
+  sum = sum + textureLod(bloomSource, uv + Vector2(dx, -dy), 0.0).xyz;
 
-  sum = sum + textureLod(bloomSource, vUV + Vector2(-dx, 0.0), 0.0).xyz * 2.0;
-  sum = sum + textureLod(bloomSource, vUV, 0.0).xyz * 4.0;
-  sum = sum + textureLod(bloomSource, vUV + Vector2(dx, 0.0), 0.0).xyz * 2.0;
+  sum = sum + textureLod(bloomSource, uv + Vector2(-dx, 0.0), 0.0).xyz * 2.0;
+  sum = sum + textureLod(bloomSource, uv, 0.0).xyz * 4.0;
+  sum = sum + textureLod(bloomSource, uv + Vector2(dx, 0.0), 0.0).xyz * 2.0;
 
-  sum = sum + textureLod(bloomSource, vUV + Vector2(-dx, dy), 0.0).xyz;
-  sum = sum + textureLod(bloomSource, vUV + Vector2(0.0, dy), 0.0).xyz * 2.0;
-  sum = sum + textureLod(bloomSource, vUV + Vector2(dx, dy), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, uv + Vector2(-dx, dy), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, uv + Vector2(0.0, dy), 0.0).xyz * 2.0;
+  sum = sum + textureLod(bloomSource, uv + Vector2(dx, dy), 0.0).xyz;
 
   // Sixteen, which is what the weights add up to.
   Vector3 color = sum / 16.0;

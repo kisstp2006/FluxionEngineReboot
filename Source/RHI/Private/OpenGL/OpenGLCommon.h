@@ -218,6 +218,11 @@ bool Fluxion_RHIOpenGL_MakeCurrent(FluxionRHIOpenGLDevice* deviceState, HDC hdc)
 bool Fluxion_RHIOpenGL_MakeCurrent(FluxionRHIOpenGLDevice* deviceState, ::Window xWindow);
 #endif
 
+// How many refreshes a presented frame is held for, asked of whatever
+// drawable is current. Same name on both platforms; the extension behind
+// it is not, and neither is guaranteed to be there -- see the definition.
+void Fluxion_RHIOpenGL_SetSwapInterval(bool vsync);
+
 // --- Loader (OpenGLLoader.cpp) ----------------------------------------------
 
 // Creates the bootstrap window + real GL 4.5 core context, loads every GL

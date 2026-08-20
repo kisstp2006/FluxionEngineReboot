@@ -387,6 +387,38 @@ static FluxionRenderViewRecord* Fluxion_RenderViewInternal_Resolve(FluxionRender
     return record;
 }
 
+// EVERYTHING IN A DESCRIPTION THAT IS ONLY A NUMBER -- which is all of it
+// except the shadow atlas, the one part the device has to be asked for.
+// Written once and used twice: by Create, and by the update that hands a
+// living view the next frame's description without building it again.
+static void Fluxion_RenderViewInternal_ApplyDescription(FluxionRenderViewRecord* record, const FluxionRenderViewDesc* desc)
+{
+    record->viewMatrix = desc->viewMatrix;
+    record->projectionMatrix = desc->projectionMatrix;
+    record->viewport = desc->viewport;
+    record->scissor = desc->scissor;
+    record->renderTarget = desc->renderTarget;
+    record->layerMask = desc->layerMask;
+    record->ambientColor = desc->ambientColor;
+    record->cullDistance = desc->cullDistance;
+
+    // Taken as one when nobody said. See the field's own comment: an
+    // unset multiplier producing a black screen would read as a broken
+    // renderer rather than as a description with a hole in it.
+    record->exposure = desc->exposure > 0.0f ? desc->exposure : 1.0f;
+    record->tonemapWhitePoint = desc->tonemapWhitePoint;
+
+    // A THRESHOLD OF ZERO WOULD MAKE EVERYTHING GLOW, so an unset one is
+    // read as "one", which is where a screen runs out of range and the
+    // usual place for a glow to begin. The knee is a quarter of it, and
+    // the amount added back defaults to none: a caller that has not
+    // asked for a glow does not get one by leaving a field at zero.
+    record->bloomThreshold = desc->bloomThreshold > 0.0f ? desc->bloomThreshold : 1.0f;
+    record->bloomKnee = desc->bloomKnee > 0.0f ? desc->bloomKnee : record->bloomThreshold * 0.25f;
+    record->bloomIntensity = desc->bloomIntensity;
+    record->encodeOutputToSRGB = desc->encodeOutputToSRGB;
+}
+
 FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device, const FluxionRenderViewDesc* desc)
 {
     FluxionRenderViewHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -597,30 +629,7 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     record->alive = true;
     record->generation = generation;
     record->device = device;
-    record->viewMatrix = desc->viewMatrix;
-    record->projectionMatrix = desc->projectionMatrix;
-    record->viewport = desc->viewport;
-    record->scissor = desc->scissor;
-    record->renderTarget = desc->renderTarget;
-    record->layerMask = desc->layerMask;
-    record->ambientColor = desc->ambientColor;
-    record->cullDistance = desc->cullDistance;
-
-    // Taken as one when nobody said. See the field's own comment: an
-    // unset multiplier producing a black screen would read as a broken
-    // renderer rather than as a description with a hole in it.
-    record->exposure = desc->exposure > 0.0f ? desc->exposure : 1.0f;
-    record->tonemapWhitePoint = desc->tonemapWhitePoint;
-
-    // A THRESHOLD OF ZERO WOULD MAKE EVERYTHING GLOW, so an unset one is
-    // read as "one", which is where a screen runs out of range and the
-    // usual place for a glow to begin. The knee is a quarter of it, and
-    // the amount added back defaults to none: a caller that has not
-    // asked for a glow does not get one by leaving a field at zero.
-    record->bloomThreshold = desc->bloomThreshold > 0.0f ? desc->bloomThreshold : 1.0f;
-    record->bloomKnee = desc->bloomKnee > 0.0f ? desc->bloomKnee : record->bloomThreshold * 0.25f;
-    record->bloomIntensity = desc->bloomIntensity;
-    record->encodeOutputToSRGB = desc->encodeOutputToSRGB;
+    Fluxion_RenderViewInternal_ApplyDescription(record, desc);
 
     record->frameConstantBuffer = frameConstantBuffer;
     record->frameBindGroupLayout = frameBindGroupLayout;
@@ -661,6 +670,31 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
 
     FluxionRenderViewHandle handle = { index, generation };
     return handle;
+}
+
+bool Fluxion_RenderView_UpdateDescription(FluxionRenderViewHandle view, const FluxionRenderViewDesc* desc)
+{
+    FLUXION_ASSERT(desc != NULL);
+    FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL || desc == NULL) return false;
+
+    // THE ONE THING THAT CANNOT BE CHANGED IN PLACE. The atlas is a
+    // texture, the tiling is how the shadows are laid out in it, and the
+    // frame bind group names that texture -- a different size is a
+    // different texture, and a caller asking for one is asking for a
+    // different view. Zero means "whatever this view already has", so a
+    // caller who never filled these fields in is never refused.
+    const u32 wantedAtlas = desc->shadowAtlasSize != 0 ? desc->shadowAtlasSize : record->shadowAtlasSize;
+    const u32 wantedTile = desc->shadowTileSize != 0 ? desc->shadowTileSize : record->shadowTileSize;
+    if (wantedAtlas != record->shadowAtlasSize || wantedTile != record->shadowTileSize) return false;
+
+    // Everything else is numbers the next UpdateFrameConstants uploads.
+    // NOT TOUCHED HERE: the environment, the lights, the previous frame's
+    // matrix -- none of them are in a description, and all of them are
+    // things a view is told separately and should not silently lose by
+    // being handed the next frame's camera.
+    Fluxion_RenderViewInternal_ApplyDescription(record, desc);
+    return true;
 }
 
 void Fluxion_RenderView_Destroy(FluxionRenderViewHandle view)
