@@ -53,6 +53,7 @@ void Test_RenderPipelineAssetGPU_Run(TestContext* ctx);
 void Test_GPUScene_Run(TestContext* ctx);
 void Test_GPUCullGPU_Run(TestContext* ctx);
 void Test_MotionVectorGPU_Run(TestContext* ctx);
+void Test_BloomGPU_Run(TestContext* ctx);
 void Test_DepthPyramidGPU_Run(TestContext* ctx);
 void Test_OcclusionCullGPU_Run(TestContext* ctx);
 void Test_MaterialAsset_Run(TestContext* ctx);
@@ -93,6 +94,7 @@ int main(void)
     Test_GPUScene_Run(&ctx);
     Test_GPUCullGPU_Run(&ctx);
     Test_MotionVectorGPU_Run(&ctx);
+    Test_BloomGPU_Run(&ctx);
     Test_DepthPyramidGPU_Run(&ctx);
     Test_OcclusionCullGPU_Run(&ctx);
     Test_MaterialAsset_Run(&ctx);

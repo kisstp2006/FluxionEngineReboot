@@ -357,18 +357,19 @@ void Fluxion_RHIOpenGL_ApplyPipelineState(FluxionRHIOpenGLDevice* deviceState, c
         glDepthFunc(Fluxion_RHIOpenGL_MapCompareOp(depth->compareOp));
         cache->depthCompareOp = depth->compareOp;
     }
-    if (!cache->valid || cache->blendEnable != blend->blendEnable)
+    if (!cache->valid || cache->blendMode != blend->mode)
     {
-        if (blend->blendEnable)
-        {
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        }
-        else
+        if (blend->mode == FLUXION_RHI_BLEND_MODE_NONE)
         {
             glDisable(GL_BLEND);
         }
-        cache->blendEnable = blend->blendEnable;
+        else
+        {
+            glEnable(GL_BLEND);
+            if (blend->mode == FLUXION_RHI_BLEND_MODE_ADD) glBlendFunc(GL_ONE, GL_ONE);
+            else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        }
+        cache->blendMode = blend->mode;
     }
     cache->valid = true;
 }

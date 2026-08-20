@@ -533,13 +533,32 @@ typedef struct FluxionRHIDepthState
     FluxionRHICompareOp compareOp;
 } FluxionRHIDepthState;
 
+// HOW WHAT IS DRAWN MEETS WHAT IS ALREADY THERE.
+//
+// Named modes rather than a pair of factors and an operation: two of
+// them cover everything this engine draws, and a name says what the
+// result IS where a pair of factors only says how it is computed. The
+// full descriptor is worth adding when something needs a third.
+typedef enum FluxionRHIBlendMode
+{
+    // Replaces. The value a cleared descriptor holds, and what every
+    // opaque surface wants.
+    FLUXION_RHI_BLEND_MODE_NONE = 0,
+
+    // Covers, by however opaque it is: the usual "src alpha, one minus
+    // src alpha".
+    FLUXION_RHI_BLEND_MODE_ALPHA,
+
+    // ADDS. Light falling on top of light -- which is what a glow is, and
+    // the reason this mode exists: the bloom chain sums a small blurred
+    // picture into a larger one on the way back up, and a sum is not
+    // something alpha blending can express at any opacity.
+    FLUXION_RHI_BLEND_MODE_ADD,
+} FluxionRHIBlendMode;
+
 typedef struct FluxionRHIBlendState
 {
-    // When enabled, a backend applies the common "src alpha, one minus
-    // src alpha" blend factors -- a fuller per-factor/per-op blend
-    // descriptor is only worth adding once something actually needs more
-    // control than that.
-    bool blendEnable;
+    FluxionRHIBlendMode mode;
 } FluxionRHIBlendState;
 
 #define FLUXION_RHI_MAX_VERTEX_ATTRIBUTES 16

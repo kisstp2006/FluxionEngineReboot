@@ -47,6 +47,37 @@
 namespace Fluxion::ShaderCompiler
 {
 
+// A FLOAT LITERAL THAT STILL LOOKS LIKE ONE.
+//
+// Streaming a float prints 1.0 as "1" -- and "1" in both of the
+// languages this compiles to is an INTEGER. Most of the time nothing
+// notices, because one side of the expression is a float and the whole
+// thing is promoted; the exception is two of them meeting, and the
+// commonest way for that to happen is a constant weight written as a
+// division.
+//
+// (1.0 / 16.0) came out as (1 / 16), which is integer division, which is
+// ZERO. Not an error, not a warning: a shader that multiplied by it
+// returned black, and the pass built on it produced nothing at all.
+// Measured, in the bloom chain, where the glow simply never appeared.
+static std::string FluxionShaderCompilerInternal_FloatLiteral(double value)
+{
+    std::ostringstream text;
+    text.precision(9);
+    text << value;
+
+    std::string printed = text.str();
+
+    // An exponent or a point already says what it is; so does a name like
+    // "inf", which no decimal point would help.
+    if (printed.find('.') == std::string::npos && printed.find('e') == std::string::npos &&
+        printed.find('E') == std::string::npos && printed.find_first_of("in") == std::string::npos)
+    {
+        printed += ".0";
+    }
+    return printed;
+}
+
 namespace
 {
 
@@ -517,7 +548,9 @@ private:
         switch (expr.kind)
         {
             case ExprKind::IntLiteral: m_out << static_cast<const IntLiteralExpr&>(expr).value; break;
-            case ExprKind::FloatLiteral: m_out << static_cast<const FloatLiteralExpr&>(expr).value; break;
+            case ExprKind::FloatLiteral:
+                m_out << FluxionShaderCompilerInternal_FloatLiteral(static_cast<const FloatLiteralExpr&>(expr).value);
+                break;
             case ExprKind::BoolLiteral: m_out << (static_cast<const BoolLiteralExpr&>(expr).value ? "true" : "false"); break;
             case ExprKind::VarRef: m_out << static_cast<const VarRefExpr&>(expr).name; break;
             case ExprKind::Unary: {

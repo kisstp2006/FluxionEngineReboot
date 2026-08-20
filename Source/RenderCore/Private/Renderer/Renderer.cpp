@@ -258,7 +258,7 @@ void CreateDebugDrawPipelineObject(FluxionRenderer& renderer)
     pipelineDesc.depthState.testEnable = testAgainstDepth;
     pipelineDesc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL;
     pipelineDesc.depthState.writeEnable = false;
-    pipelineDesc.blendState.blendEnable = true;
+    pipelineDesc.blendState.mode = FLUXION_RHI_BLEND_MODE_ALPHA;
     pipelineDesc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_LINE_LIST; // triangles are appended as their own 3 vertices too -- see DebugDraw.c
     pipelineDesc.colorFormats[0] = renderer.attachmentColorFormat;
     pipelineDesc.colorFormatCount = 1;
@@ -445,6 +445,24 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     renderer->postBindGroup = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->postBoundSceneColor = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->postOutputFormat = FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
+    renderer->postBoundGlow = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomTexture = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomDownProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomUpProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomDownPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomUpPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomUniformBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomBoundSceneColor = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    for (u32 level = 0; level < FLUXION_RENDERER_MAX_BLOOM_LEVELS; ++level)
+    {
+        renderer->bloomTargetViews[level] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->bloomSampleViews[level] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
+    for (u32 step = 0; step < FLUXION_RENDERER_MAX_BLOOM_STEPS; ++step)
+    {
+        renderer->bloomBindGroups[step] = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
     renderer->irradianceFailed = false;
 
     renderer->prefilterProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -678,6 +696,19 @@ extern "C" void Fluxion_Renderer_SetPostProcessEnabled(FluxionRendererHandle ren
     // Off again means the scene goes straight to the caller's target once
     // more, and what was made for the chain has nothing left to hold.
     if (!enabled) FluxionRendererInternal_PostProcess_ReleaseSceneColor(renderer);
+}
+
+extern "C" void Fluxion_Renderer_SetBloomEnabled(FluxionRendererHandle rendererHandle, bool enabled)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return;
+    renderer->bloomEnabled = enabled;
+}
+
+extern "C" bool Fluxion_Renderer_IsBloomEnabled(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    return renderer != nullptr && renderer->bloomEnabled;
 }
 
 extern "C" bool Fluxion_Renderer_IsPostProcessEnabled(FluxionRendererHandle rendererHandle)

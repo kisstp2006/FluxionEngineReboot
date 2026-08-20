@@ -39,62 +39,53 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-#include "TestFramework.h"
 
-#include <cstdio>
+#ifndef FLUXION_PASS_BLOOM_UP_INCLUDED
+#define FLUXION_PASS_BLOOM_UP_INCLUDED
 
-void Test_Lexer_Run(TestContext& ctx);
-void Test_Preprocessor_Run(TestContext& ctx);
-void Test_Parser_Run(TestContext& ctx);
-void Test_Semantic_Run(TestContext& ctx);
-void Test_HLSLBackend_Run(TestContext& ctx);
-void Test_UniformLayout_Run(TestContext& ctx);
-void Test_FloatLiterals_Run(TestContext& ctx);
-void Test_HLSLBackend_EntryReturn_Run(TestContext& ctx);
-void Test_GLSLBackend_Run(TestContext& ctx);
-void Test_Discard_Run(TestContext& ctx);
-void Test_InstanceIndex_Run(TestContext& ctx);
-void Test_DXCAdapter_Run(TestContext& ctx);
-void Test_Compatibility_Run(TestContext& ctx);
-void Test_ShaderCache_Run(TestContext& ctx);
-void Test_BindingGroups_Run(TestContext& ctx);
-void Test_BindingGroups_DefaultIsMaterial_Run(TestContext& ctx);
-void Test_ComputeStorageBuffer_Run(TestContext& ctx);
-void Test_TextureSampleLevel_Run(TestContext& ctx);
-void Test_ComparisonSampling_Run(TestContext& ctx);
+// ONE STEP BACK UP THE BLOOM CHAIN: a smaller level, spread and ADDED to
+// the larger one it came from.
+//
+// Added, not written: the level being drawn into still holds what the way
+// down put there, and the sum of the two is what makes the falloff smooth
+// instead of stepped. That is what FLUXION_RHI_BLEND_MODE_ADD is for --
+// no amount of alpha expresses "both".
+//
+// A TENT rather than a box: the nine taps are weighted 1-2-1 across and
+// down, which is a triangle, and a triangle joined to the next triangle
+// leaves no seam. A box leaves one at every level boundary, and they are
+// visible as square edges in the glow.
 
-int main()
-{
-    TestContext ctx;
+// x, y: how far one texel of the source is, as a coordinate.
+// z, w: unused.
+[Uniform(Global)] Vector4 bloomStep;
+[Uniform(Global)] Vector4 bloomCurve;
 
-    std::fprintf(stderr, "Running ShaderCompilerTests...\n");
+[Texture(Global)] Texture2D bloomSource;
 
-    Test_Lexer_Run(ctx);
-    Test_Preprocessor_Run(ctx);
-    Test_Parser_Run(ctx);
-    Test_Semantic_Run(ctx);
-    Test_HLSLBackend_Run(ctx);
-    Test_UniformLayout_Run(ctx);
-    Test_FloatLiterals_Run(ctx);
-    Test_HLSLBackend_EntryReturn_Run(ctx);
-    Test_GLSLBackend_Run(ctx);
-    Test_Discard_Run(ctx);
-    Test_InstanceIndex_Run(ctx);
-    Test_DXCAdapter_Run(ctx);
-    Test_Compatibility_Run(ctx);
-    Test_ShaderCache_Run(ctx);
-    Test_BindingGroups_Run(ctx);
-    Test_BindingGroups_DefaultIsMaterial_Run(ctx);
-    Test_ComputeStorageBuffer_Run(ctx);
-    Test_TextureSampleLevel_Run(ctx);
-    Test_ComparisonSampling_Run(ctx);
+[Input] Vector2 vUV;
+[Target(0)] Vector4 fragColor;
 
-    if (ctx.failures == 0)
-    {
-        std::fprintf(stderr, "All ShaderCompilerTests passed.\n");
-        return 0;
-    }
+void main() {
+  float dx = bloomStep.x;
+  float dy = bloomStep.y;
 
-    std::fprintf(stderr, "%d ShaderCompilerTests check(s) failed.\n", ctx.failures);
-    return 1;
+  Vector3 sum = textureLod(bloomSource, vUV + Vector2(-dx, -dy), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, vUV + Vector2(0.0, -dy), 0.0).xyz * 2.0;
+  sum = sum + textureLod(bloomSource, vUV + Vector2(dx, -dy), 0.0).xyz;
+
+  sum = sum + textureLod(bloomSource, vUV + Vector2(-dx, 0.0), 0.0).xyz * 2.0;
+  sum = sum + textureLod(bloomSource, vUV, 0.0).xyz * 4.0;
+  sum = sum + textureLod(bloomSource, vUV + Vector2(dx, 0.0), 0.0).xyz * 2.0;
+
+  sum = sum + textureLod(bloomSource, vUV + Vector2(-dx, dy), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, vUV + Vector2(0.0, dy), 0.0).xyz * 2.0;
+  sum = sum + textureLod(bloomSource, vUV + Vector2(dx, dy), 0.0).xyz;
+
+  // Sixteen, which is what the weights add up to.
+  Vector3 color = sum / 16.0;
+
+  return Vector4(color.x, color.y, color.z, 1.0);
 }
+
+#endif

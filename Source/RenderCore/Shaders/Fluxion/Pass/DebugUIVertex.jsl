@@ -39,62 +39,41 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-#include "TestFramework.h"
 
-#include <cstdio>
+#ifndef FLUXION_PASS_DEBUG_UI_VERTEX_INCLUDED
+#define FLUXION_PASS_DEBUG_UI_VERTEX_INCLUDED
 
-void Test_Lexer_Run(TestContext& ctx);
-void Test_Preprocessor_Run(TestContext& ctx);
-void Test_Parser_Run(TestContext& ctx);
-void Test_Semantic_Run(TestContext& ctx);
-void Test_HLSLBackend_Run(TestContext& ctx);
-void Test_UniformLayout_Run(TestContext& ctx);
-void Test_FloatLiterals_Run(TestContext& ctx);
-void Test_HLSLBackend_EntryReturn_Run(TestContext& ctx);
-void Test_GLSLBackend_Run(TestContext& ctx);
-void Test_Discard_Run(TestContext& ctx);
-void Test_InstanceIndex_Run(TestContext& ctx);
-void Test_DXCAdapter_Run(TestContext& ctx);
-void Test_Compatibility_Run(TestContext& ctx);
-void Test_ShaderCache_Run(TestContext& ctx);
-void Test_BindingGroups_Run(TestContext& ctx);
-void Test_BindingGroups_DefaultIsMaterial_Run(TestContext& ctx);
-void Test_ComputeStorageBuffer_Run(TestContext& ctx);
-void Test_TextureSampleLevel_Run(TestContext& ctx);
-void Test_ComparisonSampling_Run(TestContext& ctx);
+// FLAT GEOMETRY IN PIXELS, put on the screen.
+//
+// The panels arrive as triangles already laid out in pixel coordinates --
+// the toolkit underneath decided where every rectangle and glyph goes, and
+// this stage only says what "in pixels" means for the screen it is being
+// drawn on. The one matrix it needs is the size of that screen, which is
+// why it is a pair of numbers rather than a matrix.
 
-int main()
-{
-    TestContext ctx;
+// x, y: how many pixels the screen is, so a position can be turned into
+//       clip space. zw unused.
+[Uniform(Global)] Vector4 uiScreen;
 
-    std::fprintf(stderr, "Running ShaderCompilerTests...\n");
+[Input] Vector2 position;
+[Input] Vector2 uv;
+[Input] Vector4 color;
 
-    Test_Lexer_Run(ctx);
-    Test_Preprocessor_Run(ctx);
-    Test_Parser_Run(ctx);
-    Test_Semantic_Run(ctx);
-    Test_HLSLBackend_Run(ctx);
-    Test_UniformLayout_Run(ctx);
-    Test_FloatLiterals_Run(ctx);
-    Test_HLSLBackend_EntryReturn_Run(ctx);
-    Test_GLSLBackend_Run(ctx);
-    Test_Discard_Run(ctx);
-    Test_InstanceIndex_Run(ctx);
-    Test_DXCAdapter_Run(ctx);
-    Test_Compatibility_Run(ctx);
-    Test_ShaderCache_Run(ctx);
-    Test_BindingGroups_Run(ctx);
-    Test_BindingGroups_DefaultIsMaterial_Run(ctx);
-    Test_ComputeStorageBuffer_Run(ctx);
-    Test_TextureSampleLevel_Run(ctx);
-    Test_ComparisonSampling_Run(ctx);
+[Output] Vector2 vUV;
+[Output] Vector4 vColor;
+[Output] Vector4 Position;
 
-    if (ctx.failures == 0)
-    {
-        std::fprintf(stderr, "All ShaderCompilerTests passed.\n");
-        return 0;
-    }
+void main() {
+  vUV = uv;
+  vColor = color;
 
-    std::fprintf(stderr, "%d ShaderCompilerTests check(s) failed.\n", ctx.failures);
-    return 1;
+  // Pixels to clip space: across is 0..width, and DOWN is 0..height --
+  // which is why the second one is negated. A user interface counts from
+  // the top left corner, and clip space counts up from the middle.
+  float x = position.x / uiScreen.x * 2.0 - 1.0;
+  float y = 1.0 - position.y / uiScreen.y * 2.0;
+
+  Position = Vector4(x, y, 0.0, 1.0);
 }
+
+#endif

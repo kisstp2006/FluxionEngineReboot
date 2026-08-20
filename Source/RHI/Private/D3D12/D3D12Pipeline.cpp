@@ -413,9 +413,10 @@ FluxionRHIPipelineHandle Fluxion_RHID3D12_CreateGraphicsPipeline(FluxionRHIDevic
     // the RHI contract's single FluxionRHIBlendState (no per-target
     // control yet, same v1 scope as the Vulkan/OpenGL backends).
     D3D12_RENDER_TARGET_BLEND_DESC& rt0 = psoDesc.BlendState.RenderTarget[0];
-    rt0.BlendEnable = desc->blendState.blendEnable ? TRUE : FALSE;
-    rt0.SrcBlend = D3D12_BLEND_SRC_ALPHA;
-    rt0.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    const bool additive = desc->blendState.mode == FLUXION_RHI_BLEND_MODE_ADD;
+    rt0.BlendEnable = desc->blendState.mode != FLUXION_RHI_BLEND_MODE_NONE ? TRUE : FALSE;
+    rt0.SrcBlend = additive ? D3D12_BLEND_ONE : D3D12_BLEND_SRC_ALPHA;
+    rt0.DestBlend = additive ? D3D12_BLEND_ONE : D3D12_BLEND_INV_SRC_ALPHA;
     rt0.BlendOp = D3D12_BLEND_OP_ADD;
     rt0.SrcBlendAlpha = D3D12_BLEND_ONE;
     rt0.DestBlendAlpha = D3D12_BLEND_ZERO;

@@ -64,6 +64,8 @@
 
 static const char* const kPostVertexSource = "#include \"Fluxion/Pass/FullscreenVertex.jsl\"\n";
 static const char* const kPostFragmentSource = "#include \"Fluxion/Pass/PostProcess.jsl\"\n";
+static const char* const kBloomDownFragmentSource = "#include \"Fluxion/Pass/BloomDown.jsl\"\n";
+static const char* const kBloomUpFragmentSource = "#include \"Fluxion/Pass/BloomUp.jsl\"\n";
 
 // Three vertices in clip space, big enough that the triangle covers the
 // screen and the corners fall outside it.
@@ -74,7 +76,19 @@ static const f32 kPostFullscreenTriangle[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f
 typedef struct FluxionPostUniform
 {
     FluxionVec4 params;
+
+    // x: how much of the glow is added back. Zero is the whole effect
+    //    switched off, and the resolve then adds nothing whatever is
+    //    bound beside it.
+    FluxionVec4 bloom;
 } FluxionPostUniform;
+
+// What one step of the bloom chain is told -- see BloomDown.jsl.
+typedef struct FluxionBloomUniform
+{
+    FluxionVec4 step;
+    FluxionVec4 curve;
+} FluxionBloomUniform;
 
 static FluxionRHIBindGroupLayoutDesc FluxionPostProcessPass_MakeLayoutDesc(void)
 {
@@ -93,9 +107,48 @@ static FluxionRHIBindGroupLayoutDesc FluxionPostProcessPass_MakeLayoutDesc(void)
     desc.entries[2].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
     desc.entries[2].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
-    desc.entryCount = 3;
+    desc.entries[3].binding = 3;
+    desc.entries[3].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    desc.entries[3].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entries[4].binding = 4;
+    desc.entries[4].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    desc.entries[4].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entryCount = 5;
     desc.debugName = "Fluxion.Renderer.PostProcessLayout";
     return desc;
+}
+
+// The chain's own steps read one texture and write another, which is the
+// three the resolve's first three entries already describe -- so they
+// share the shape and each keeps its own groups.
+static FluxionRHIBindGroupLayoutDesc FluxionBloom_MakeLayoutDesc(void)
+{
+    FluxionRHIBindGroupLayoutDesc desc;
+    memset(&desc, 0, sizeof(desc));
+
+    desc.entries[0].binding = 0;
+    desc.entries[0].type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
+    desc.entries[0].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entries[1].binding = 1;
+    desc.entries[1].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    desc.entries[1].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entries[2].binding = 2;
+    desc.entries[2].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    desc.entries[2].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entryCount = 3;
+    desc.debugName = "Fluxion.Renderer.BloomLayout";
+    return desc;
+}
+
+static u32 FluxionBloom_LevelSize(u32 size, u32 level)
+{
+    const u32 shifted = size >> level;
+    return shifted > 0 ? shifted : 1;
 }
 
 // ---------------------------------------------------------------------
@@ -181,6 +234,116 @@ bool FluxionRendererInternal_PostProcess_EnsureSceneColor(FluxionRenderer* rende
     // first barrier that moves it must say so rather than claim it was a
     // render target already.
     renderer->sceneColorIsUndefined = true;
+    return true;
+}
+
+// ---------------------------------------------------------------------
+// The chain of ever smaller pictures.
+// ---------------------------------------------------------------------
+
+static void FluxionBloom_Release(FluxionRenderer* renderer)
+{
+    for (u32 level = 0; level < FLUXION_RENDERER_MAX_BLOOM_LEVELS; ++level)
+    {
+        if (FLUXION_HANDLE_IS_VALID(renderer->bloomTargetViews[level])) Fluxion_RHI_DestroyTextureView(renderer->bloomTargetViews[level]);
+        if (FLUXION_HANDLE_IS_VALID(renderer->bloomSampleViews[level])) Fluxion_RHI_DestroyTextureView(renderer->bloomSampleViews[level]);
+        renderer->bloomTargetViews[level] = (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->bloomSampleViews[level] = (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
+
+    for (u32 step = 0; step < FLUXION_RENDERER_MAX_BLOOM_STEPS; ++step)
+    {
+        if (FLUXION_HANDLE_IS_VALID(renderer->bloomBindGroups[step])) Fluxion_RHI_DestroyBindGroup(renderer->bloomBindGroups[step]);
+        renderer->bloomBindGroups[step] = (FluxionRHIBindGroupHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
+
+    if (FLUXION_HANDLE_IS_VALID(renderer->bloomTexture)) Fluxion_RHI_DestroyTexture(renderer->bloomTexture);
+    renderer->bloomTexture = (FluxionRHITextureHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    renderer->bloomLevels = 0;
+    renderer->bloomWidth = 0;
+    renderer->bloomHeight = 0;
+    renderer->bloomBoundSceneColor = (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+}
+
+// HALF THE FRAME, and levels down from there.
+//
+// Half rather than full: a glow is the opposite of detail, and the half
+// that is thrown away here is detail. It also makes every step after it
+// a quarter of the work.
+static bool FluxionBloom_EnsureChain(FluxionRenderer* renderer, u32 sceneWidth, u32 sceneHeight)
+{
+    const u32 width = sceneWidth > 1 ? sceneWidth / 2 : 1;
+    const u32 height = sceneHeight > 1 ? sceneHeight / 2 : 1;
+
+    if (renderer->bloomWidth == width && renderer->bloomHeight == height && FLUXION_HANDLE_IS_VALID(renderer->bloomTexture))
+    {
+        return true;
+    }
+
+    FluxionBloom_Release(renderer);
+
+    // As many halvings as there are, up to the limit -- and at least two,
+    // because a chain of one has nothing to add on the way back up.
+    u32 levels = 1;
+    while (levels < FLUXION_RENDERER_MAX_BLOOM_LEVELS &&
+           FluxionBloom_LevelSize(width, levels) > 1 && FluxionBloom_LevelSize(height, levels) > 1)
+    {
+        ++levels;
+    }
+    if (levels < 2) return false;
+
+    FluxionRHITextureDesc desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.width = width;
+    desc.height = height;
+    desc.depth = 1;
+    desc.mipLevels = levels;
+    desc.arrayLayers = 1;
+    desc.sampleCount = 1;
+    desc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_2D;
+    desc.format = FLUXION_RENDERER_SCENE_COLOR_FORMAT;
+    desc.usageFlags = FLUXION_RHI_TEXTURE_USAGE_RENDER_TARGET | FLUXION_RHI_TEXTURE_USAGE_SAMPLED;
+    desc.memoryClass = FLUXION_RHI_MEMORY_CLASS_GPU_ONLY;
+    desc.debugName = "Fluxion.Renderer.Bloom";
+
+    renderer->bloomTexture = Fluxion_RHI_CreateTexture(renderer->device, &desc);
+    if (!FLUXION_HANDLE_IS_VALID(renderer->bloomTexture))
+    {
+        FLUXION_LOG_ERROR(FLUXION_POST_LOG_CATEGORY, "the glow has nowhere to be built at %ux%u", width, height);
+        return false;
+    }
+
+    for (u32 level = 0; level < levels; ++level)
+    {
+        FluxionRHITextureViewDesc viewDesc;
+        memset(&viewDesc, 0, sizeof(viewDesc));
+        viewDesc.texture = renderer->bloomTexture;
+        viewDesc.format = FLUXION_RENDERER_SCENE_COLOR_FORMAT;
+        viewDesc.baseMipLevel = level;
+        viewDesc.mipLevelCount = 1;
+        viewDesc.baseArrayLayer = 0;
+        viewDesc.arrayLayerCount = 1;
+        viewDesc.dimension = FLUXION_RHI_TEXTURE_DIMENSION_2D;
+
+        renderer->bloomTargetViews[level] = Fluxion_RHI_CreateTextureView(renderer->device, &viewDesc);
+        renderer->bloomSampleViews[level] = Fluxion_RHI_CreateTextureView(renderer->device, &viewDesc);
+
+        if (!FLUXION_HANDLE_IS_VALID(renderer->bloomTargetViews[level]) || !FLUXION_HANDLE_IS_VALID(renderer->bloomSampleViews[level]))
+        {
+            FLUXION_LOG_ERROR(FLUXION_POST_LOG_CATEGORY, "the glow's levels could not be looked at");
+            FluxionBloom_Release(renderer);
+            return false;
+        }
+    }
+
+    renderer->bloomLevels = levels;
+    renderer->bloomWidth = width;
+    renderer->bloomHeight = height;
+
+    // Nothing has been drawn into it, so it is in no state at all until
+    // the first frame says otherwise.
+    renderer->bloomNeedsFirstTransition = true;
     return true;
 }
 
@@ -272,7 +435,7 @@ static bool FluxionPostProcessPass_EnsureResources(FluxionRenderer* renderer)
     pipelineDesc.depthState.testEnable = false;
     pipelineDesc.depthState.writeEnable = false;
     pipelineDesc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_ALWAYS;
-    pipelineDesc.blendState.blendEnable = false;
+    pipelineDesc.blendState.mode = FLUXION_RHI_BLEND_MODE_NONE;
     pipelineDesc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     pipelineDesc.colorFormats[0] = renderer->postOutputFormat;
     pipelineDesc.colorFormatCount = 1;
@@ -297,13 +460,162 @@ static bool FluxionPostProcessPass_EnsureResources(FluxionRenderer* renderer)
     return true;
 }
 
+// The two draws the chain is made of. Same shape, same layout, one
+// difference: the way up ADDS to what is already there.
+static bool FluxionBloom_EnsurePipelines(FluxionRenderer* renderer)
+{
+    if (renderer->bloomFailed) return false;
+    if (FLUXION_HANDLE_IS_VALID(renderer->bloomDownPipeline) && FLUXION_HANDLE_IS_VALID(renderer->bloomUpPipeline)) return true;
+
+    FluxionShaderProgramDesc downDesc;
+    memset(&downDesc, 0, sizeof(downDesc));
+    downDesc.debugName = "Fluxion.Renderer.BloomDown";
+    downDesc.vertexSource = kPostVertexSource;
+    downDesc.fragmentSource = kBloomDownFragmentSource;
+    renderer->bloomDownProgram = Fluxion_ShaderProgram_Create(renderer->device, &downDesc);
+
+    FluxionShaderProgramDesc upDesc;
+    memset(&upDesc, 0, sizeof(upDesc));
+    upDesc.debugName = "Fluxion.Renderer.BloomUp";
+    upDesc.vertexSource = kPostVertexSource;
+    upDesc.fragmentSource = kBloomUpFragmentSource;
+    renderer->bloomUpProgram = Fluxion_ShaderProgram_Create(renderer->device, &upDesc);
+
+    if (!FLUXION_HANDLE_IS_VALID(renderer->bloomDownProgram) || !FLUXION_HANDLE_IS_VALID(renderer->bloomUpProgram))
+    {
+        FLUXION_LOG_ERROR(FLUXION_POST_LOG_CATEGORY, "the glow's shaders could not be built; nothing will glow");
+        renderer->bloomFailed = true;
+        return false;
+    }
+
+    const FluxionRHIBindGroupLayoutDesc layoutDesc = FluxionBloom_MakeLayoutDesc();
+    renderer->bloomLayout = Fluxion_RHI_CreateBindGroupLayout(renderer->device, &layoutDesc);
+
+    FluxionRHIBufferDesc uniformDesc;
+    memset(&uniformDesc, 0, sizeof(uniformDesc));
+    uniformDesc.size = (usize)FLUXION_RENDERER_MAX_BLOOM_STEPS * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE;
+    uniformDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_CONSTANT_BUFFER;
+    uniformDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
+    uniformDesc.debugName = "Fluxion.Renderer.BloomSteps";
+    renderer->bloomUniformBuffer = Fluxion_RHI_CreateBuffer(renderer->device, &uniformDesc);
+
+    FluxionRHIVertexLayout vertexLayout;
+    memset(&vertexLayout, 0, sizeof(vertexLayout));
+    vertexLayout.attributes[0].location = 0;
+    vertexLayout.attributes[0].format = FLUXION_RHI_FORMAT_R32G32_FLOAT;
+    vertexLayout.attributes[0].offset = 0;
+    vertexLayout.attributeCount = 1;
+    vertexLayout.stride = 2 * sizeof(f32);
+
+    const FluxionRHIBindGroupLayoutHandle noLayout = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    FluxionRHIGraphicsPipelineDesc pipelineDesc;
+    memset(&pipelineDesc, 0, sizeof(pipelineDesc));
+    pipelineDesc.vertexShader = FluxionRendererInternal_ShaderProgram_GetVertexShader(renderer->bloomDownProgram);
+    pipelineDesc.fragmentShader = FluxionRendererInternal_ShaderProgram_GetFragmentShader(renderer->bloomDownProgram);
+    pipelineDesc.vertexLayout = vertexLayout;
+    pipelineDesc.rasterState.cullMode = FLUXION_RHI_CULL_MODE_NONE;
+    pipelineDesc.depthState.testEnable = false;
+    pipelineDesc.depthState.writeEnable = false;
+    pipelineDesc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_ALWAYS;
+    pipelineDesc.blendState.mode = FLUXION_RHI_BLEND_MODE_NONE;
+    pipelineDesc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    pipelineDesc.colorFormats[0] = FLUXION_RENDERER_SCENE_COLOR_FORMAT;
+    pipelineDesc.colorFormatCount = 1;
+    pipelineDesc.depthFormat = FLUXION_RHI_FORMAT_UNKNOWN;
+    pipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_GLOBAL] = renderer->bloomLayout;
+    pipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_FRAME] = noLayout;
+    pipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_MATERIAL] = noLayout;
+    pipelineDesc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_OBJECT] = noLayout;
+    pipelineDesc.bindGroupLayoutCount = FLUXION_RHI_BIND_GROUP_GLOBAL + 1;
+    pipelineDesc.debugName = "Fluxion.Renderer.BloomDownPipeline";
+    renderer->bloomDownPipeline = Fluxion_RHI_CreateGraphicsPipeline(renderer->device, &pipelineDesc);
+
+    // The one difference.
+    pipelineDesc.vertexShader = FluxionRendererInternal_ShaderProgram_GetVertexShader(renderer->bloomUpProgram);
+    pipelineDesc.fragmentShader = FluxionRendererInternal_ShaderProgram_GetFragmentShader(renderer->bloomUpProgram);
+    pipelineDesc.blendState.mode = FLUXION_RHI_BLEND_MODE_ADD;
+    pipelineDesc.debugName = "Fluxion.Renderer.BloomUpPipeline";
+    renderer->bloomUpPipeline = Fluxion_RHI_CreateGraphicsPipeline(renderer->device, &pipelineDesc);
+
+    if (!FLUXION_HANDLE_IS_VALID(renderer->bloomDownPipeline) || !FLUXION_HANDLE_IS_VALID(renderer->bloomUpPipeline) ||
+        !FLUXION_HANDLE_IS_VALID(renderer->bloomUniformBuffer))
+    {
+        FLUXION_LOG_ERROR(FLUXION_POST_LOG_CATEGORY, "the glow could not be set up; nothing will glow");
+        renderer->bloomFailed = true;
+        return false;
+    }
+    return true;
+}
+
+// One group per step, remade when what they read changes -- which is when
+// the frame changes size, and never per frame.
+static bool FluxionBloom_EnsureBindGroups(FluxionRenderer* renderer)
+{
+    if (renderer->bloomBoundSceneColor.index == renderer->sceneColorSampleView.index &&
+        renderer->bloomBoundSceneColor.generation == renderer->sceneColorSampleView.generation &&
+        FLUXION_HANDLE_IS_VALID(renderer->bloomBindGroups[0]))
+    {
+        return true;
+    }
+
+    for (u32 step = 0; step < FLUXION_RENDERER_MAX_BLOOM_STEPS; ++step)
+    {
+        if (FLUXION_HANDLE_IS_VALID(renderer->bloomBindGroups[step])) Fluxion_RHI_DestroyBindGroup(renderer->bloomBindGroups[step]);
+        renderer->bloomBindGroups[step] = (FluxionRHIBindGroupHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
+
+    const u32 levels = renderer->bloomLevels;
+    const u32 stepCount = levels * 2u - 1u;
+
+    for (u32 step = 0; step < stepCount; ++step)
+    {
+        // The way down reads the frame first and then each level it has
+        // just written; the way up reads the level below the one it is
+        // adding to.
+        FluxionRHITextureViewHandle source;
+        if (step == 0) source = renderer->sceneColorSampleView;
+        else if (step < levels) source = renderer->bloomSampleViews[step - 1];
+        else source = renderer->bloomSampleViews[levels - 1 - (step - levels)];
+
+        FluxionRHIBindGroupEntry entries[3];
+        memset(entries, 0, sizeof(entries));
+
+        entries[0].binding = 0;
+        entries[0].type = FLUXION_RHI_BINDING_TYPE_UNIFORM_BUFFER;
+        entries[0].buffer = renderer->bloomUniformBuffer;
+        entries[0].bufferOffset = (usize)step * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE;
+        entries[0].bufferSize = sizeof(FluxionBloomUniform);
+
+        entries[1].binding = 1;
+        entries[1].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+        entries[1].textureView = source;
+
+        entries[2].binding = 2;
+        entries[2].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+        entries[2].sampler = renderer->postSampler;
+
+        FluxionRHIBindGroupDesc groupDesc;
+        groupDesc.layout = renderer->bloomLayout;
+        groupDesc.entries = entries;
+        groupDesc.entryCount = 3;
+
+        renderer->bloomBindGroups[step] = Fluxion_RHI_CreateBindGroup(renderer->device, &groupDesc);
+        if (!FLUXION_HANDLE_IS_VALID(renderer->bloomBindGroups[step])) return false;
+    }
+
+    renderer->bloomBoundSceneColor = renderer->sceneColorSampleView;
+    return true;
+}
+
 // One bind group, kept, remade only when the texture it reads changes --
 // which is when the window is resized. A group per frame is what
 // exhausted a descriptor heap the last time this engine made one.
-static bool FluxionPostProcessPass_EnsureBindGroup(FluxionRenderer* renderer)
+static bool FluxionPostProcessPass_EnsureBindGroup(FluxionRenderer* renderer, FluxionRHITextureViewHandle glow)
 {
     if (renderer->postBoundSceneColor.index == renderer->sceneColorSampleView.index &&
         renderer->postBoundSceneColor.generation == renderer->sceneColorSampleView.generation &&
+        renderer->postBoundGlow.index == glow.index && renderer->postBoundGlow.generation == glow.generation &&
         FLUXION_HANDLE_IS_VALID(renderer->postBindGroup))
     {
         return true;
@@ -312,7 +624,7 @@ static bool FluxionPostProcessPass_EnsureBindGroup(FluxionRenderer* renderer)
     if (FLUXION_HANDLE_IS_VALID(renderer->postBindGroup)) Fluxion_RHI_DestroyBindGroup(renderer->postBindGroup);
     renderer->postBindGroup = (FluxionRHIBindGroupHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
 
-    FluxionRHIBindGroupEntry entries[3];
+    FluxionRHIBindGroupEntry entries[5];
     memset(entries, 0, sizeof(entries));
 
     entries[0].binding = 0;
@@ -329,15 +641,161 @@ static bool FluxionPostProcessPass_EnsureBindGroup(FluxionRenderer* renderer)
     entries[2].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
     entries[2].sampler = renderer->postSampler;
 
+    // THE GLOW, OR THE SCENE ITSELF WHEN THERE IS NONE.
+    //
+    // A binding must name a texture whether or not the shader reads it,
+    // and the frame already has one of the right kind to hand. Binding
+    // the scene a second time costs nothing and saves a one-pixel
+    // stand-in texture that exists only to be multiplied by zero -- which
+    // is what the resolve does with it when nothing glows.
+    entries[3].binding = 3;
+    entries[3].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    entries[3].textureView = glow;
+
+    entries[4].binding = 4;
+    entries[4].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    entries[4].sampler = renderer->postSampler;
+
     FluxionRHIBindGroupDesc groupDesc;
     groupDesc.layout = renderer->postLayout;
     groupDesc.entries = entries;
-    groupDesc.entryCount = 3;
+    groupDesc.entryCount = 5;
 
     renderer->postBindGroup = Fluxion_RHI_CreateBindGroup(renderer->device, &groupDesc);
     if (!FLUXION_HANDLE_IS_VALID(renderer->postBindGroup)) return false;
 
     renderer->postBoundSceneColor = renderer->sceneColorSampleView;
+    renderer->postBoundGlow = glow;
+    return true;
+}
+
+// DOWN, THEN BACK UP, IN ONE GO.
+//
+// The way down halves the picture level by level, the first step also
+// deciding what is bright enough to glow at all. The way up spreads each
+// small level over the larger one it came from and ADDS -- so the widest
+// blur and the narrowest end up in the same picture, which is what makes
+// the falloff smooth.
+//
+// Returns whether level zero ended up holding a glow the resolve can add.
+static bool FluxionBloom_Build(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList)
+{
+    if (!renderer->bloomEnabled) return false;
+    if (!FLUXION_HANDLE_IS_VALID(renderer->sceneColorTexture)) return false;
+    if (!FluxionBloom_EnsurePipelines(renderer)) return false;
+    if (!FluxionBloom_EnsureChain(renderer, renderer->sceneColorWidth, renderer->sceneColorHeight)) return false;
+    if (!FluxionBloom_EnsureBindGroups(renderer)) return false;
+
+    const u32 levels = renderer->bloomLevels;
+    const FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+
+    FluxionVec4 curve;
+    FluxionRendererInternal_RenderView_GetBloom(renderer->currentView, &curve);
+
+    // Every step's numbers, written once before any of them run: the
+    // buffer is one allocation with a slice per step, and a map per step
+    // would be a map per draw.
+    u8* uniforms = (u8*)Fluxion_RHI_MapBuffer(renderer->bloomUniformBuffer);
+    if (uniforms == NULL) return false;
+
+    for (u32 step = 0; step < levels * 2u - 1u; ++step)
+    {
+        const bool goingDown = step < levels;
+
+        // Which level is being READ, and therefore whose texel size the
+        // shader steps by.
+        u32 sourceWidth;
+        u32 sourceHeight;
+        if (step == 0)
+        {
+            sourceWidth = renderer->sceneColorWidth;
+            sourceHeight = renderer->sceneColorHeight;
+        }
+        else
+        {
+            const u32 sourceLevel = goingDown ? (step - 1u) : (levels - 1u - (step - levels));
+            sourceWidth = FluxionBloom_LevelSize(renderer->bloomWidth, sourceLevel);
+            sourceHeight = FluxionBloom_LevelSize(renderer->bloomHeight, sourceLevel);
+        }
+
+        FluxionBloomUniform uniform;
+        memset(&uniform, 0, sizeof(uniform));
+        uniform.step.x = 1.0f / (f32)sourceWidth;
+        uniform.step.y = 1.0f / (f32)sourceHeight;
+        uniform.step.z = (step == 0) ? 1.0f : 0.0f;
+        uniform.curve = curve;
+
+        memcpy(uniforms + (usize)step * FLUXION_RENDERER_OBJECT_BUFFER_STRIDE, &uniform, sizeof(uniform));
+    }
+    Fluxion_RHI_UnmapBuffer(renderer->bloomUniformBuffer);
+
+    // A texture nobody has drawn into is in no state at all. Said once,
+    // for every level at once, so that the steps below can each assume
+    // the one before left theirs readable.
+    if (renderer->bloomNeedsFirstTransition)
+    {
+        FluxionRHIBarrier firstUse = { renderer->bloomTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_UNDEFINED,
+                                       FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 0 };
+        Fluxion_RHI_CommandList_Barrier(commandList, &firstUse, 1);
+        renderer->bloomNeedsFirstTransition = false;
+    }
+
+    for (u32 step = 0; step < levels * 2u - 1u; ++step)
+    {
+        const bool goingDown = step < levels;
+        const u32 targetLevel = goingDown ? step : (levels - 2u - (step - levels));
+        const u32 sourceLevel = goingDown ? (step == 0 ? 0u : step - 1u) : (targetLevel + 1u);
+
+        // The level about to be written becomes writable, and the level
+        // about to be read becomes readable. The scene's own target is
+        // not touched here: the graph already handed it over.
+        FluxionRHIBarrier toTarget = { renderer->bloomTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_SHADER_READ,
+                                       FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET, targetLevel, 1 };
+        Fluxion_RHI_CommandList_Barrier(commandList, &toTarget, 1);
+
+        if (step > 0)
+        {
+            FluxionRHIBarrier toSource = { renderer->bloomTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET,
+                                           FLUXION_RHI_RESOURCE_STATE_SHADER_READ, sourceLevel, 1 };
+            Fluxion_RHI_CommandList_Barrier(commandList, &toSource, 1);
+        }
+
+        const u32 targetWidth = FluxionBloom_LevelSize(renderer->bloomWidth, targetLevel);
+        const u32 targetHeight = FluxionBloom_LevelSize(renderer->bloomHeight, targetLevel);
+
+        FluxionRHIRenderingAttachment attachment;
+        attachment.view = renderer->bloomTargetViews[targetLevel];
+
+        // CLEARED ON THE WAY DOWN, KEPT ON THE WAY UP: going down each
+        // level is written from nothing, and going up each level is added
+        // to what the way down left in it.
+        attachment.clear = goingDown;
+        attachment.clearColor[0] = 0.0f;
+        attachment.clearColor[1] = 0.0f;
+        attachment.clearColor[2] = 0.0f;
+        attachment.clearColor[3] = 1.0f;
+
+        FluxionRHIRenderingDesc renderingDesc;
+        renderingDesc.colorAttachments = &attachment;
+        renderingDesc.colorAttachmentCount = 1;
+        renderingDesc.depthAttachment = NULL;
+        renderingDesc.width = targetWidth;
+        renderingDesc.height = targetHeight;
+
+        Fluxion_RHI_CommandList_BeginRendering(commandList, &renderingDesc);
+        Fluxion_RHI_CommandList_SetViewport(commandList, 0.0f, 0.0f, (f32)targetWidth, (f32)targetHeight, 0.0f, 1.0f);
+        Fluxion_RHI_CommandList_SetScissor(commandList, 0, 0, targetWidth, targetHeight);
+        Fluxion_RHI_CommandList_SetPipeline(commandList, goingDown ? renderer->bloomDownPipeline : renderer->bloomUpPipeline);
+        Fluxion_RHI_CommandList_SetBindGroup(commandList, FLUXION_RHI_BIND_GROUP_GLOBAL, renderer->bloomBindGroups[step]);
+        Fluxion_RHI_CommandList_SetVertexBuffer(commandList, 0, renderer->postVertexBuffer, 0);
+        Fluxion_RHI_CommandList_Draw(commandList, 3, 1, 0, 0);
+        Fluxion_RHI_CommandList_EndRendering(commandList);
+    }
+
+    // And the top of the chain, which the resolve is about to read.
+    FluxionRHIBarrier toRead = { renderer->bloomTexture, noBuffer, FLUXION_RHI_RESOURCE_STATE_RENDER_TARGET,
+                                 FLUXION_RHI_RESOURCE_STATE_SHADER_READ, 0, 1 };
+    Fluxion_RHI_CommandList_Barrier(commandList, &toRead, 1);
     return true;
 }
 
@@ -360,7 +818,12 @@ void FluxionPostProcessPass_Execute(FluxionRHICommandListHandle commandList, voi
     if (renderer == NULL) return;
     if (!FLUXION_HANDLE_IS_VALID(renderer->sceneColorTexture)) return;
     if (!FluxionPostProcessPass_EnsureResources(renderer)) return;
-    if (!FluxionPostProcessPass_EnsureBindGroup(renderer)) return;
+
+    // The glow is built first, because the resolve adds it.
+    const bool glowing = FluxionBloom_Build(renderer, commandList);
+    const FluxionRHITextureViewHandle glow = glowing ? renderer->bloomSampleViews[0] : renderer->sceneColorSampleView;
+
+    if (!FluxionPostProcessPass_EnsureBindGroup(renderer, glow)) return;
 
     FluxionRenderTargetHandle renderTarget = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     FluxionRendererInternal_RenderView_Get(renderer->currentView, &renderTarget, NULL, NULL);
@@ -382,6 +845,12 @@ void FluxionPostProcessPass_Execute(FluxionRHICommandListHandle commandList, voi
     // Which way this backend's rows run -- see PostProcess.jsl. Asked of
     // the device rather than guessed, and only this pass needs it.
     uniform.params.w = Fluxion_RHI_GetDeviceBackendType(renderer->device) == FLUXION_RHI_BACKEND_OPENGL ? 1.0f : 0.0f;
+
+    // How much of it is added back -- and zero when there is none, which
+    // is what makes binding the scene in its place harmless.
+    FluxionVec4 bloomCurve;
+    FluxionRendererInternal_RenderView_GetBloom(renderer->currentView, &bloomCurve);
+    uniform.bloom.x = glowing ? bloomCurve.z : 0.0f;
 
     void* mapped = Fluxion_RHI_MapBuffer(renderer->postUniformBuffer);
     if (mapped != NULL)
@@ -423,6 +892,21 @@ void FluxionPostProcessPass_Execute(FluxionRHICommandListHandle commandList, voi
 void FluxionRendererInternal_PostProcess_Shutdown(FluxionRenderer* renderer)
 {
     FluxionRendererInternal_PostProcess_ReleaseSceneColor(renderer);
+    FluxionBloom_Release(renderer);
+
+    if (FLUXION_HANDLE_IS_VALID(renderer->bloomDownPipeline)) Fluxion_RHI_DestroyPipeline(renderer->bloomDownPipeline);
+    if (FLUXION_HANDLE_IS_VALID(renderer->bloomUpPipeline)) Fluxion_RHI_DestroyPipeline(renderer->bloomUpPipeline);
+    if (FLUXION_HANDLE_IS_VALID(renderer->bloomDownProgram)) Fluxion_ShaderProgram_Destroy(renderer->bloomDownProgram);
+    if (FLUXION_HANDLE_IS_VALID(renderer->bloomUpProgram)) Fluxion_ShaderProgram_Destroy(renderer->bloomUpProgram);
+    if (FLUXION_HANDLE_IS_VALID(renderer->bloomLayout)) Fluxion_RHI_DestroyBindGroupLayout(renderer->bloomLayout);
+    if (FLUXION_HANDLE_IS_VALID(renderer->bloomUniformBuffer)) Fluxion_RHI_DestroyBuffer(renderer->bloomUniformBuffer);
+
+    renderer->bloomDownPipeline = (FluxionRHIPipelineHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomUpPipeline = (FluxionRHIPipelineHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomDownProgram = (FluxionShaderProgramHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomUpProgram = (FluxionShaderProgramHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomLayout = (FluxionRHIBindGroupLayoutHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->bloomUniformBuffer = (FluxionRHIBufferHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
 
     if (FLUXION_HANDLE_IS_VALID(renderer->postPipeline)) Fluxion_RHI_DestroyPipeline(renderer->postPipeline);
     if (FLUXION_HANDLE_IS_VALID(renderer->postProgram)) Fluxion_ShaderProgram_Destroy(renderer->postProgram);

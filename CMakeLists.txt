@@ -69,6 +69,7 @@ endif()
 
 add_subdirectory(ThirdParty/pdjson)
 add_subdirectory(ThirdParty/vma)
+add_subdirectory(ThirdParty/nuklear)
 add_subdirectory(ThirdParty/glheaders)
 if(WIN32)
     # D3D12 (and therefore D3D12MA) is a Windows-only API -- this target
@@ -88,6 +89,7 @@ add_subdirectory(Source/ShaderCompiler)
 add_subdirectory(Source/TextureCompress)
 add_subdirectory(Source/Script)
 add_subdirectory(Source/RenderCore)
+add_subdirectory(Source/DebugUI)
 add_subdirectory(Source/Scene)
 
 if(FLUXION_BUILD_TESTS)
@@ -101,6 +103,7 @@ if(FLUXION_BUILD_TESTS)
     add_subdirectory(Tests/TextureCompressTests)
     add_subdirectory(Tests/ScriptTests)
     add_subdirectory(Tests/RenderCoreTests)
+    add_subdirectory(Tests/DebugUITests)
     add_subdirectory(Tests/SceneTests)
 
     # Not a compiled test: it reads the top of every source file the engine

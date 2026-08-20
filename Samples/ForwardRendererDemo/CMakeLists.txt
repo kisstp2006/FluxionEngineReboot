@@ -40,7 +40,7 @@
 # SPDX-License-Identifier: CPAL-1.0
 
 add_executable(ForwardRendererDemo main.cpp)
-target_link_libraries(ForwardRendererDemo PRIVATE Fluxion::RHI Fluxion::Application Fluxion::Platform Fluxion::Foundation Fluxion::ShaderCompiler Fluxion::RenderCore Fluxion::Scene Fluxion::Script Fluxion::Core Fluxion::Assets)
+target_link_libraries(ForwardRendererDemo PRIVATE Fluxion::RHI Fluxion::Application Fluxion::Platform Fluxion::Foundation Fluxion::ShaderCompiler Fluxion::RenderCore Fluxion::Scene Fluxion::Script Fluxion::Core Fluxion::Assets Fluxion::DebugUI)
 engine_set_warnings(ForwardRendererDemo)
 
 target_compile_definitions(ForwardRendererDemo PRIVATE

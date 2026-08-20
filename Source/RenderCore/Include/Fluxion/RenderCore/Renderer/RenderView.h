@@ -231,6 +231,25 @@ typedef struct FluxionRenderViewDesc
     // applied twice is far worse than one applied not at all.
     f32 tonemapWhitePoint;
 
+    // --- what glows -------------------------------------------------------
+    //
+    // Only meaningful with a pipeline whose "bloom" is on; without the
+    // pass these are numbers nothing reads.
+    //
+    // The threshold is in the same units as everything else the frame
+    // holds: an amount of light, before the camera's exposure. Zero is
+    // read as one -- a threshold of nothing would make every surface
+    // glow. The knee is how far below the threshold the glow fades in
+    // rather than switching on; zero is read as a quarter of the
+    // threshold, because a hard edge shows up as a rim that crawls along
+    // a surface as the camera moves.
+    f32 bloomThreshold;
+    f32 bloomKnee;
+
+    // How much of the glow is added back on top of the picture. Zero --
+    // the value of a field nobody set -- adds none of it.
+    f32 bloomIntensity;
+
     // Whether the pass encodes its result for the display before writing
     // it.
     //

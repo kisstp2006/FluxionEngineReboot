@@ -248,6 +248,15 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeObjectLa
 // Everything temporal reads from here: the motion vectors this frame
 // wrote, and (once the depth pyramid lands beside them) what the frame
 // before this one could see.
+// HOW MANY HALVINGS THE GLOW IS SPREAD OVER. Eight takes a 1080p frame
+// down to about four pixels across, which is wider than any glow needs to
+// reach; going further spends draws on a picture that is already one
+// colour.
+#define FLUXION_RENDERER_MAX_BLOOM_LEVELS 8
+
+// A step per level down, and one per level but the last on the way up.
+#define FLUXION_RENDERER_MAX_BLOOM_STEPS (FLUXION_RENDERER_MAX_BLOOM_LEVELS * 2 - 1)
+
 // How many levels a depth pyramid may have. Sixteen halvings take the
 // largest screen anybody draws down to a single texel, and the array is
 // fixed rather than allocated because a frame's size does not change
@@ -517,12 +526,43 @@ typedef struct FluxionRenderer
     FluxionRHIBufferHandle postUniformBuffer;
     FluxionRHIBindGroupHandle postBindGroup;
     FluxionRHITextureViewHandle postBoundSceneColor;
+    FluxionRHITextureViewHandle postBoundGlow;
 
     // The format of what the resolve writes -- the screen's, not the
     // scene's. Told by the application, because only it knows what it
     // asked its swapchain for.
     FluxionRHIFormat postOutputFormat;
     bool postFailed;
+
+    // --- what glows, and how far it spreads -----------------------------
+    //
+    // A chain of ever smaller pictures: the first holds only what is
+    // bright enough to glow, and each one after it is the one before,
+    // halved and blurred a little. Small blurs on small pictures are
+    // wide blurs on the frame, and summing them on the way back up is
+    // what makes the falloff smooth rather than stepped.
+    FluxionRHITextureHandle bloomTexture;
+    FluxionRHITextureViewHandle bloomTargetViews[FLUXION_RENDERER_MAX_BLOOM_LEVELS];
+    FluxionRHITextureViewHandle bloomSampleViews[FLUXION_RENDERER_MAX_BLOOM_LEVELS];
+    u32 bloomLevels;
+    u32 bloomWidth;
+    u32 bloomHeight;
+    bool bloomNeedsFirstTransition;
+
+    FluxionShaderProgramHandle bloomDownProgram;
+    FluxionShaderProgramHandle bloomUpProgram;
+    FluxionRHIPipelineHandle bloomDownPipeline;
+    FluxionRHIPipelineHandle bloomUpPipeline;
+    FluxionRHIBindGroupLayoutHandle bloomLayout;
+    FluxionRHIBufferHandle bloomUniformBuffer;
+
+    // One per step of the chain: every level on the way down, then every
+    // level but the last on the way up.
+    FluxionRHIBindGroupHandle bloomBindGroups[FLUXION_RENDERER_MAX_BLOOM_STEPS];
+    FluxionRHITextureViewHandle bloomBoundSceneColor;
+
+    bool bloomEnabled;
+    bool bloomFailed;
 
     // WHETHER THE SCENE GOES THROUGH THE CHAIN AT ALL. Off by default,
     // because it changes what every pipeline drawing the scene must be
@@ -786,7 +826,6 @@ bool FluxionRendererInternal_History_EnsurePyramid(FluxionRenderer* renderer, u3
 // that into what a monitor shows. Anything that wants to read the picture
 // as light -- what glows, how bright the frame is -- reads this.
 #define FLUXION_RENDERER_SCENE_COLOR_FORMAT FLUXION_RHI_FORMAT_R16G16B16A16_FLOAT
-
 bool FluxionRendererInternal_PostProcess_EnsureSceneColor(FluxionRenderer* renderer, u32 width, u32 height);
 void FluxionRendererInternal_PostProcess_ReleaseSceneColor(FluxionRenderer* renderer);
 void FluxionRendererInternal_PostProcess_Shutdown(FluxionRenderer* renderer);
@@ -806,6 +845,13 @@ bool FluxionRendererInternal_RenderView_GetToneMapping(FluxionRenderViewHandle v
 // Said by the renderer, once a frame, when the resolve at the end will
 // apply the camera and the curve instead of every surface shader.
 void FluxionRendererInternal_RenderView_SetToneMappingDeferred(FluxionRenderViewHandle view, bool deferred);
+
+// What glows and by how much: x the threshold, y the knee, z how much of
+// the glow is added back. The same three the caller set on the view.
+bool FluxionRendererInternal_RenderView_GetBloom(FluxionRenderViewHandle view, FluxionVec4* outBloom);
+
+// Said by the pipeline asset, through the renderer.
+void FluxionRendererInternal_Renderer_SetBloomEnabled(FluxionRenderer* renderer, bool enabled);
 
 // --- "MotionVectorPass" registered pass type (MotionVectorPass.c) ----------
 

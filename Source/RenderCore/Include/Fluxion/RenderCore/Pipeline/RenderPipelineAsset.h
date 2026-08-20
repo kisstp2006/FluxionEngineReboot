@@ -140,12 +140,17 @@ typedef struct FluxionRenderPipelineAssetSettings
     // light rather than for the screen.
     bool postfx;
 
-    // The four that have no pass in this build. False is the only value
+    // WHAT GLOWS SPREADS INTO WHAT IS BESIDE IT. Needs "postfx": the
+    // glow is built from the light the scene was drawn in, and there is
+    // no such picture without the chain. Asked for without it, it is
+    // simply not switched on.
+    bool bloom;
+
+    // The three that have no pass in this build. False is the only value
     // a file may give them; true is refused by name.
     bool taa;
     bool ssao;
     bool ssr;
-    bool bloom;
 
     // Zero and one both mean no multisampling, and nothing else is
     // accepted yet -- the RHI has no multisampled attachment to ask for.

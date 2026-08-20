@@ -154,6 +154,18 @@ bool Fluxion_ShaderProgram_IsReloadReady(const FluxionShaderProgramReloadJob* jo
 FluxionShaderProgramReloadOutcome Fluxion_ShaderProgram_FinishReload(FluxionShaderProgramReloadJob* job);
 void Fluxion_ShaderProgram_Destroy(FluxionShaderProgramHandle program);
 
+// THE TWO STAGES IT WAS BUILT INTO.
+//
+// A pipeline is made from shaders, and a program is how this engine gets
+// shaders -- so anything outside this module that builds its own pipeline
+// needs these. The renderer's own passes reach them by a shorter road
+// because they are inside; the first caller from outside was the
+// developer panels, which draw with a pipeline of their own.
+//
+// Invalid handles if the program is not one, or if it failed to build.
+FluxionRHIShaderHandle Fluxion_ShaderProgram_GetVertexShader(FluxionShaderProgramHandle program);
+FluxionRHIShaderHandle Fluxion_ShaderProgram_GetFragmentShader(FluxionShaderProgramHandle program);
+
 #ifdef __cplusplus
 }
 #endif

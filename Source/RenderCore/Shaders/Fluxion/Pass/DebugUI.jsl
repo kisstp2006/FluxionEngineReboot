@@ -39,62 +39,38 @@
 //
 // SPDX-License-Identifier: CPAL-1.0
 
-#include "TestFramework.h"
 
-#include <cstdio>
+#ifndef FLUXION_PASS_DEBUG_UI_INCLUDED
+#define FLUXION_PASS_DEBUG_UI_INCLUDED
 
-void Test_Lexer_Run(TestContext& ctx);
-void Test_Preprocessor_Run(TestContext& ctx);
-void Test_Parser_Run(TestContext& ctx);
-void Test_Semantic_Run(TestContext& ctx);
-void Test_HLSLBackend_Run(TestContext& ctx);
-void Test_UniformLayout_Run(TestContext& ctx);
-void Test_FloatLiterals_Run(TestContext& ctx);
-void Test_HLSLBackend_EntryReturn_Run(TestContext& ctx);
-void Test_GLSLBackend_Run(TestContext& ctx);
-void Test_Discard_Run(TestContext& ctx);
-void Test_InstanceIndex_Run(TestContext& ctx);
-void Test_DXCAdapter_Run(TestContext& ctx);
-void Test_Compatibility_Run(TestContext& ctx);
-void Test_ShaderCache_Run(TestContext& ctx);
-void Test_BindingGroups_Run(TestContext& ctx);
-void Test_BindingGroups_DefaultIsMaterial_Run(TestContext& ctx);
-void Test_ComputeStorageBuffer_Run(TestContext& ctx);
-void Test_TextureSampleLevel_Run(TestContext& ctx);
-void Test_ComparisonSampling_Run(TestContext& ctx);
+// A PANEL'S PIXELS: a colour, times whatever the atlas holds there.
+//
+// Every rectangle the toolkit draws goes through this, glyphs included --
+// a solid rectangle simply reads a part of the atlas that is white, so
+// text and boxes are the same draw with the same shader. That is what
+// makes a whole interface one or two draws instead of hundreds.
 
-int main()
-{
-    TestContext ctx;
+// DECLARED IN BOTH STAGES, like the frame constants are. What binding a
+// name gets is decided per stage, so a uniform the vertex stage names and
+// the fragment stage does not would leave the two disagreeing about which
+// number the texture after it has -- and a texture read at the number of
+// a uniform buffer is a validation error at best.
+[Uniform(Global)] Vector4 uiScreen;
 
-    std::fprintf(stderr, "Running ShaderCompilerTests...\n");
+[Texture(Global)] Texture2D uiAtlas;
 
-    Test_Lexer_Run(ctx);
-    Test_Preprocessor_Run(ctx);
-    Test_Parser_Run(ctx);
-    Test_Semantic_Run(ctx);
-    Test_HLSLBackend_Run(ctx);
-    Test_UniformLayout_Run(ctx);
-    Test_FloatLiterals_Run(ctx);
-    Test_HLSLBackend_EntryReturn_Run(ctx);
-    Test_GLSLBackend_Run(ctx);
-    Test_Discard_Run(ctx);
-    Test_InstanceIndex_Run(ctx);
-    Test_DXCAdapter_Run(ctx);
-    Test_Compatibility_Run(ctx);
-    Test_ShaderCache_Run(ctx);
-    Test_BindingGroups_Run(ctx);
-    Test_BindingGroups_DefaultIsMaterial_Run(ctx);
-    Test_ComputeStorageBuffer_Run(ctx);
-    Test_TextureSampleLevel_Run(ctx);
-    Test_ComparisonSampling_Run(ctx);
+[Input] Vector2 vUV;
+[Input] Vector4 vColor;
 
-    if (ctx.failures == 0)
-    {
-        std::fprintf(stderr, "All ShaderCompilerTests passed.\n");
-        return 0;
-    }
+[Target(0)] Vector4 fragColor;
 
-    std::fprintf(stderr, "%d ShaderCompilerTests check(s) failed.\n", ctx.failures);
-    return 1;
+void main() {
+  Vector4 sampled = textureLod(uiAtlas, vUV, 0.0);
+
+  // NO TRANSFER FUNCTION HERE. These colours are already the numbers a
+  // screen should show -- the panels are drawn on top of the finished
+  // picture, after everything that turns light into colour has run.
+  return vColor * sampled;
 }
+
+#endif

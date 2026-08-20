@@ -161,7 +161,7 @@ struct FluxionRHIOpenGLStateCache
     bool depthTestEnable = false;
     bool depthWriteEnable = false;
     FluxionRHICompareOp depthCompareOp = FLUXION_RHI_COMPARE_OP_ALWAYS;
-    bool blendEnable = false;
+    FluxionRHIBlendMode blendMode = FLUXION_RHI_BLEND_MODE_NONE;
 };
 
 // --- Resource-binding cache ------------------------------------------------

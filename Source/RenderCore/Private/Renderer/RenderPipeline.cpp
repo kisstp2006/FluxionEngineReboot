@@ -218,7 +218,8 @@ extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resol
     desc.depthState.testEnable = true;
     desc.depthState.writeEnable = (record->category == FLUXION_RENDER_PIPELINE_CATEGORY_OPAQUE);
     desc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL;
-    desc.blendState.blendEnable = (record->category == FLUXION_RENDER_PIPELINE_CATEGORY_TRANSPARENT);
+    desc.blendState.mode = (record->category == FLUXION_RENDER_PIPELINE_CATEGORY_TRANSPARENT) ? FLUXION_RHI_BLEND_MODE_ALPHA
+                                                                                             : FLUXION_RHI_BLEND_MODE_NONE;
     desc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     desc.colorFormats[0] = record->colorFormat;
     desc.colorFormatCount = 1;
@@ -300,7 +301,7 @@ extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_ShaderProgram_Create
     desc.depthState.testEnable = true;
     desc.depthState.writeEnable = false;
     desc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL;
-    desc.blendState.blendEnable = false;
+    desc.blendState.mode = FLUXION_RHI_BLEND_MODE_NONE;
     desc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     desc.colorFormats[0] = colorFormat;
     desc.colorFormatCount = 1;

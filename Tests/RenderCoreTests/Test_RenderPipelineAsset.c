@@ -148,11 +148,10 @@ static void Test_RenderPipelineAsset_RefusesWhatItCannotDo(TestContext* ctx)
         "{ \"graph\": \"TestGraph\", \"taa\": true }",
         "{ \"graph\": \"TestGraph\", \"ssao\": true }",
         "{ \"graph\": \"TestGraph\", \"ssr\": true }",
-        "{ \"graph\": \"TestGraph\", \"bloom\": true }",
         "{ \"graph\": \"TestGraph\", \"msaa\": 4 }",
     };
     static const char* const expectedNames[] = {
-        "clustered lighting", "TAA", "SSAO", "SSR", "bloom", "multisampling",
+        "clustered lighting", "TAA", "SSAO", "SSR", "multisampling",
     };
 
     FluxionRenderPipelineAsset asset;
@@ -187,7 +186,6 @@ static void Test_RenderPipelineAsset_RefusesWhatItCannotDo(TestContext* ctx)
             case 1: settings.taa = true; break;
             case 2: settings.ssao = true; break;
             case 3: settings.ssr = true; break;
-            case 4: settings.bloom = true; break;
             default: settings.msaaSamples = 4; break;
         }
 
@@ -195,6 +193,16 @@ static void Test_RenderPipelineAsset_RefusesWhatItCannotDo(TestContext* ctx)
         TEST_CHECK(ctx, !Fluxion_RenderPipelineAsset_AreSettingsSupported(&settings, &unsupported));
         TEST_CHECK(ctx, unsupported != NULL && strcmp(unsupported, expectedNames[i]) == 0);
     }
+
+    // AND THE ONE THAT STOPPED BEING REFUSED. A glow has a pass behind
+    // it now, so a file asking for one is read rather than turned away --
+    // which is the whole difference between a setting and a promise.
+    memset(&settings, 0, sizeof(settings));
+    settings.bloom = true;
+    settings.postfx = true;
+    unsupported = NULL;
+    TEST_CHECK(ctx, Fluxion_RenderPipelineAsset_AreSettingsSupported(&settings, &unsupported));
+    TEST_CHECK(ctx, unsupported == NULL);
 
     // No multisampling has two spellings and both are accepted -- a
     // description that never filled the field in is not asking for

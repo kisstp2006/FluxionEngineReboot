@@ -1,0 +1,116 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+
+#ifndef FLUXION_PASS_BLOOM_DOWN_INCLUDED
+#define FLUXION_PASS_BLOOM_DOWN_INCLUDED
+
+#include "Fluxion/Math.jsl"
+
+// ONE STEP DOWN THE BLOOM CHAIN: the level above, halved.
+//
+// What bloom is: light bright enough to scatter in a lens spreads into
+// what is beside it. The spread is wide -- far wider than any filter one
+// pass can afford -- so it is built the cheap way, by halving the picture
+// again and again and blurring a little at each size. A small blur on a
+// picture sixteen times smaller is a wide blur on the original, and the
+// sum of all of them is the smooth falloff a real lens has.
+//
+// THE FIRST STEP IS DIFFERENT: it also decides what glows at all. Every
+// step after it just carries what that one selected.
+
+// x, y: how far one texel of the source is, as a coordinate.
+// z: one on the first step, when what glows is still to be chosen.
+// w: unused.
+[Uniform(Global)] Vector4 bloomStep;
+
+// x: the brightness a pixel must reach before any of it glows.
+// y: the knee -- how far below that the glow fades in rather than
+//    switching on. Zero is a hard edge, which shows up as a rim that
+//    crawls along a surface as the camera moves.
+// zw: unused here.
+[Uniform(Global)] Vector4 bloomCurve;
+
+[Texture(Global)] Texture2D bloomSource;
+
+[Input] Vector2 vUV;
+[Target(0)] Vector4 fragColor;
+
+// How much of this colour glows: none below the threshold, all of it well
+// above, and a smooth ramp across the knee.
+//
+// Measured on the BRIGHTEST CHANNEL rather than on luminance: a saturated
+// red light at the same luminance as a grey surface is the one that
+// glows, and luminance cannot tell them apart.
+Vector3 BloomSelect(Vector3 color, float threshold, float knee)
+{
+  float brightest = max(color.x, max(color.y, color.z));
+
+  float soft = brightest - threshold + knee;
+  soft = clamp(soft, 0.0, 2.0 * knee);
+  soft = soft * soft / (4.0 * knee + 0.00001);
+
+  float glowing = max(soft, brightest - threshold) / max(brightest, 0.00001);
+  return color * glowing;
+}
+
+void main() {
+  // The four the halving covers: half a source texel either way. Each is
+  // a bilinear read, so each already averages the four texels around it
+  // -- sixteen texels for four reads.
+  Vector2 offset = Vector2(0.5 * bloomStep.x, 0.5 * bloomStep.y);
+
+  Vector3 sum = textureLod(bloomSource, vUV + Vector2(-offset.x, -offset.y), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, vUV + Vector2(offset.x, -offset.y), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, vUV + Vector2(-offset.x, offset.y), 0.0).xyz;
+  sum = sum + textureLod(bloomSource, vUV + Vector2(offset.x, offset.y), 0.0).xyz;
+
+  Vector3 color = sum * 0.25;
+
+  if (bloomStep.z > 0.5)
+  {
+    color = BloomSelect(color, bloomCurve.x, bloomCurve.y);
+  }
+
+  return Vector4(color.x, color.y, color.z, 1.0);
+}
+
+#endif

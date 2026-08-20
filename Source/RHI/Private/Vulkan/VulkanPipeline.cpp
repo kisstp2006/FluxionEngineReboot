@@ -225,9 +225,10 @@ FluxionRHIPipelineHandle Fluxion_RHIVulkan_CreateGraphicsPipeline(FluxionRHIDevi
     for (u32 i = 0; i < desc->colorFormatCount; ++i)
     {
         blendAttachments[i] = {};
-        blendAttachments[i].blendEnable = desc->blendState.blendEnable ? VK_TRUE : VK_FALSE;
-        blendAttachments[i].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        blendAttachments[i].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        const bool additive = desc->blendState.mode == FLUXION_RHI_BLEND_MODE_ADD;
+        blendAttachments[i].blendEnable = desc->blendState.mode != FLUXION_RHI_BLEND_MODE_NONE ? VK_TRUE : VK_FALSE;
+        blendAttachments[i].srcColorBlendFactor = additive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_SRC_ALPHA;
+        blendAttachments[i].dstColorBlendFactor = additive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         blendAttachments[i].colorBlendOp = VK_BLEND_OP_ADD;
         blendAttachments[i].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         blendAttachments[i].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;

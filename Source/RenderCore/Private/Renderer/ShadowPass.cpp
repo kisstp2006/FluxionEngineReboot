@@ -187,7 +187,7 @@ bool EnsurePipeline(FluxionRenderer* renderer, const FluxionRHIVertexLayout* ver
     desc.depthState.testEnable = true;
     desc.depthState.writeEnable = true;
     desc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL;
-    desc.blendState.blendEnable = false;
+    desc.blendState.mode = FLUXION_RHI_BLEND_MODE_NONE;
     desc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     // No colour at all: this pass produces depth, and the fragment

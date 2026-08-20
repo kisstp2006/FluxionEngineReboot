@@ -80,7 +80,6 @@ bool Fluxion_RenderPipelineAsset_AreSettingsSupported(const FluxionRenderPipelin
     else if (settings->taa) unsupported = "TAA";
     else if (settings->ssao) unsupported = "SSAO";
     else if (settings->ssr) unsupported = "SSR";
-    else if (settings->bloom) unsupported = "bloom";
     else if (settings->msaaSamples > 1) unsupported = "multisampling";
 
     if (outUnsupported != NULL) *outUnsupported = unsupported;
@@ -322,6 +321,12 @@ void Fluxion_RenderPipelineAsset_ApplyToRenderer(const FluxionRenderPipelineAsse
     // The chain, from the same file and the same call: one place says
     // how a pipeline draws, and this is it.
     Fluxion_Renderer_SetPostProcessEnabled(renderer, asset->settings.postfx);
+
+    // AND ONLY WITH IT: the glow is built out of the light the scene was
+    // drawn in, and without the chain the scene was never drawn in light
+    // -- it was drawn in whatever a screen can show. A file asking for
+    // one without the other gets no glow rather than a wrong one.
+    Fluxion_Renderer_SetBloomEnabled(renderer, asset->settings.bloom && asset->settings.postfx);
 }
 
 // ---------------------------------------------------------------------

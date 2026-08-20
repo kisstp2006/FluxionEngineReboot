@@ -74,7 +74,17 @@
 //    floor across the top.
 [Uniform(Global)] Vector4 postParams;
 
+// x: how much of the glow is added back; zero means none, and then what
+//    is bound below is the scene itself rather than a glow.
+// yzw: unused.
+[Uniform(Global)] Vector4 postBloom;
+
 [Texture(Global)] Texture2D sceneColor;
+
+// WHAT GLOWS, ALREADY SPREAD -- see BloomDown.jsl and BloomUp.jsl. Half
+// the size of the picture, which is why it is read with a filter that
+// smooths rather than by texel.
+[Texture(Global)] Texture2D bloomColor;
 
 [Input] Vector2 vUV;
 [Target(0)] Vector4 fragColor;
@@ -83,6 +93,13 @@ void main() {
   Vector2 uv = Vector2(vUV.x, postParams.w > 0.5 ? 1.0 - vUV.y : vUV.y);
 
   Vector3 color = textureLod(sceneColor, uv, 0.0).xyz;
+
+  // ADDED BEFORE THE CAMERA AND THE CURVE, not after: a glow is light,
+  // and light is what the exposure decides the brightness of. Added
+  // afterwards it would be a wash of colour laid over a finished picture,
+  // and it would not brighten with the rest of the frame when the camera
+  // opens up.
+  color = color + textureLod(bloomColor, uv, 0.0).xyz * postBloom.x;
 
   // The camera first, then the curve: exposure decides how much light
   // makes middle grey, and the curve decides what happens to what is

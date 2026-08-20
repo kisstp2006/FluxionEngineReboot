@@ -39,68 +39,22 @@
 #
 # SPDX-License-Identifier: CPAL-1.0
 
-include(EngineShaderLibrary)
-
-# The engine's own shader library, carried in the binary rather than
-# looked for at runtime. Order matters here only in that the generated
-# source has to exist before the module claims it.
-engine_embed_shader_library(
-    OUTPUT FLUXION_SHADER_LIBRARY_GENERATED
-    ROOT "${CMAKE_CURRENT_SOURCE_DIR}/Shaders"
-    FILES
-        Fluxion/Math.jsl
-        Fluxion/Surface.jsl
-        Fluxion/Frame.jsl
-        Fluxion/SphericalHarmonics.jsl
-        Fluxion/CubeMapping.jsl
-        Fluxion/ImportanceSampling.jsl
-        Fluxion/Object.jsl
-        Fluxion/Varyings.jsl
-        Fluxion/BRDF.jsl
-        Fluxion/Lighting.jsl
-        Fluxion/Tonemap.jsl
-        Fluxion/Material.jsl
-        Fluxion/Pass/Vertex.jsl
-        Fluxion/Pass/GPUCull.jsl
-        Fluxion/Pass/IrradianceProject.jsl
-        Fluxion/Pass/FullscreenVertex.jsl
-        Fluxion/Pass/DepthPyramid.jsl
-        Fluxion/Pass/PostProcess.jsl
-        Fluxion/Pass/DebugUIVertex.jsl
-        Fluxion/Pass/DebugUI.jsl
-        Fluxion/Pass/BloomDown.jsl
-        Fluxion/Pass/BloomUp.jsl
-        Fluxion/Pass/MotionVector.jsl
-        Fluxion/Pass/MotionVectorWrite.jsl
-        Fluxion/Pass/ShadowDepth.jsl
-        Fluxion/Pass/ShadowDepthWrite.jsl
-        Fluxion/Pass/SpecularPrefilter.jsl
-        Fluxion/Pass/DfgIntegrate.jsl
-        Fluxion/Pass/Forward.jsl
-        Fluxion/Pass/DepthOnly.jsl
-        Fluxion/Pass/SkyboxVertex.jsl
-        Fluxion/Pass/Skybox.jsl
-)
 
 engine_add_module(
-    NAME RenderCore
+    NAME DebugUI
     TYPE STATIC
-    LANGUAGE C CXX
+    LANGUAGE C
     PUBLIC_DEPENDENCIES
-        Fluxion::RHI
         Fluxion::Foundation
-        # MeshAsset.h names an asset type by its id, so whoever includes
-        # it sees the asset headers too.
-        Fluxion::Assets
+        # DebugUI.h names devices, command lists and texture views: a
+        # caller cannot ask for a panel without them.
+        Fluxion::RHI
     PRIVATE_DEPENDENCIES
-        pdjson
-        Fluxion::ShaderCompiler
-        # For the job system, so a shader reload's compiling can happen off
-        # the frame. Private: nothing in this module's headers mentions a
-        # job, and a caller does not have to know one was used.
-        Fluxion::Core
+        # The shader the panels are drawn with is built the same way every
+        # other pass in this engine builds one.
+        Fluxion::RenderCore
 )
 
-# Added after the module rather than through its SOURCES, so the auto-glob
-# of Private/ keeps working for everything else.
-target_sources(RenderCore PRIVATE "${FLUXION_SHADER_LIBRARY_GENERATED}")
+# THE TOOLKIT IS PRIVATE. Nothing in this module's headers names it, which
+# is what makes it replaceable -- see the note at the top of DebugUI.h.
+target_link_libraries(DebugUI PRIVATE nuklear)

@@ -8,6 +8,6 @@
   "taa": false,
   "ssao": false,
   "ssr": false,
-  "bloom": false,
+  "bloom": true,
   "msaa": 1
 }

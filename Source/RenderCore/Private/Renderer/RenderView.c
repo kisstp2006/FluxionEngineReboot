@@ -83,6 +83,12 @@ typedef struct FluxionRenderViewRecord
     // stay here in both cases, because the pass that applies them asks
     // this view for them.
     bool toneMappingDeferred;
+
+    // What glows: the brightness it takes, how softly that begins, and
+    // how much of the result is added back.
+    f32 bloomThreshold;
+    f32 bloomKnee;
+    f32 bloomIntensity;
     bool encodeOutputToSRGB;
 
     // What the world looks like in every direction. Never nothing: a
@@ -605,6 +611,15 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     // renderer rather than as a description with a hole in it.
     record->exposure = desc->exposure > 0.0f ? desc->exposure : 1.0f;
     record->tonemapWhitePoint = desc->tonemapWhitePoint;
+
+    // A THRESHOLD OF ZERO WOULD MAKE EVERYTHING GLOW, so an unset one is
+    // read as "one", which is where a screen runs out of range and the
+    // usual place for a glow to begin. The knee is a quarter of it, and
+    // the amount added back defaults to none: a caller that has not
+    // asked for a glow does not get one by leaving a field at zero.
+    record->bloomThreshold = desc->bloomThreshold > 0.0f ? desc->bloomThreshold : 1.0f;
+    record->bloomKnee = desc->bloomKnee > 0.0f ? desc->bloomKnee : record->bloomThreshold * 0.25f;
+    record->bloomIntensity = desc->bloomIntensity;
     record->encodeOutputToSRGB = desc->encodeOutputToSRGB;
 
     record->frameConstantBuffer = frameConstantBuffer;
@@ -1259,6 +1274,18 @@ void FluxionRendererInternal_RenderView_SetToneMappingDeferred(FluxionRenderView
     FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
     if (record == NULL) return;
     record->toneMappingDeferred = deferred;
+}
+
+bool FluxionRendererInternal_RenderView_GetBloom(FluxionRenderViewHandle view, FluxionVec4* outBloom)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL || outBloom == NULL) return false;
+
+    outBloom->x = record->bloomThreshold;
+    outBloom->y = record->bloomKnee;
+    outBloom->z = record->bloomIntensity;
+    outBloom->w = 0.0f;
+    return true;
 }
 
 bool FluxionRendererInternal_RenderView_GetToneMapping(FluxionRenderViewHandle view, FluxionVec4* outToneMapping)

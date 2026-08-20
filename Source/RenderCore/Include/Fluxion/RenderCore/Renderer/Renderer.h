@@ -250,6 +250,18 @@ FluxionRHITextureHandle Fluxion_Renderer_GetSceneColorTexture(FluxionRendererHan
 // its swapchain for.
 void Fluxion_Renderer_SetOutputColorFormat(FluxionRendererHandle renderer, FluxionRHIFormat format);
 
+// WHETHER WHAT IS BRIGHT SPREADS INTO WHAT IS BESIDE IT.
+//
+// Needs the chain above: the glow is built from the light the scene was
+// drawn in, and with the chain off there is no such picture to build it
+// from. How bright a thing must be and how much of the glow comes back
+// are the view's to say (RenderView.h, bloomThreshold and the two beside
+// it); this is only whether the pass runs at all.
+//
+// A pipeline asset says it (Pipeline/RenderPipelineAsset.h, "bloom").
+void Fluxion_Renderer_SetBloomEnabled(FluxionRendererHandle renderer, bool enabled);
+bool Fluxion_Renderer_IsBloomEnabled(FluxionRendererHandle renderer);
+
 // --- Where the culling happens --------------------------------------------
 //
 // Not a rendering decision the renderer makes on its own: a pipeline

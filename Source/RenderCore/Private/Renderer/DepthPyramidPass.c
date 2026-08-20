@@ -324,7 +324,7 @@ static bool FluxionDepthPyramidPass_EnsureResources(FluxionRenderer* renderer)
     pipelineDesc.depthState.testEnable = false;
     pipelineDesc.depthState.writeEnable = false;
     pipelineDesc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_ALWAYS;
-    pipelineDesc.blendState.blendEnable = false;
+    pipelineDesc.blendState.mode = FLUXION_RHI_BLEND_MODE_NONE;
     pipelineDesc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     pipelineDesc.colorFormats[0] = FLUXION_RHI_FORMAT_R32_FLOAT;
     pipelineDesc.colorFormatCount = 1;

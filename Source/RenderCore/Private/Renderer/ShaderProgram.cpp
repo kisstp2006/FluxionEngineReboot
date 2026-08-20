@@ -731,6 +731,16 @@ extern "C" FluxionShaderProgramReloadOutcome Fluxion_ShaderProgram_FinishReload(
     return outcome;
 }
 
+extern "C" FluxionRHIShaderHandle Fluxion_ShaderProgram_GetVertexShader(FluxionShaderProgramHandle program)
+{
+    return FluxionRendererInternal_ShaderProgram_GetVertexShader(program);
+}
+
+extern "C" FluxionRHIShaderHandle Fluxion_ShaderProgram_GetFragmentShader(FluxionShaderProgramHandle program)
+{
+    return FluxionRendererInternal_ShaderProgram_GetFragmentShader(program);
+}
+
 extern "C" void Fluxion_ShaderProgram_Destroy(FluxionShaderProgramHandle program)
 {
     if (program.index >= FLUXION_RENDERER_MAX_SHADER_PROGRAMS) return;

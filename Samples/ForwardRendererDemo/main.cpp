@@ -50,6 +50,7 @@
 // pattern real game code would use.
 #include <Fluxion/Application/Events/EventQueue.h>
 #include <Fluxion/Assets/AssetDatabase.h>
+#include <Fluxion/DebugUI/DebugUI.h>
 #include <Fluxion/Assets/AssetSystem.h>
 #include <Fluxion/Assets/Assets.h>
 #include <Fluxion/Assets/VirtualFileSystem.h>
@@ -1356,6 +1357,18 @@ int main(int argc, char** argv)
     // turned the scene's light into a picture -- and they land in the
     // target this view was given. Their colours are therefore screen
     // colours and not amounts of light, which is what an overlay wants.
+    // THE PANELS, which are drawn on top of the finished picture and so
+    // are built for the screen's format like the debug lines are.
+    FluxionDebugUIDesc debugUIDesc{};
+    debugUIDesc.device = device;
+    debugUIDesc.queue = graphicsQueue;
+    debugUIDesc.colorFormat = swapchainDesc.format;
+    if (!Fluxion_DebugUI_Init(&debugUIDesc))
+    {
+        FLUXION_LOG_WARN("ForwardRendererDemo", "The panels could not be set up; the sample runs without them.");
+    }
+    FLUXION_SCOPE_EXIT(Fluxion_DebugUI_Shutdown());
+
     Fluxion_Renderer_SetDebugDrawColorFormat(renderer, swapchainDesc.format);
     Fluxion_Renderer_SetOutputColorFormat(renderer, swapchainDesc.format);
     Fluxion_Renderer_SetDebugDrawDepthFormat(renderer, depthTextureDesc.format);
@@ -1696,6 +1709,19 @@ int main(int argc, char** argv)
     // that wrote it left it.
     bool motionIsUndefined = true;
 
+    // WHAT THE PANEL HOLDS. These are the sample's own variables: the
+    // panel writes them, the frame below reads them, and nothing in the
+    // engine keeps a copy. The first two start from what the pipeline
+    // asked for and can then be turned off by hand -- which is the whole
+    // reason to have a panel at all.
+    bool uiPostProcess = true;
+    bool uiBloom = true;
+    f32 uiBloomIntensity = 0.5f;
+    f32 uiBloomThreshold = 0.0f; // filled from the exposure on the first frame
+    f32 uiBloomKnee = 0.0f;
+    f32 uiTonemapWhitePoint = 4.0f;
+    bool uiPanelWanted = true;
+
     // Held across frames rather than acquired inside one: an asset takes
     // more than a frame to arrive, and asking again each time would start
     // the load over and never get there.
@@ -2017,8 +2043,24 @@ int main(int argc, char** argv)
         // The camera. An exposure of one would be a guess; these are the
         // settings a photographer would dial for a scene lit this
         // brightly, and the engine works the multiplier out from them.
-        viewDesc.exposure = Fluxion_Exposure_FromCamera(2.0f, 1.0f / 60.0f, 400.0f);
-        viewDesc.tonemapWhitePoint = 4.0f;
+        const f32 cameraExposure = Fluxion_Exposure_FromCamera(2.0f, 1.0f / 60.0f, 400.0f);
+        viewDesc.exposure = cameraExposure;
+        viewDesc.tonemapWhitePoint = uiTonemapWhitePoint;
+
+        // WHAT GLOWS: light this camera would record as white and then
+        // some. Worked out from the exposure rather than typed, because
+        // the two mean the same thing -- a threshold below it would make
+        // ordinary lit surfaces smear, and one far above it would leave
+        // nothing to glow at all.
+        if (uiBloomThreshold <= 0.0f)
+        {
+            uiBloomThreshold = 1.0f / cameraExposure;
+            uiBloomKnee = uiBloomThreshold * 0.3f;
+        }
+
+        viewDesc.bloomThreshold = uiBloomThreshold;
+        viewDesc.bloomKnee = uiBloomKnee;
+        viewDesc.bloomIntensity = uiBloomIntensity;
 
         // The swapchain here is an ordinary eight-bit format with no
         // curve of its own, so the pass has to encode for the display.
@@ -2036,6 +2078,13 @@ int main(int argc, char** argv)
         // be seen. Every frame, because the pipeline in force can change
         // between two of them.
         Fluxion_RenderPipelineAsset_ApplyToRenderer(pipelineAsset, renderer);
+
+        // AND THE PANEL AFTER IT. The pipeline asset is what a shipped
+        // build would go by; the panel is somebody sitting in front of it
+        // turning things off to see what they cost. Whoever speaks last
+        // wins, and while a panel is open that is the person.
+        Fluxion_Renderer_SetPostProcessEnabled(renderer, uiPostProcess);
+        Fluxion_Renderer_SetBloomEnabled(renderer, uiBloom && uiPostProcess);
 
         FluxionRenderViewHandle frameView = Fluxion_RenderView_Create(device, &viewDesc);
 
@@ -2318,8 +2367,84 @@ int main(int argc, char** argv)
         }
         Fluxion_RHI_CommandList_ResetQueryPool(cmd, gpuTimeQueries, 0, 2);
         Fluxion_RHI_CommandList_WriteTimestamp(cmd, gpuTimeQueries, 0);
+        // --- THE PANEL FOR THIS FRAME -------------------------------------
+        //
+        // Built before the drawing, because what it writes -- the toggles
+        // above -- is read by the frame after this one. What it DRAWS
+        // happens further down, after the graph, so the panels land on
+        // top of the finished picture rather than inside the scene.
+        if (Fluxion_DebugUI_IsReady())
+        {
+            i32 mouseX = 0;
+            i32 mouseY = 0;
+            Fluxion_Input_GetMousePosition(&mouseX, &mouseY);
+
+            FluxionDebugUIInput uiInput{};
+            uiInput.mouseX = (f32)mouseX;
+            uiInput.mouseY = (f32)mouseY;
+            uiInput.mouseDown = Fluxion_Input_IsMouseButtonDown(FLUXION_MOUSE_BUTTON_LEFT);
+            uiInput.scroll = Fluxion_Input_GetMouseScrollDelta();
+
+            Fluxion_DebugUI_BeginFrame(&uiInput, surfaceWidth, surfaceHeight);
+
+            if (uiPanelWanted && Fluxion_DebugUI_BeginPanel("Post-processing", 16.0f, 16.0f, 320.0f, 300.0f))
+            {
+                Fluxion_DebugUI_Row(24.0f, 1);
+                Fluxion_DebugUI_Checkbox("Chain on", &uiPostProcess);
+
+                Fluxion_DebugUI_Row(24.0f, 1);
+                Fluxion_DebugUI_Checkbox("Bloom", &uiBloom);
+
+                // THE THRESHOLD IS SHOWN IN STOPS ABOVE WHITE, not in the
+                // engine's own units. A number like 151 means nothing to
+                // the eye; "one stop above what the camera calls white"
+                // is a sentence somebody can act on.
+                const f32 white = 1.0f / cameraExposure;
+                f32 stopsAboveWhite = std::log2(uiBloomThreshold / white);
+
+                Fluxion_DebugUI_Row(22.0f, 1);
+                char thresholdText[64];
+                snprintf(thresholdText, sizeof(thresholdText), "Glows above white by %.2f stops", (f64)stopsAboveWhite);
+                Fluxion_DebugUI_Label(thresholdText);
+
+                Fluxion_DebugUI_Row(24.0f, 1);
+                if (Fluxion_DebugUI_SliderFloat(nullptr, &stopsAboveWhite, -3.0f, 4.0f, 0.05f))
+                {
+                    uiBloomThreshold = white * std::exp2(stopsAboveWhite);
+                    uiBloomKnee = uiBloomThreshold * 0.3f;
+                }
+
+                Fluxion_DebugUI_Row(22.0f, 1);
+                char intensityText[64];
+                snprintf(intensityText, sizeof(intensityText), "Glow strength %.2f", (f64)uiBloomIntensity);
+                Fluxion_DebugUI_Label(intensityText);
+
+                Fluxion_DebugUI_Row(24.0f, 1);
+                Fluxion_DebugUI_SliderFloat(nullptr, &uiBloomIntensity, 0.0f, 2.0f, 0.01f);
+
+                Fluxion_DebugUI_Row(22.0f, 1);
+                char whiteText[64];
+                snprintf(whiteText, sizeof(whiteText), "Tone curve white point %.2f", (f64)uiTonemapWhitePoint);
+                Fluxion_DebugUI_Label(whiteText);
+
+                Fluxion_DebugUI_Row(24.0f, 1);
+                Fluxion_DebugUI_SliderFloat(nullptr, &uiTonemapWhitePoint, 1.0f, 16.0f, 0.1f);
+            }
+            Fluxion_DebugUI_EndPanel();
+
+            Fluxion_DebugUI_EndFrame();
+        }
+
         Fluxion_RenderGraph_Execute(graph, cmd);
         Fluxion_Renderer_EndFrame(renderer, cmd);
+
+        // ON TOP OF ALL OF IT. After the resolve, after the debug lines:
+        // a panel is something to read, and something drawn over it is
+        // something in the way.
+        if (Fluxion_DebugUI_IsReady())
+        {
+            Fluxion_DebugUI_Render(cmd, backbufferView, surfaceWidth, surfaceHeight);
+        }
         Fluxion_RHI_CommandList_WriteTimestamp(cmd, gpuTimeQueries, 1);
 
         // THE MEASUREMENT THIS MILESTONE IS FOR, said once a second

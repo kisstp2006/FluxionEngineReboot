@@ -135,7 +135,7 @@ static bool FluxionMotionVectorPass_EnsurePipeline(FluxionRenderer* renderer, co
     desc.depthState.testEnable = true;
     desc.depthState.writeEnable = false;
     desc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL;
-    desc.blendState.blendEnable = false;
+    desc.blendState.mode = FLUXION_RHI_BLEND_MODE_NONE;
     desc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     desc.colorFormats[0] = FLUXION_RHI_FORMAT_R32G32_FLOAT;
