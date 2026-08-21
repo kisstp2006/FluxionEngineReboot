@@ -67,6 +67,23 @@ FLUXION_DEFINE_HANDLE(FluxionRenderPipelineHandle);
 FluxionRenderPipelineHandle Fluxion_RenderPipeline_Create(FluxionRHIDeviceHandle device, FluxionShaderProgramHandle program, FluxionRenderPipelineCategory category, FluxionRHIFormat colorFormat, FluxionRHIFormat depthFormat);
 void Fluxion_RenderPipeline_Destroy(FluxionRenderPipelineHandle pipeline);
 
+// GIVES THIS MATERIAL A SECOND WAY TO BE DRAWN: the pass that records
+// which way each pixel faces and how rough it is, before anything is lit.
+//
+// The program must be built from the SAME material source, for
+// FLUXION_MATERIAL_PASS_NORMAL_ROUGHNESS. That is the whole point of it
+// being a program rather than a shader the engine owns: a material that
+// works its surface out unusually is recorded exactly as it will be
+// drawn, and the two cannot disagree.
+//
+// Optional, and a pipeline without one simply does not appear in that
+// pass. What reads it -- occlusion and reflections -- then finds nothing
+// recorded for those pixels and leaves them alone, which is a picture
+// missing an effect rather than a picture that is wrong.
+void Fluxion_RenderPipeline_SetPrepassProgram(FluxionRenderPipelineHandle pipeline, FluxionShaderProgramHandle program);
+
+bool Fluxion_RenderPipeline_HasPrepassProgram(FluxionRenderPipelineHandle pipeline);
+
 #ifdef __cplusplus
 }
 #endif

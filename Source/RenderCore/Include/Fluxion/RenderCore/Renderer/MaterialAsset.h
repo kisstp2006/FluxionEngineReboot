@@ -134,6 +134,12 @@ typedef struct FluxionMaterialAsset
     // would leave a device holding shader modules nobody can name.
     FluxionShaderProgramHandle program;
 
+    // The same material built for the pass that records the surface
+    // before it is lit. Invalid when that shader would not build, which
+    // is not fatal -- the material still draws, and is simply left out of
+    // that pass.
+    FluxionShaderProgramHandle prepassProgram;
+
     // The source, until the material is built from it. NULL afterwards --
     // a device holds the compiled shader by then, and a field that is
     // sometimes there and sometimes not is better said than hidden.

@@ -43,6 +43,7 @@
 #ifndef FLUXION_PASS_POST_PROCESS_INCLUDED
 #define FLUXION_PASS_POST_PROCESS_INCLUDED
 
+#include "Fluxion/Grading.jsl"
 #include "Fluxion/Tonemap.jsl"
 
 // THE ONE PLACE THE PICTURE STOPS BEING AN AMOUNT OF LIGHT.
@@ -65,19 +66,40 @@
 //    here, zero when its format carries it.
 // w: one when this backend's first texture row is the last screen row.
 //
-//    THE ONE PLACE IT MATTERS. Every other pass in this engine reads a
-//    texture it rendered and writes another one, so both ends count
-//    their rows the same way and the question never arises. This pass
-//    reads a rendered texture and writes THE SCREEN -- and on the
-//    backend whose framebuffers start at the bottom, those two disagree.
+//    EVERY FULLSCREEN PASS IN THIS ENGINE CARRIES ONE OF THESE, and the
+//    rule is one per pass rather than one per frame. On the backend whose
+//    framebuffers start at the bottom, each such pass turns its own
+//    output over as it writes it -- so each one reads the other way round
+//    to put it back, and a pass that skipped its turn leaves the picture
+//    upside down for whatever comes next.
+//
 //    Measured, without this: the sky at the bottom of the window and the
-//    floor across the top.
+//    floor across the top. Measured again with this pass exempted
+//    whenever the smoothing pass followed it: the same thing.
 [Uniform(Global)] Vector4 postParams;
 
 // x: how much of the glow is added back; zero means none, and then what
 //    is bound below is the scene itself rather than a glow.
-// yzw: unused.
+// y: one when the camera's own setting was measured this frame; zero when
+//    what is bound in its place is the scene standing in for it.
+// zw: unused.
 [Uniform(Global)] Vector4 postBloom;
+
+// THE COLOURIST'S FOUR VECTORS.
+//
+// postBalance -- x: temperature, y: tint, z: contrast, w: saturation.
+// The last two arrive as the numbers to multiply by rather than as the
+// distances the description holds; see the accessor that fills them.
+//
+// The three-way control is one vector each, unused fourth component. A
+// picture nobody graded gets a neutral one, chosen so that every
+// operation below is an identity rather than skipped -- one branch fewer
+// in a shader every pixel runs, and one fewer way for the graded and
+// ungraded paths to drift apart.
+[Uniform(Global)] Vector4 postBalance;
+[Uniform(Global)] Vector4 postLift;
+[Uniform(Global)] Vector4 postGamma;
+[Uniform(Global)] Vector4 postGain;
 
 [Texture(Global)] Texture2D sceneColor;
 
@@ -85,6 +107,13 @@
 // the size of the picture, which is why it is read with a filter that
 // smooths rather than by texel.
 [Texture(Global)] Texture2D bloomColor;
+
+// ONE TEXEL, HOLDING WHAT THE FRAME'S OWN BRIGHTNESS ASKS THE CAMERA FOR
+// -- see ExposureAdapt.jsl for how it got there. It MULTIPLIES the
+// exposure the view asked for rather than replacing it: the camera
+// settings a caller worked out stay the camera settings, and this is the
+// part a photographer would do by opening up in a dark room.
+[Texture(Global)] Texture2D exposureColor;
 
 [Input] Vector2 vUV;
 [Target(0)] Vector4 fragColor;
@@ -101,12 +130,29 @@ void main() {
   // opens up.
   color = color + textureLod(bloomColor, uv, 0.0).xyz * postBloom.x;
 
+  // THE WHITE BALANCE IS PART OF THE LIGHT, so it happens here, while
+  // the picture still is light. What colour the illumination was is a
+  // question with an answer before any camera is pointed at it.
+  color = ApplyWhiteBalance(color, postBalance.x, postBalance.y);
+
   // The camera first, then the curve: exposure decides how much light
   // makes middle grey, and the curve decides what happens to what is
   // still above one afterwards. Reversed, the curve would be applied to
   // an amount of light that no camera setting had been chosen for.
-  color = ApplyExposure(color, postParams.x);
+  // MIXED IN RATHER THAN BRANCHED AROUND. With nothing measured, what
+  // is bound here is the scene itself and the mix throws it away -- one
+  // path through this shader whether the camera is adapting or not, and
+  // so no second path to keep in step with the first.
+  float measured = textureLod(exposureColor, Vector2(0.5, 0.5), 0.0).x;
+  float exposure = postParams.x * mix(1.0, measured, postBloom.y);
+
+  color = ApplyExposure(color, exposure);
   color = TonemapReinhard(color, postParams.y);
+
+  // AND THE LOOK IS PART OF THE PICTURE, so it happens after the curve,
+  // where the numbers are what a screen will show -- which is what makes
+  // a contrast pivot about the middle of the range mean anything.
+  color = ApplyGrading(color, postLift.xyz, postGamma.xyz, postGain.xyz, postBalance.z, postBalance.w);
 
   if (postParams.z > 0.5)
   {

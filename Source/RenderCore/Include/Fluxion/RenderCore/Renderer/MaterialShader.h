@@ -73,6 +73,12 @@ typedef enum FluxionMaterialPass
     // way could not be read this way at all.
     FLUXION_MATERIAL_PASS_DEPTH_ONLY,
 
+    // Which way the pixel faces and how rough it is, before anything is
+    // lit. Reads the same surface the forward pass reads and keeps two
+    // fields of it -- see Pass/NormalRoughness.jsl for what depends on
+    // this existing BEFORE the lighting rather than beside it.
+    FLUXION_MATERIAL_PASS_NORMAL_ROUGHNESS,
+
     FLUXION_MATERIAL_PASS_COUNT,
 } FluxionMaterialPass;
 

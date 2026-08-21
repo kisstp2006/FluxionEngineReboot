@@ -51,11 +51,13 @@
 static const char* const s_passIncludes[FLUXION_MATERIAL_PASS_COUNT] = {
     "#include \"Fluxion/Pass/Forward.jsl\"\n",
     "#include \"Fluxion/Pass/DepthOnly.jsl\"\n",
+    "#include \"Fluxion/Pass/NormalRoughness.jsl\"\n",
 };
 
 // The same file for every pass today -- see the header for why that is a
 // statement rather than an oversight.
 static const char* const s_vertexPassIncludes[FLUXION_MATERIAL_PASS_COUNT] = {
+    "#include \"Fluxion/Pass/Vertex.jsl\"\n",
     "#include \"Fluxion/Pass/Vertex.jsl\"\n",
     "#include \"Fluxion/Pass/Vertex.jsl\"\n",
 };

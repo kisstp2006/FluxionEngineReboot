@@ -1,0 +1,127 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_PASS_NORMAL_ROUGHNESS_INCLUDED
+#define FLUXION_PASS_NORMAL_ROUGHNESS_INCLUDED
+
+#include "Fluxion/Surface.jsl"
+#include "Fluxion/Varyings.jsl"
+
+// WHICH WAY EVERY PIXEL FACES AND HOW ROUGH IT IS, WRITTEN BEFORE
+// ANYTHING IS LIT.
+//
+// Three later passes need this and none of them can get it from the
+// finished picture: occlusion needs to know which way a surface faces to
+// know which half of the sky it can see, and a reflection needs both the
+// normal to bounce off and the roughness to decide how sharp the bounce
+// is.
+//
+// WHY BEFORE, and not alongside the lighting. Ambient occlusion darkens
+// INDIRECT light -- it is a statement about how much of the sky reaches a
+// point, not about the picture. For the lighting to use it, it has to
+// exist by the time the lighting runs; and it is worked out from depth
+// and normals, which therefore have to exist before that. A pass that
+// produced them at the same time as the lighting would leave occlusion
+// with nothing to do but darken the finished frame, direct light and
+// all -- which is wrong, and looks it.
+//
+// This calls the SAME `EvaluateSurface()` the forward pass calls, so a
+// material that computes its surface unusually is described here exactly
+// as it will be drawn. That is the whole reason this is built per
+// material rather than being one shader the engine owns, the way the
+// shadow and motion vector passes are.
+
+[Target(0)] Vector4 fragSurface;
+
+// A NORMAL IN TWO NUMBERS INSTEAD OF THREE.
+//
+// A unit vector has only two degrees of freedom, so storing three
+// components wastes one -- and the obvious two-component scheme (drop Z,
+// rebuild it) cannot tell a surface facing towards the camera from one
+// facing away, which matters at every silhouette.
+//
+// The octahedral mapping folds the sphere onto a square instead: the
+// upper half maps straight down, the lower half folds outwards. It is
+// cheap both ways, has no pole, and spreads its error evenly -- which is
+// what makes eight bits a component enough for what reads this.
+Vector2 EncodeNormalOctahedral(Vector3 n)
+{
+  Vector3 unit = n / (abs(n.x) + abs(n.y) + abs(n.z));
+
+  Vector2 folded = Vector2(unit.x, unit.y);
+  if (unit.z < 0.0)
+  {
+    float foldedX = (1.0 - abs(unit.y)) * (unit.x >= 0.0 ? 1.0 : -1.0);
+    float foldedY = (1.0 - abs(unit.x)) * (unit.y >= 0.0 ? 1.0 : -1.0);
+    folded = Vector2(foldedX, foldedY);
+  }
+
+  // Into the range a texture holds. The target is unsigned, and a normal
+  // is not.
+  return folded * 0.5 + Vector2(0.5, 0.5);
+}
+
+void main() {
+  SurfaceData surface = EvaluateSurface();
+
+  // The same test the forward pass makes, from the same function, so the
+  // two cannot disagree about which pixels exist -- and so the depth this
+  // pass leaves behind is the depth the forward pass would have written.
+  if (SurfaceFailsAlphaTest(surface))
+  {
+    discard;
+  }
+
+  // Normalized here for the same reason the forward pass normalizes:
+  // what arrived is the average of three unit vectors, which is shorter
+  // than one. A short normal decodes to a direction that is merely wrong
+  // rather than to an obvious fault.
+  Vector3 N = normalize(surface.normal);
+  Vector2 encoded = EncodeNormalOctahedral(N);
+
+  // PERCEPTUAL ROUGHNESS, the number a material author set -- not the
+  // squared one the lighting works in. What reads this is deciding how
+  // wide a reflection should be, and the perceptual scale is the one
+  // that is even across its range.
+  return Vector4(encoded.x, encoded.y, surface.perceptualRoughness, 1.0);
+}
+
+#endif

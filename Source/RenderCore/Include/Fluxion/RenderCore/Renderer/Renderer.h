@@ -265,6 +265,88 @@ void Fluxion_Renderer_SetOutputColorFormat(FluxionRendererHandle renderer, Fluxi
 // it); this is only whether the pass runs at all.
 //
 // A pipeline asset says it (Pipeline/RenderPipelineAsset.h, "bloom").
+// WHETHER THE LIGHTING KNOWS HOW MUCH OF THE SKY EACH PIXEL CAN SEE.
+//
+// Off by default, and NEEDS THE SURFACE PREPASS: what it searches is the
+// frame's own depth, and which way each pixel faces is what says where
+// the hemisphere above it is. With the prepass off this does nothing.
+//
+// What it changes is INDIRECT light only -- the flat ambient and the sky.
+// A corner goes dim rather than black, and nothing a lamp shines on gets
+// darker, because a lamp is not the sky.
+//
+// The view says how far it reaches and how finely -- see the description.
+void Fluxion_Renderer_SetAmbientOcclusionEnabled(FluxionRendererHandle renderer, bool enabled);
+
+// What it worked out. Valid only while the effect is on and succeeded.
+FluxionRHITextureHandle Fluxion_Renderer_GetAmbientOcclusionTexture(FluxionRendererHandle renderer);
+
+// WHETHER THE FRAME'S SURFACES ARE RECORDED BEFORE THEY ARE LIT.
+//
+// Off by default. With it on, the opaque geometry is drawn once more --
+// first -- into a texture holding which way each pixel faces and how
+// rough it is, and into the same depth buffer the lighting then tests
+// against.
+//
+// THIS IS WHAT OCCLUSION AND REFLECTIONS ARE BUILT ON, and neither can be
+// had without it. Occlusion darkens INDIRECT light, so it has to exist
+// before the lighting runs; reflections need a direction to bounce off
+// and a roughness to decide how sharp the bounce is, and a finished
+// picture holds neither.
+//
+// The cost is one more pass over the geometry. What it gives back, beside
+// the two effects: the forward pass finds its depth already written, so
+// it shades nothing that turns out to be hidden.
+//
+// A material only appears here if its pipeline was given a program for
+// the pass -- see Fluxion_RenderPipeline_SetPrepassProgram. One that was
+// not leaves those pixels marked as having nothing recorded, and what
+// reads them leaves them alone.
+void Fluxion_Renderer_SetSurfacePrepassEnabled(FluxionRendererHandle renderer, bool enabled);
+
+// Whether it is on AND succeeded, which is what the passes that read it
+// go by.
+bool Fluxion_Renderer_HasSurfacePrepass(FluxionRendererHandle renderer);
+
+// What it recorded. Valid only while the above says yes.
+FluxionRHITextureHandle Fluxion_Renderer_GetNormalRoughnessTexture(FluxionRendererHandle renderer);
+
+// WHETHER THE FINISHED PICTURE IS SMOOTHED BEFORE IT IS SHOWN.
+//
+// Off by default. With it on, the scene reaches the screen through one
+// more pass, which finds the sharp changes in brightness in the finished
+// picture, works out which way each edge runs and blends along it -- the
+// staircase a rasteriser leaves on any edge that is not along a row of
+// pixels.
+//
+// SAFE TO CHANGE WHILE RUNNING, unlike the chain itself: what changes is
+// which texture the resolve writes into, and both are the same format, so
+// no pipeline anywhere is built for something different.
+//
+// It works on the picture rather than on the scene, so it cannot recover
+// an edge thinner than a pixel and it softens fine detail that was never
+// an edge. It costs one pass and needs nothing from anything else -- see
+// the pass itself for the whole of that trade.
+void Fluxion_Renderer_SetFXAAEnabled(FluxionRendererHandle renderer, bool enabled);
+
+// WHETHER THE FRAME'S OWN BRIGHTNESS MOVES THE CAMERA.
+//
+// Off by default. With it on, the renderer measures what the scene came
+// out at and multiplies the view's exposure by what it would take to put
+// a middle grey where the view asked for one -- easing towards it over
+// several frames rather than arriving at once, which is what an eye does
+// and what a camera with automatic exposure does.
+//
+// UNLIKE THE CHAIN ITSELF, THIS IS SAFE TO CHANGE WHILE RUNNING: it adds
+// passes that write their own small textures and changes nothing about
+// what anything else is drawn into. Turning it off leaves the view's
+// exposure as the whole answer; turning it on again starts the
+// measurement over rather than from a setting belonging to whatever was
+// on the screen last time.
+//
+// The view says how far it may go and how fast -- see the description.
+void Fluxion_Renderer_SetAutoExposureEnabled(FluxionRendererHandle renderer, bool enabled);
+
 void Fluxion_Renderer_SetBloomEnabled(FluxionRendererHandle renderer, bool enabled);
 bool Fluxion_Renderer_IsBloomEnabled(FluxionRendererHandle renderer);
 

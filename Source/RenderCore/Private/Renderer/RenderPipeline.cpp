@@ -80,6 +80,22 @@ struct FluxionRenderPipelineRecord
 
     FluxionPipelineVariant variants[FLUXION_RENDERER_MAX_PIPELINE_VARIANTS];
     u32 variantCount = 0;
+
+    // --- THE SAME MATERIAL, DRAWN BEFORE ANYTHING IS LIT -----------------
+    //
+    // A second program built from the SAME material source, for the pass
+    // that records which way each pixel faces and how rough it is. It is
+    // a second program rather than another variant of the one above
+    // because it has a different fragment entry point -- and a second
+    // cache beside it because a variant is keyed on the vertex layout,
+    // and both programs get asked for the same layouts.
+    //
+    // Optional. A pipeline nobody gave one to does not appear in that
+    // pass at all, and what reads it finds nothing recorded there.
+    FluxionShaderProgramHandle prepassProgram{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    FluxionRHIFormat prepassColorFormat = FLUXION_RHI_FORMAT_UNKNOWN;
+    FluxionPipelineVariant prepassVariants[FLUXION_RENDERER_MAX_PIPELINE_VARIANTS];
+    u32 prepassVariantCount = 0;
 };
 
 FluxionRenderPipelineRecord s_pipelines[FLUXION_RENDERER_MAX_RENDER_PIPELINES];
@@ -153,6 +169,18 @@ extern "C" void Fluxion_RenderPipeline_Destroy(FluxionRenderPipelineHandle pipel
         if (FLUXION_HANDLE_IS_VALID(record->variants[i].objectLayout)) Fluxion_RHI_DestroyBindGroupLayout(record->variants[i].objectLayout);
     }
 
+    // AND THE OTHER CACHE. Two arrays, two loops: a pipeline that was
+    // also drawn before the lighting holds a second set of native objects
+    // and a second pair of layouts per vertex layout, and a device counts
+    // every one of them.
+    for (u32 i = 0; i < record->prepassVariantCount; ++i)
+    {
+        if (!record->prepassVariants[i].used) continue;
+        if (FLUXION_HANDLE_IS_VALID(record->prepassVariants[i].pipeline)) Fluxion_RHI_DestroyPipeline(record->prepassVariants[i].pipeline);
+        if (FLUXION_HANDLE_IS_VALID(record->prepassVariants[i].frameLayout)) Fluxion_RHI_DestroyBindGroupLayout(record->prepassVariants[i].frameLayout);
+        if (FLUXION_HANDLE_IS_VALID(record->prepassVariants[i].objectLayout)) Fluxion_RHI_DestroyBindGroupLayout(record->prepassVariants[i].objectLayout);
+    }
+
     record->alive = false;
     ++record->generation;
 }
@@ -181,22 +209,29 @@ extern "C" void FluxionRendererInternal_RenderPipeline_InvalidateVariantsUsingPr
     }
 }
 
-extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resolve(FluxionRenderPipelineHandle pipeline, FluxionRHIDeviceHandle device, const FluxionRHIVertexLayout* vertexLayout)
+// ONE BUILDER, TWO CALLERS. The pass that lights a surface and the pass
+// that records it differ in three things -- which program, which colour
+// format, and whether they blend -- and in nothing else. Written once, so
+// that the two cannot drift apart in the ways nothing would report: the
+// same vertex layout, the same bind group shapes, the same depth
+// comparison.
+static FluxionRHIPipelineHandle BuildOrFindVariant(FluxionRenderPipelineRecord* record, FluxionRHIDeviceHandle device,
+                                                   const FluxionRHIVertexLayout* vertexLayout, FluxionShaderProgramHandle program,
+                                                   FluxionRHIFormat colorFormat, bool blends, bool writesDepth,
+                                                   FluxionPipelineVariant* variants, u32* variantCount)
 {
     FluxionRHIPipelineHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
-    FluxionRenderPipelineRecord* record = Resolve(pipeline);
-    if (record == nullptr || vertexLayout == nullptr) return invalid;
 
     u64 hash = HashVertexLayout(*vertexLayout);
-    for (u32 i = 0; i < record->variantCount; ++i)
+    for (u32 i = 0; i < *variantCount; ++i)
     {
-        if (record->variants[i].layoutHash == hash && std::memcmp(&record->variants[i].layout, vertexLayout, sizeof(*vertexLayout)) == 0)
+        if (variants[i].layoutHash == hash && std::memcmp(&variants[i].layout, vertexLayout, sizeof(*vertexLayout)) == 0)
         {
-            return record->variants[i].pipeline;
+            return variants[i].pipeline;
         }
     }
 
-    if (record->variantCount >= FLUXION_RENDERER_MAX_PIPELINE_VARIANTS)
+    if (*variantCount >= FLUXION_RENDERER_MAX_PIPELINE_VARIANTS)
     {
         FLUXION_ASSERT_MSG(false, "RenderPipeline: exceeded FLUXION_RENDERER_MAX_PIPELINE_VARIANTS distinct vertex layouts for one pipeline");
         return invalid;
@@ -206,22 +241,21 @@ extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resol
     FluxionRHIBindGroupLayoutDesc objectLayoutDesc = FluxionRendererInternal_MakeObjectLayoutDesc();
     FluxionRHIBindGroupLayoutHandle frameLayout = Fluxion_RHI_CreateBindGroupLayout(device, &frameLayoutDesc);
     FluxionRHIBindGroupLayoutHandle objectLayout = Fluxion_RHI_CreateBindGroupLayout(device, &objectLayoutDesc);
-    FluxionRHIBindGroupLayoutHandle materialLayout = FluxionRendererInternal_ShaderProgram_GetMaterialBindGroupLayout(record->program);
+    FluxionRHIBindGroupLayoutHandle materialLayout = FluxionRendererInternal_ShaderProgram_GetMaterialBindGroupLayout(program);
 
     FluxionRHIGraphicsPipelineDesc desc{};
-    desc.vertexShader = FluxionRendererInternal_ShaderProgram_GetVertexShader(record->program);
-    desc.fragmentShader = FluxionRendererInternal_ShaderProgram_GetFragmentShader(record->program);
+    desc.vertexShader = FluxionRendererInternal_ShaderProgram_GetVertexShader(program);
+    desc.fragmentShader = FluxionRendererInternal_ShaderProgram_GetFragmentShader(program);
     desc.vertexLayout = *vertexLayout;
     desc.rasterState.cullMode = FLUXION_RHI_CULL_MODE_BACK;
     desc.rasterState.frontFaceCounterClockwise = false;
     desc.rasterState.wireframe = false;
     desc.depthState.testEnable = true;
-    desc.depthState.writeEnable = (record->category == FLUXION_RENDER_PIPELINE_CATEGORY_OPAQUE);
+    desc.depthState.writeEnable = writesDepth;
     desc.depthState.compareOp = FLUXION_RHI_COMPARE_OP_LESS_OR_EQUAL;
-    desc.blendState.mode = (record->category == FLUXION_RENDER_PIPELINE_CATEGORY_TRANSPARENT) ? FLUXION_RHI_BLEND_MODE_ALPHA
-                                                                                             : FLUXION_RHI_BLEND_MODE_NONE;
+    desc.blendState.mode = blends ? FLUXION_RHI_BLEND_MODE_ALPHA : FLUXION_RHI_BLEND_MODE_NONE;
     desc.topology = FLUXION_RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    desc.colorFormats[0] = record->colorFormat;
+    desc.colorFormats[0] = colorFormat;
     desc.colorFormatCount = 1;
     desc.depthFormat = record->depthFormat;
     desc.bindGroupLayouts[FLUXION_RHI_BIND_GROUP_GLOBAL] = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 }; // unused by this pipeline -- explicit, not a stray zero-valued "valid-looking" handle
@@ -241,8 +275,8 @@ extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resol
     // stored and the rest are rebuilt from scratch every run.
     char name[192];
     std::snprintf(name, sizeof(name), "Fluxion.RenderPipeline|%s|%u|%u|%u|%016llx",
-        FluxionRendererInternal_ShaderProgram_GetDebugName(record->program),
-        (u32)record->category, (u32)record->colorFormat, (u32)record->depthFormat,
+        FluxionRendererInternal_ShaderProgram_GetDebugName(program),
+        (u32)record->category, (u32)colorFormat, (u32)record->depthFormat,
         (unsigned long long)hash);
     desc.debugName = name;
 
@@ -255,7 +289,7 @@ extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resol
         rhiPipeline = Fluxion_RHI_CreateGraphicsPipeline(device, &desc);
     }
 
-    FluxionPipelineVariant& variant = record->variants[record->variantCount++];
+    FluxionPipelineVariant& variant = variants[(*variantCount)++];
     variant.used = true;
     variant.layoutHash = hash;
     variant.layout = *vertexLayout;
@@ -263,6 +297,53 @@ extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resol
     variant.frameLayout = frameLayout;
     variant.objectLayout = objectLayout;
     return rhiPipeline;
+}
+
+extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resolve(FluxionRenderPipelineHandle pipeline, FluxionRHIDeviceHandle device, const FluxionRHIVertexLayout* vertexLayout)
+{
+    FluxionRHIPipelineHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    FluxionRenderPipelineRecord* record = Resolve(pipeline);
+    if (record == nullptr || vertexLayout == nullptr) return invalid;
+
+    return BuildOrFindVariant(record, device, vertexLayout, record->program, record->colorFormat,
+                              record->category == FLUXION_RENDER_PIPELINE_CATEGORY_TRANSPARENT,
+                              record->category == FLUXION_RENDER_PIPELINE_CATEGORY_OPAQUE,
+                              record->variants, &record->variantCount);
+}
+
+extern "C" FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_ResolvePrepass(FluxionRenderPipelineHandle pipeline, FluxionRHIDeviceHandle device, const FluxionRHIVertexLayout* vertexLayout, FluxionRHIFormat colorFormat)
+{
+    FluxionRHIPipelineHandle invalid = { FLUXION_HANDLE_INVALID_INDEX, 0 };
+    FluxionRenderPipelineRecord* record = Resolve(pipeline);
+    if (record == nullptr || vertexLayout == nullptr) return invalid;
+    if (!FLUXION_HANDLE_IS_VALID(record->prepassProgram)) return invalid;
+
+    // THE FORMAT COMES FROM THE PASS rather than from the pipeline,
+    // because it belongs to the pass: every material records its surface
+    // into the same one texture. Remembered so that a later ask with a
+    // different format is refused rather than quietly answered with a
+    // pipeline built for the first one.
+    if (record->prepassVariantCount != 0 && record->prepassColorFormat != colorFormat) return invalid;
+    record->prepassColorFormat = colorFormat;
+
+    // NEVER BLENDED, ALWAYS WRITES DEPTH, whatever the material category
+    // says. What this pass records is one surface per pixel, and a blend
+    // of two surfaces gives a direction neither of them faces.
+    return BuildOrFindVariant(record, device, vertexLayout, record->prepassProgram, colorFormat, false, true,
+                              record->prepassVariants, &record->prepassVariantCount);
+}
+
+extern "C" void Fluxion_RenderPipeline_SetPrepassProgram(FluxionRenderPipelineHandle pipeline, FluxionShaderProgramHandle program)
+{
+    FluxionRenderPipelineRecord* record = Resolve(pipeline);
+    if (record == nullptr) return;
+    record->prepassProgram = program;
+}
+
+extern "C" bool Fluxion_RenderPipeline_HasPrepassProgram(FluxionRenderPipelineHandle pipeline)
+{
+    const FluxionRenderPipelineRecord* record = Resolve(pipeline);
+    return record != nullptr && FLUXION_HANDLE_IS_VALID(record->prepassProgram);
 }
 
 // The pipeline the sky wants.

@@ -72,7 +72,12 @@ engine_add_test(
         Test_ShadowPassGPU.cpp
         Test_GPUCullGPU.cpp
         Test_MotionVectorGPU.cpp
+        Test_AmbientOcclusionGPU.cpp
+        Test_AutoExposureGPU.cpp
         Test_BloomGPU.cpp
+        Test_FXAAGPU.cpp
+        Test_GradingGPU.cpp
+        Test_SurfacePrepassGPU.cpp
         Test_DepthPyramidGPU.cpp
         Test_OcclusionCullGPU.cpp
         Test_Exposure.c

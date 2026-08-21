@@ -1,0 +1,111 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_PASS_LUMINANCE_DOWN_INCLUDED
+#define FLUXION_PASS_LUMINANCE_DOWN_INCLUDED
+
+#include "Fluxion/Grading.jsl"
+
+// ONE NUMBER FOR THE WHOLE FRAME, WORKED OUT BY HALVING.
+//
+// The frame's brightness is an average, and an average of two million
+// pixels is not something a fragment can take. So it is taken the way
+// every reduction on this hardware is taken: each step reads four texels
+// and writes their average into one, and after nine of them what is left
+// is a single texel holding the average of everything.
+//
+// WHAT IS AVERAGED IS THE LOGARITHM, and that is the decision in here.
+// Averaging brightness itself lets one small very bright thing -- a lamp,
+// the sun in a window -- outweigh the entire rest of the picture, and the
+// camera then stops down until the room goes black. Averaging the
+// logarithm is averaging in stops, where a lamp four stops above the room
+// counts as four rather than as sixteen.
+//
+// NOTHING HERE FLIPS ANYTHING, unlike the glow's chain. An average does
+// not have a top or a bottom, so which end of the texture the first row
+// is at cannot change the answer -- and the one texel this ends at has
+// neither.
+
+// x, y: one texel of what is being READ, so the four taps land in the
+//       middle of the four texels being merged.
+// z:    one when what is being read is the scene rather than a level of
+//       this chain -- the step that turns light into stops. Every step
+//       after it is averaging numbers that are already stops.
+// w:    unused.
+[Uniform(Global)] Vector4 lumStep;
+
+[Texture(Global)] Texture2D lumSource;
+
+[Input] Vector2 vUV;
+[Target(0)] Vector4 fragColor;
+
+void main() {
+  Vector2 offset = Vector2(lumStep.x * 0.5, lumStep.y * 0.5);
+
+  Vector4 a = textureLod(lumSource, vUV + Vector2(-offset.x, -offset.y), 0.0);
+  Vector4 b = textureLod(lumSource, vUV + Vector2(offset.x, -offset.y), 0.0);
+  Vector4 c = textureLod(lumSource, vUV + Vector2(-offset.x, offset.y), 0.0);
+  Vector4 d = textureLod(lumSource, vUV + Vector2(offset.x, offset.y), 0.0);
+
+  float value = 0.0;
+  if (lumStep.z > 0.5)
+  {
+    // A FLOOR UNDER THE DARK, because the logarithm of nothing is not a
+    // number. A pixel this dark is far below anything a screen can show,
+    // so clamping it changes no picture -- and not clamping it makes the
+    // average of every picture with a black pixel in it undefined.
+    float floorLight = 0.0001;
+
+    float la = log2(max(GradingLuminance(a.xyz), floorLight));
+    float lb = log2(max(GradingLuminance(b.xyz), floorLight));
+    float lc = log2(max(GradingLuminance(c.xyz), floorLight));
+    float ld = log2(max(GradingLuminance(d.xyz), floorLight));
+    value = (la + lb + lc + ld) * 0.25;
+  }
+  else
+  {
+    value = (a.x + b.x + c.x + d.x) * 0.25;
+  }
+
+  return Vector4(value, value, value, 1.0);
+}
+
+#endif

@@ -71,4 +71,13 @@
 
 [Input] Vector2 vUV;
 
+// WHERE THIS PIXEL IS ON THE SCREEN, before the divide.
+//
+// Carried rather than asked for, because the two languages this compiles
+// to spell the fragment's own coordinate differently and neither spells
+// it in the range a texture is read in. What reads a screen-space texture
+// -- the occlusion the lighting applies -- divides this and maps it, and
+// Fluxion/Frame.jsl's screenParams says which way the rows run.
+[Input] Vector4 vClipPosition;
+
 #endif

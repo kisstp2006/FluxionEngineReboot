@@ -79,6 +79,25 @@ void main() {
   // faces than at their edges.
   Vector3 N = normalize(surface.normal);
 
+  // HOW MUCH OF THE SKY REACHES THIS PIXEL, folded into what the material
+  // already said about the same thing.
+  //
+  // MULTIPLIED INTO THE SURFACE RATHER THAN INTO THE COLOUR, and that is
+  // the whole reason the pass that measures it runs BEFORE this one.
+  // Occlusion is a statement about INDIRECT light -- how much of the
+  // surroundings a point can see -- and the lighting already applies
+  // surface.ambientOcclusion to exactly the two terms that are indirect.
+  // Multiplying the finished colour instead would darken the sun as well,
+  // and a shadowed corner would go black rather than dim.
+  Vector2 screenNDC = vClipPosition.xy / vClipPosition.w;
+  Vector2 screenUV = Vector2(screenNDC.x * 0.5 + 0.5,
+                             screenParams.y > 0.5 ? 0.5 - screenNDC.y * 0.5 : screenNDC.y * 0.5 + 0.5);
+
+  // A white texture is bound when nothing measured it, so this is a
+  // multiplication by one rather than a branch -- one path through the
+  // shader every surface in the frame runs.
+  surface.ambientOcclusion = surface.ambientOcclusion * textureLod(ambientOcclusion, screenUV, 0.0).x;
+
   Vector3 color = EvaluateLighting(surface, N, vWorldPosition);
 
   // The camera, after the lighting and not during it. Everything above

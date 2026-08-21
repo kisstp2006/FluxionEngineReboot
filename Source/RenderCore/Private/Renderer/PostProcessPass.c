@@ -81,6 +81,15 @@ typedef struct FluxionPostUniform
     //    switched off, and the resolve then adds nothing whatever is
     //    bound beside it.
     FluxionVec4 bloom;
+
+    // The grading, in the order PostProcess.jsl declares it. THE ORDER IS
+    // THE CONTRACT: a member added here without a matching uniform there
+    // moves everything after it, and nothing says so out loud -- the
+    // picture merely comes out wrong.
+    FluxionVec4 balance;
+    FluxionVec4 lift;
+    FluxionVec4 gamma;
+    FluxionVec4 gain;
 } FluxionPostUniform;
 
 // What one step of the bloom chain is told -- see BloomDown.jsl.
@@ -89,6 +98,39 @@ typedef struct FluxionBloomUniform
     FluxionVec4 step;
     FluxionVec4 curve;
 } FluxionBloomUniform;
+
+// THE THREE VERTICES EVERY FULLSCREEN PASS DRAWS, and there is one of
+// them for the whole renderer.
+//
+// It lives here because this is where the triangle is written down, and
+// it is a function rather than a line inside the resolve's setup because
+// the passes that run BEFORE the resolve need it too -- the occlusion is
+// worked out before anything is lit, and on the first frame the resolve
+// has not run even once by then. Measured, when it was the resolve's
+// alone: the occlusion drew from a buffer that did not exist yet, which
+// one backend answered by walking into a null pointer.
+void FluxionRendererInternal_EnsureFullscreenTriangle(FluxionRenderer* renderer)
+{
+    if (FLUXION_HANDLE_IS_VALID(renderer->postVertexBuffer)) return;
+
+    FluxionRHIBufferDesc vertexDesc;
+    memset(&vertexDesc, 0, sizeof(vertexDesc));
+    vertexDesc.size = sizeof(kPostFullscreenTriangle);
+    vertexDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_VERTEX_BUFFER;
+    vertexDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
+    vertexDesc.debugName = "Fluxion.Renderer.FullscreenTriangle";
+    renderer->postVertexBuffer = Fluxion_RHI_CreateBuffer(renderer->device, &vertexDesc);
+
+    if (FLUXION_HANDLE_IS_VALID(renderer->postVertexBuffer))
+    {
+        void* mapped = Fluxion_RHI_MapBuffer(renderer->postVertexBuffer);
+        if (mapped != NULL)
+        {
+            memcpy(mapped, kPostFullscreenTriangle, sizeof(kPostFullscreenTriangle));
+            Fluxion_RHI_UnmapBuffer(renderer->postVertexBuffer);
+        }
+    }
+}
 
 static FluxionRHIBindGroupLayoutDesc FluxionPostProcessPass_MakeLayoutDesc(void)
 {
@@ -115,7 +157,15 @@ static FluxionRHIBindGroupLayoutDesc FluxionPostProcessPass_MakeLayoutDesc(void)
     desc.entries[4].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
     desc.entries[4].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
-    desc.entryCount = 5;
+    desc.entries[5].binding = 5;
+    desc.entries[5].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    desc.entries[5].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entries[6].binding = 6;
+    desc.entries[6].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    desc.entries[6].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entryCount = 7;
     desc.debugName = "Fluxion.Renderer.PostProcessLayout";
     return desc;
 }
@@ -390,23 +440,7 @@ static bool FluxionPostProcessPass_EnsureResources(FluxionRenderer* renderer)
     samplerDesc.debugName = "Fluxion.Renderer.PostProcessSampler";
     renderer->postSampler = Fluxion_RHI_CreateSampler(renderer->device, &samplerDesc);
 
-    FluxionRHIBufferDesc vertexDesc;
-    memset(&vertexDesc, 0, sizeof(vertexDesc));
-    vertexDesc.size = sizeof(kPostFullscreenTriangle);
-    vertexDesc.usageFlags = FLUXION_RHI_BUFFER_USAGE_VERTEX_BUFFER;
-    vertexDesc.memoryClass = FLUXION_RHI_MEMORY_CLASS_CPU_TO_GPU;
-    vertexDesc.debugName = "Fluxion.Renderer.PostProcessTriangle";
-    renderer->postVertexBuffer = Fluxion_RHI_CreateBuffer(renderer->device, &vertexDesc);
-
-    if (FLUXION_HANDLE_IS_VALID(renderer->postVertexBuffer))
-    {
-        void* mapped = Fluxion_RHI_MapBuffer(renderer->postVertexBuffer);
-        if (mapped != NULL)
-        {
-            memcpy(mapped, kPostFullscreenTriangle, sizeof(kPostFullscreenTriangle));
-            Fluxion_RHI_UnmapBuffer(renderer->postVertexBuffer);
-        }
-    }
+    FluxionRendererInternal_EnsureFullscreenTriangle(renderer);
 
     FluxionRHIBufferDesc uniformDesc;
     memset(&uniformDesc, 0, sizeof(uniformDesc));
@@ -611,11 +645,13 @@ static bool FluxionBloom_EnsureBindGroups(FluxionRenderer* renderer)
 // One bind group, kept, remade only when the texture it reads changes --
 // which is when the window is resized. A group per frame is what
 // exhausted a descriptor heap the last time this engine made one.
-static bool FluxionPostProcessPass_EnsureBindGroup(FluxionRenderer* renderer, FluxionRHITextureViewHandle glow)
+static bool FluxionPostProcessPass_EnsureBindGroup(FluxionRenderer* renderer, FluxionRHITextureViewHandle glow,
+                                                  FluxionRHITextureViewHandle exposure)
 {
     if (renderer->postBoundSceneColor.index == renderer->sceneColorSampleView.index &&
         renderer->postBoundSceneColor.generation == renderer->sceneColorSampleView.generation &&
         renderer->postBoundGlow.index == glow.index && renderer->postBoundGlow.generation == glow.generation &&
+        renderer->postBoundExposure.index == exposure.index && renderer->postBoundExposure.generation == exposure.generation &&
         FLUXION_HANDLE_IS_VALID(renderer->postBindGroup))
     {
         return true;
@@ -624,7 +660,7 @@ static bool FluxionPostProcessPass_EnsureBindGroup(FluxionRenderer* renderer, Fl
     if (FLUXION_HANDLE_IS_VALID(renderer->postBindGroup)) Fluxion_RHI_DestroyBindGroup(renderer->postBindGroup);
     renderer->postBindGroup = (FluxionRHIBindGroupHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
 
-    FluxionRHIBindGroupEntry entries[5];
+    FluxionRHIBindGroupEntry entries[7];
     memset(entries, 0, sizeof(entries));
 
     entries[0].binding = 0;
@@ -656,16 +692,28 @@ static bool FluxionPostProcessPass_EnsureBindGroup(FluxionRenderer* renderer, Fl
     entries[4].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
     entries[4].sampler = renderer->postSampler;
 
+    // AND THE CAMERA'S OWN SETTING, on the same terms as the glow above:
+    // the scene stands in when nothing measured it, and the resolve
+    // mixes it out rather than branching around it.
+    entries[5].binding = 5;
+    entries[5].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    entries[5].textureView = exposure;
+
+    entries[6].binding = 6;
+    entries[6].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    entries[6].sampler = renderer->postSampler;
+
     FluxionRHIBindGroupDesc groupDesc;
     groupDesc.layout = renderer->postLayout;
     groupDesc.entries = entries;
-    groupDesc.entryCount = 5;
+    groupDesc.entryCount = 7;
 
     renderer->postBindGroup = Fluxion_RHI_CreateBindGroup(renderer->device, &groupDesc);
     if (!FLUXION_HANDLE_IS_VALID(renderer->postBindGroup)) return false;
 
     renderer->postBoundSceneColor = renderer->sceneColorSampleView;
     renderer->postBoundGlow = glow;
+    renderer->postBoundExposure = exposure;
     return true;
 }
 
@@ -829,7 +877,14 @@ void FluxionPostProcessPass_Execute(FluxionRHICommandListHandle commandList, voi
     const bool glowing = FluxionBloom_Build(renderer, commandList);
     const FluxionRHITextureViewHandle glow = glowing ? renderer->bloomSampleViews[0] : renderer->sceneColorSampleView;
 
-    if (!FluxionPostProcessPass_EnsureBindGroup(renderer, glow)) return;
+    // And the camera is set from the same scene, before the scene stops
+    // being an amount of light -- which is the only point at which the
+    // question "how bright was this frame" has an answer.
+    const bool measured = FluxionRendererInternal_AutoExposure_Build(renderer, commandList);
+    const FluxionRHITextureViewHandle exposure =
+        measured ? FluxionRendererInternal_AutoExposure_GetView(renderer) : renderer->sceneColorSampleView;
+
+    if (!FluxionPostProcessPass_EnsureBindGroup(renderer, glow, exposure)) return;
 
     FluxionRenderTargetHandle renderTarget = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     FluxionRendererInternal_RenderView_Get(renderer->currentView, &renderTarget, NULL, NULL);
@@ -842,6 +897,14 @@ void FluxionPostProcessPass_Execute(FluxionRHICommandListHandle commandList, voi
     FluxionViewport viewport = { 0 };
     FluxionRendererInternal_RenderView_GetViewport(renderer->currentView, &viewport);
 
+    // WHERE THIS PASS WRITES: the screen, or a texture one more pass
+    // reads. Asked before the uniform below is filled in, because the
+    // answer changes what goes in it.
+    const bool smoothing =
+        FluxionRendererInternal_FXAA_Begin(renderer, commandList, (u32)viewport.width, (u32)viewport.height);
+    const FluxionRHITextureViewHandle resolveTarget =
+        smoothing ? FluxionRendererInternal_FXAA_GetTargetView(renderer) : colorViews[0];
+
     // What the frame decided about the camera, handed to the one place
     // that acts on it.
     FluxionPostUniform uniform;
@@ -849,7 +912,11 @@ void FluxionPostProcessPass_Execute(FluxionRHICommandListHandle commandList, voi
     FluxionRendererInternal_RenderView_GetToneMapping(renderer->currentView, &uniform.params);
 
     // Which way this backend's rows run -- see PostProcess.jsl. Asked of
-    // the device rather than guessed, and only this pass needs it.
+    // the device rather than guessed, and asked WHATEVER THIS PASS IS
+    // WRITING INTO: the rule is one per fullscreen pass, not one per
+    // frame. Making this one conditional on being the last pass was tried
+    // and put the picture upside down the moment another pass followed
+    // it.
     uniform.params.w = Fluxion_RHI_GetDeviceBackendType(renderer->device) == FLUXION_RHI_BACKEND_OPENGL ? 1.0f : 0.0f;
 
     // How much of it is added back -- and zero when there is none, which
@@ -857,6 +924,29 @@ void FluxionPostProcessPass_Execute(FluxionRHICommandListHandle commandList, voi
     FluxionVec4 bloomCurve;
     FluxionRendererInternal_RenderView_GetBloom(renderer->currentView, &bloomCurve);
     uniform.bloom.x = glowing ? bloomCurve.z : 0.0f;
+
+    // Whether what is bound beside the glow is a camera setting or the
+    // scene standing in for one. See the resolve: it mixes rather than
+    // branches, so this is the whole of the difference.
+    uniform.bloom.y = measured ? 1.0f : 0.0f;
+
+    // AND THE GRADING, WHICH IS NEUTRAL RATHER THAN ABSENT when the view
+    // has nothing to say: the shader runs the same arithmetic either way,
+    // so there is no second path through it to keep in step with this
+    // one. Neutral is a one in four places and a zero in the rest, which
+    // is why it cannot be left to the memset above.
+    if (!FluxionRendererInternal_RenderView_GetGrading(renderer->currentView, &uniform.balance, &uniform.lift,
+                                                      &uniform.gamma, &uniform.gain))
+    {
+        uniform.balance.z = 1.0f;
+        uniform.balance.w = 1.0f;
+        uniform.gamma.x = 1.0f;
+        uniform.gamma.y = 1.0f;
+        uniform.gamma.z = 1.0f;
+        uniform.gain.x = 1.0f;
+        uniform.gain.y = 1.0f;
+        uniform.gain.z = 1.0f;
+    }
 
     void* mapped = Fluxion_RHI_MapBuffer(renderer->postUniformBuffer);
     if (mapped != NULL)
@@ -871,7 +961,7 @@ void FluxionPostProcessPass_Execute(FluxionRHICommandListHandle commandList, voi
     // make. A second one here would claim a state the graph had already
     // changed, which is what the contract checks for and says out loud.
     FluxionRHIRenderingAttachment attachment;
-    attachment.view = colorViews[0];
+    attachment.view = resolveTarget;
     attachment.clear = false;
     attachment.clearColor[0] = 0.0f;
     attachment.clearColor[1] = 0.0f;
@@ -893,6 +983,12 @@ void FluxionPostProcessPass_Execute(FluxionRHICommandListHandle commandList, voi
     Fluxion_RHI_CommandList_SetVertexBuffer(commandList, 0, renderer->postVertexBuffer, 0);
     Fluxion_RHI_CommandList_Draw(commandList, 3, 1, 0, 0);
     Fluxion_RHI_CommandList_EndRendering(commandList);
+
+    // And the one more pass, when there is one.
+    if (smoothing)
+    {
+        FluxionRendererInternal_FXAA_Resolve(renderer, commandList, colorViews[0], (u32)viewport.width, (u32)viewport.height);
+    }
 }
 
 void FluxionRendererInternal_PostProcess_Shutdown(FluxionRenderer* renderer)

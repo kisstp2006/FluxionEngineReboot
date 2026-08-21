@@ -130,6 +130,12 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
     // whatever the last frame left.
     if (renderer == NULL) return;
 
+    // BEFORE ANYTHING HERE DRAWS, and inside this pass rather than beside
+    // it in the graph: what it writes is this pass's own depth attachment,
+    // and the two would otherwise have to agree about the target through
+    // a name in a graph file.
+    const bool surfacesRecorded = FluxionRendererInternal_NormalRoughness_Build(renderer, commandList);
+
     FluxionRenderTargetHandle renderTarget = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     FluxionRHIBindGroupHandle frameBindGroup = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     FluxionRendererInternal_RenderView_Get(renderer->currentView, &renderTarget, NULL, &frameBindGroup);
@@ -138,6 +144,22 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
     u32 colorViewCount = 0;
     FluxionRHITextureViewHandle depthView = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     if (!FluxionRendererInternal_RenderTarget_Get(renderTarget, colorViews, &colorViewCount, &depthView) || colorViewCount == 0) return;
+
+    // AND WHAT THAT DEPTH SAYS ABOUT HOW MUCH SKY EACH PIXEL CAN SEE,
+    // worked out here -- after the surfaces exist and before anything is
+    // lit, which is the only window in the frame where both are true.
+    const bool occluded = FluxionRendererInternal_Occlusion_Build(renderer, commandList, depthView);
+    Fluxion_RenderView_SetAmbientOcclusion(renderer->currentView,
+                                           occluded ? FluxionRendererInternal_Occlusion_GetView(renderer)
+                                                    : (FluxionRHITextureViewHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 },
+                                           occluded);
+
+    // WRITTEN AGAIN, AND THE GROUP FETCHED AGAIN, because the line above
+    // changes both: the constants say whether anything measured, and
+    // naming a different texture means a different bind group. Reading
+    // either of them before this point is reading last frame's answer.
+    Fluxion_RenderView_UpdateFrameConstants(renderer->currentView);
+    FluxionRendererInternal_RenderView_Get(renderer->currentView, NULL, NULL, &frameBindGroup);
 
     // THE SCENE'S OWN TARGET, when the chain is on: what this pass writes
     // is light, and light does not fit in the eight bits a screen takes.
@@ -163,7 +185,13 @@ void FluxionForwardOpaquePass_Execute(FluxionRHICommandListHandle commandList, v
 
     FluxionRHIRenderingAttachment depthAttachment;
     depthAttachment.view = depthView;
-    depthAttachment.clear = true;
+    // KEPT WHEN THE SURFACES WERE RECORDED, because that pass drew this
+    // same geometry into this same buffer and its depths are the ones
+    // this pass would have written. Clearing here would throw them away
+    // and cost the early rejection they buy; not clearing when the pass
+    // did NOT run would leave last frame's depths in place, which rejects
+    // pixels that are in front of nothing.
+    depthAttachment.clear = !surfacesRecorded;
     depthAttachment.clearColor[0] = 1.0f;
 
     FluxionViewport viewport = { 0 };

@@ -167,6 +167,20 @@ bool Fluxion_MaterialAsset_Read(const u8* bytes, usize size, FluxionMaterialAsse
     memset(block, 0, headerSize);
     block->totalSize = totalSize;
 
+    // EVERY HANDLE NAMED INVALID, HERE, BEFORE ANYTHING CAN FAIL.
+    //
+    // A zeroed handle is index zero generation zero, which is a REAL SLOT
+    // and reads as valid. Loading can stop at any of a dozen points below,
+    // and the release that follows destroys whatever the handles name --
+    // so the moment a field exists it has to name nothing, not slot zero.
+    // Measured, before this was here: a material whose load stopped early
+    // destroyed the first shader program in the pool, and the fault
+    // surfaced in a different test entirely.
+    block->asset.program = (FluxionShaderProgramHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    block->asset.prepassProgram = (FluxionShaderProgramHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    block->asset.material = (FluxionMaterialHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    block->asset.pipeline = (FluxionRenderPipelineHandle){ FLUXION_HANDLE_INVALID_INDEX, 0 };
+
     char* source = (char*)block + headerSize;
     Fluxion_Stream_SerializeBytes(&stream, source, sourceLength);
     source[sourceLength] = '\0';
@@ -238,6 +252,7 @@ void Fluxion_MaterialAsset_Destroy(FluxionMaterialAsset* asset)
     if (FLUXION_HANDLE_IS_VALID(asset->pipeline)) Fluxion_RenderPipeline_Destroy(asset->pipeline);
     if (FLUXION_HANDLE_IS_VALID(asset->material)) Fluxion_Material_Destroy(asset->material);
     if (FLUXION_HANDLE_IS_VALID(asset->program)) Fluxion_ShaderProgram_Destroy(asset->program);
+    if (FLUXION_HANDLE_IS_VALID(asset->prepassProgram)) Fluxion_ShaderProgram_Destroy(asset->prepassProgram);
 
     Fluxion_Allocator_Free(Fluxion_DefaultAllocator(), block, block->totalSize);
 }
@@ -297,6 +312,38 @@ static bool Fluxion_MaterialAsset_Finalize(void* object, void* userData)
     asset->pipeline = Fluxion_RenderPipeline_Create(context->device, program, FLUXION_RENDER_PIPELINE_CATEGORY_OPAQUE,
                                                     context->colorFormat, context->depthFormat);
     if (!FLUXION_HANDLE_IS_VALID(asset->pipeline)) return false;
+
+    // AND THE SAME MATERIAL AGAIN, for the pass that records the surface
+    // before it is lit. The same source, a different entry point -- which
+    // is what makes the recorded surface the surface that gets drawn,
+    // even for a material that works its own out in an unusual way.
+    //
+    // NOT FATAL WHEN IT FAILS. Everything this feeds is an effect on top
+    // of the picture; a material whose second program would not build
+    // still loads, still draws, and is simply left out of that pass.
+    char* prepassVertex = Fluxion_MaterialShader_BuildVertexSource(FLUXION_MATERIAL_PASS_NORMAL_ROUGHNESS);
+    char* prepassFragment = Fluxion_MaterialShader_BuildFragmentSource(asset->source, FLUXION_MATERIAL_PASS_NORMAL_ROUGHNESS);
+    if (prepassVertex != NULL && prepassFragment != NULL)
+    {
+        FluxionShaderProgramDesc prepassDesc;
+        memset(&prepassDesc, 0, sizeof(prepassDesc));
+        prepassDesc.vertexSource = prepassVertex;
+        prepassDesc.fragmentSource = prepassFragment;
+        prepassDesc.debugName = "Fluxion.MaterialAsset.SurfaceProgram";
+
+        asset->prepassProgram = Fluxion_ShaderProgram_Create(context->device, &prepassDesc);
+        if (FLUXION_HANDLE_IS_VALID(asset->prepassProgram))
+        {
+            Fluxion_RenderPipeline_SetPrepassProgram(asset->pipeline, asset->prepassProgram);
+        }
+        else
+        {
+            FLUXION_LOG_WARN(FLUXION_MATERIAL_ASSET_LOG_CATEGORY,
+                             "the material's surface shader would not compile; it will be left out of the pass that records surfaces");
+        }
+    }
+    Fluxion_MaterialShader_FreeSource(prepassVertex);
+    Fluxion_MaterialShader_FreeSource(prepassFragment);
 
     for (u32 i = 0; i < asset->parameterCount; ++i)
     {

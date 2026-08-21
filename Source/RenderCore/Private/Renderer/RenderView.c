@@ -97,6 +97,38 @@ typedef struct FluxionRenderViewRecord
     FluxionRHISamplerHandle environmentSampler;
     f32 environmentIntensity;
 
+    // How much of the sky reaches each pixel, worked out by a pass this
+    // view knows nothing about -- so the renderer hands it over, and a
+    // view that was never handed one keeps the white stand-in that says
+    // "all of it".
+    FluxionRHITextureViewHandle occlusionView;
+    bool occlusionMeasured;
+
+    // What the grading was asked for, as distances from leaving the
+    // picture alone -- see the description's own comment for why they are
+    // stored that way rather than as the numbers the shader multiplies
+    // by.
+    // What the measured brightness is allowed to do to the camera, and
+    // how long the last frame took -- see the description's own comments.
+    f32 occlusionRadius;
+    f32 occlusionStrength;
+    u32 occlusionSliceCount;
+    u32 occlusionStepCount;
+
+    f32 autoExposureKey;
+    f32 autoExposureSpeed;
+    f32 autoExposureLowest;
+    f32 autoExposureHighest;
+    f32 deltaSeconds;
+
+    f32 gradeTemperature;
+    f32 gradeTint;
+    f32 gradeContrast;
+    f32 gradeSaturation;
+    FluxionVec3 gradeLift;
+    FluxionVec3 gradeGamma;
+    FluxionVec3 gradeGain;
+
     // The one this view made for itself, kept apart from the one it is
     // currently using: a caller may set an environment with its own
     // sampler, and this still has to be given back.
@@ -224,6 +256,39 @@ typedef struct FluxionRenderShadowGPU
 
 #define FLUXION_RENDER_VIEW_INITIAL_LIGHTS 8
 
+// WHERE MIDDLE GREY LANDS. Eighteen percent of the way to white is what
+// every hand-held light meter is calibrated to and what a photographer
+// means by a correct exposure -- so a caller who says nothing gets the
+// answer a camera would have given.
+#define FLUXION_RENDER_VIEW_DEFAULT_EXPOSURE_KEY 0.18f
+
+// HOW FAR THE OCCLUSION SEARCH REACHES, in the units the world is in.
+// Half a metre is about the size of the creases a room has in it -- where
+// a wall meets a floor, where a table meets its leg -- and everything it
+// reaches has to be on the screen, which a larger radius often is not.
+#define FLUXION_RENDER_VIEW_DEFAULT_OCCLUSION_RADIUS 0.5f
+
+// Two directions and four steps along each side of each: sixteen samples
+// a pixel. More directions beats more steps at the same total -- the
+// noise too few directions leaves is structured and the eye finds it,
+// where the noise too few steps leaves is fine and the blur after the
+// search takes it out.
+#define FLUXION_RENDER_VIEW_DEFAULT_OCCLUSION_SLICES 2u
+#define FLUXION_RENDER_VIEW_DEFAULT_OCCLUSION_STEPS 4u
+
+// How much of the remaining distance the camera covers in a second. Most
+// of it, but not all: an eye takes a moment to adjust to a bright room,
+// and a camera that arrived instantly would read as the picture flashing
+// rather than as the light changing.
+#define FLUXION_RENDER_VIEW_DEFAULT_EXPOSURE_SPEED 0.9f
+
+// The range the measurement may ask for, in the same multiplier the
+// exposure itself is in. BOTH ENDS MATTER: a frame of pure black would
+// otherwise ask for an infinite exposure and get it, and the frame after
+// it -- with anything at all in it -- would be pure white.
+#define FLUXION_RENDER_VIEW_DEFAULT_EXPOSURE_LOWEST 0.01f
+#define FLUXION_RENDER_VIEW_DEFAULT_EXPOSURE_HIGHEST 100.0f
+
 static FluxionRenderViewRecord s_renderViews[FLUXION_RENDERER_MAX_RENDER_VIEWS];
 
 // Both buffers and the bind group together: the group names the buffer,
@@ -271,6 +336,8 @@ static FluxionRHIBindGroupHandle Fluxion_RenderViewInternal_MakeFrameBindGroup(F
                                                                                FluxionRHISamplerHandle tableSampler,
                                                                                FluxionRHITextureViewHandle shadowAtlasView,
                                                                                FluxionRHISamplerHandle shadowSampler,
+                                                                               FluxionRHITextureViewHandle occlusionView,
+                                                                               FluxionRHISamplerHandle occlusionSampler,
                                                                                FluxionRHIBufferHandle lights, u32 lightCapacity,
                                                                                FluxionRHIBufferHandle irradiance,
                                                                                FluxionRHIBufferHandle shadows)
@@ -279,7 +346,7 @@ static FluxionRHIBindGroupHandle Fluxion_RenderViewInternal_MakeFrameBindGroup(F
     const FluxionRHISamplerHandle noSampler = { FLUXION_HANDLE_INVALID_INDEX, 0 };
     const FluxionRHIBufferHandle noBuffer = { FLUXION_HANDLE_INVALID_INDEX, 0 };
 
-    FluxionRHIBindGroupEntry entries[12];
+    FluxionRHIBindGroupEntry entries[14];
     memset(entries, 0, sizeof(entries));
 
     entries[0].binding = 0;
@@ -344,38 +411,52 @@ static FluxionRHIBindGroupHandle Fluxion_RenderViewInternal_MakeFrameBindGroup(F
     entries[8].textureView = noView;
     entries[8].sampler = shadowSampler;
 
+    // The occlusion, and a plain sampler for it. Bound whether or not
+    // anything measured it -- see MakeFrameLayoutDesc and Frame.jsl.
     entries[9].binding = 9;
-    entries[9].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    entries[9].buffer = lights;
-    entries[9].bufferSize = (usize)lightCapacity * sizeof(FluxionRenderLightGPU);
-    entries[9].textureView = noView;
+    entries[9].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    entries[9].buffer = noBuffer;
+    entries[9].textureView = occlusionView;
     entries[9].sampler = noSampler;
+
+    entries[10].binding = 10;
+    entries[10].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    entries[10].buffer = noBuffer;
+    entries[10].textureView = noView;
+    entries[10].sampler = occlusionSampler;
+
+    entries[11].binding = 11;
+    entries[11].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    entries[11].buffer = lights;
+    entries[11].bufferSize = (usize)lightCapacity * sizeof(FluxionRenderLightGPU);
+    entries[11].textureView = noView;
+    entries[11].sampler = noSampler;
 
     // How big one light is, said rather than assumed. A backend that
     // describes a buffer by element cannot work it out, and a wrong guess
     // reads the right memory in the wrong pieces.
-    entries[9].bufferElementStride = (u32)sizeof(FluxionRenderLightGPU);
+    entries[11].bufferElementStride = (u32)sizeof(FluxionRenderLightGPU);
 
-    entries[10].binding = 10;
-    entries[10].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    entries[10].buffer = irradiance;
-    entries[10].bufferSize = FLUXION_RENDER_VIEW_IRRADIANCE_BYTES;
-    entries[10].textureView = noView;
-    entries[10].sampler = noSampler;
-    entries[10].bufferElementStride = (u32)sizeof(FluxionVec4);
+    entries[12].binding = 12;
+    entries[12].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    entries[12].buffer = irradiance;
+    entries[12].bufferSize = FLUXION_RENDER_VIEW_IRRADIANCE_BYTES;
+    entries[12].textureView = noView;
+    entries[12].sampler = noSampler;
+    entries[12].bufferElementStride = (u32)sizeof(FluxionVec4);
 
-    entries[11].binding = 11;
-    entries[11].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    entries[11].buffer = shadows;
-    entries[11].bufferSize = FLUXION_RENDER_VIEW_SHADOW_BYTES;
-    entries[11].textureView = noView;
-    entries[11].sampler = noSampler;
-    entries[11].bufferElementStride = (u32)sizeof(FluxionRenderShadowGPU);
+    entries[13].binding = 13;
+    entries[13].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    entries[13].buffer = shadows;
+    entries[13].bufferSize = FLUXION_RENDER_VIEW_SHADOW_BYTES;
+    entries[13].textureView = noView;
+    entries[13].sampler = noSampler;
+    entries[13].bufferElementStride = (u32)sizeof(FluxionRenderShadowGPU);
 
     FluxionRHIBindGroupDesc desc;
     desc.layout = layout;
     desc.entries = entries;
-    desc.entryCount = 12;
+    desc.entryCount = 14;
     return Fluxion_RHI_CreateBindGroup(device, &desc);
 }
 
@@ -416,6 +497,38 @@ static void Fluxion_RenderViewInternal_ApplyDescription(FluxionRenderViewRecord*
     record->bloomThreshold = desc->bloomThreshold > 0.0f ? desc->bloomThreshold : 1.0f;
     record->bloomKnee = desc->bloomKnee > 0.0f ? desc->bloomKnee : record->bloomThreshold * 0.25f;
     record->bloomIntensity = desc->bloomIntensity;
+
+    // Copied across as they were given. NOTHING IS CORRECTED HERE, and
+    // that is the point of the description holding distances rather than
+    // values: zero is already the answer for "leave it alone", so there
+    // is no unset case to guess at -- unlike the exposure above, where
+    // zero would have meant a black screen.
+    // The engine's own where nobody said. Unlike the grading below, these
+    // have no neutral at zero: a key of nothing would put middle grey at
+    // black, and a speed of nothing would freeze the camera.
+    record->occlusionRadius = desc->occlusionRadius > 0.0f ? desc->occlusionRadius : FLUXION_RENDER_VIEW_DEFAULT_OCCLUSION_RADIUS;
+    record->occlusionStrength = desc->occlusionStrength > 0.0f ? desc->occlusionStrength : 1.0f;
+    record->occlusionSliceCount = desc->occlusionSliceCount > 0 ? desc->occlusionSliceCount : FLUXION_RENDER_VIEW_DEFAULT_OCCLUSION_SLICES;
+    record->occlusionStepCount = desc->occlusionStepCount > 0 ? desc->occlusionStepCount : FLUXION_RENDER_VIEW_DEFAULT_OCCLUSION_STEPS;
+
+    record->autoExposureKey = desc->autoExposureKey > 0.0f ? desc->autoExposureKey : FLUXION_RENDER_VIEW_DEFAULT_EXPOSURE_KEY;
+    record->autoExposureSpeed = desc->autoExposureSpeed > 0.0f ? desc->autoExposureSpeed : FLUXION_RENDER_VIEW_DEFAULT_EXPOSURE_SPEED;
+    record->autoExposureLowest = desc->autoExposureLowest > 0.0f ? desc->autoExposureLowest : FLUXION_RENDER_VIEW_DEFAULT_EXPOSURE_LOWEST;
+    record->autoExposureHighest = desc->autoExposureHighest > 0.0f ? desc->autoExposureHighest : FLUXION_RENDER_VIEW_DEFAULT_EXPOSURE_HIGHEST;
+
+    // NOT CORRECTED, because zero is a real answer here: it says this
+    // caller is not running a clock, and the exposure should take what
+    // was measured whole rather than easing towards it.
+    record->deltaSeconds = desc->deltaSeconds > 0.0f ? desc->deltaSeconds : 0.0f;
+
+    record->gradeTemperature = desc->gradeTemperature;
+    record->gradeTint = desc->gradeTint;
+    record->gradeContrast = desc->gradeContrast;
+    record->gradeSaturation = desc->gradeSaturation;
+    record->gradeLift = desc->gradeLift;
+    record->gradeGamma = desc->gradeGamma;
+    record->gradeGain = desc->gradeGain;
+
     record->encodeOutputToSRGB = desc->encodeOutputToSRGB;
 }
 
@@ -618,9 +731,15 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     shadowStorageDesc.debugName = "Fluxion.RenderView.Shadows";
     const FluxionRHIBufferHandle shadowStorage = Fluxion_RHI_CreateBuffer(device, &shadowStorageDesc);
 
+    // WHITE UNTIL SOMETHING MEASURES IT. White is "all of the sky reaches
+    // here", which multiplies nothing away -- so a view nobody hands an
+    // occlusion to is lit exactly as it was before any of this existed.
+    const FluxionRHITextureViewHandle occlusionView = Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_WHITE);
+
     FluxionRHIBindGroupHandle frameBindGroup = Fluxion_RenderViewInternal_MakeFrameBindGroup(
         device, frameBindGroupLayout, frameConstantBuffer, defaultEnvironment, defaultSampler,
         prefilteredView, dfgView, defaultSampler, shadowAtlasView, shadowSampler,
+        occlusionView, defaultSampler,
         lightStorage, FLUXION_RENDER_VIEW_INITIAL_LIGHTS, irradianceBuffer, shadowStorage);
 
     FluxionRenderViewRecord* record = &s_renderViews[index];
@@ -640,6 +759,8 @@ FluxionRenderViewHandle Fluxion_RenderView_Create(FluxionRHIDeviceHandle device,
     // black cube, so this multiplies nothing -- but a view that was given
     // a real one and no intensity would otherwise start out invisible.
     record->environmentIntensity = 1.0f;
+    record->occlusionView = occlusionView;
+    record->occlusionMeasured = false;
     record->environmentSampler = defaultSampler;
     record->ownedEnvironmentSampler = defaultSampler;
     record->irradianceBuffer = irradianceBuffer;
@@ -776,6 +897,23 @@ void Fluxion_RenderView_UpdateFrameConstants(FluxionRenderViewHandle view)
     // edit rather than a hunt.
     constants.ambientColor.w = record->environmentIntensity;
 
+    // WHETHER ANYTHING MEASURED THE OCCLUSION, and which way this
+    // backend's rows run for a surface reading a texture a fullscreen
+    // pass wrote -- see Frame.jsl. Both are the frame's, not a material's.
+    constants.screenParams.x = record->occlusionMeasured ? 1.0f : 0.0f;
+    // ONE WHERE A SURFACE MUST TURN ITS VERTICAL COORDINATE OVER to read
+    // a screen-space texture, and that is the backends whose framebuffer
+    // starts at the TOP -- which is the two that are not OpenGL.
+    //
+    // Measured rather than reasoned: the same triangle, read back from
+    // the same texture, sat on row 36.8 on those two and row 26.2 on
+    // OpenGL, on a frame sixty-four rows tall. Its clip-space middle is
+    // at minus a sixth, which is 26.7 counting down from the bottom.
+    constants.screenParams.y =
+        Fluxion_RHI_GetDeviceBackendType(record->device) == FLUXION_RHI_BACKEND_OPENGL ? 0.0f : 1.0f;
+    constants.screenParams.z = 0.0f;
+    constants.screenParams.w = 0.0f;
+
     // A multiplier of one, no curve, and no transfer function, when the
     // resolve at the end of the frame is going to do all three. What the
     // passes then write is the light itself -- which is the whole point
@@ -852,6 +990,7 @@ void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRen
             record->environmentView, record->environmentSampler,
             record->prefilteredView, record->dfgView, record->ownedEnvironmentSampler,
             record->shadowAtlasView, record->shadowSampler,
+            record->occlusionView, record->ownedEnvironmentSampler,
             storage, capacity, record->irradianceBuffer, record->shadowStorage);
         if (!FLUXION_HANDLE_IS_VALID(group))
         {
@@ -954,6 +1093,7 @@ void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHIT
         wanted, wantedSampler,
         record->prefilteredView, record->dfgView, record->ownedEnvironmentSampler,
         record->shadowAtlasView, record->shadowSampler,
+        record->occlusionView, record->ownedEnvironmentSampler,
         record->lightStorage, record->lightCapacity, record->irradianceBuffer, record->shadowStorage);
     if (!FLUXION_HANDLE_IS_VALID(group)) return;
 
@@ -970,6 +1110,45 @@ void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHIT
     // above is different: it travels in the frame constants rather than
     // in what those passes produce, so it changes without any of this.
     record->environmentDirty = true;
+}
+
+void Fluxion_RenderView_SetAmbientOcclusion(FluxionRenderViewHandle view, FluxionRHITextureViewHandle occlusion, bool measured)
+{
+    FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return;
+
+    // Nothing measured it, or what did is gone: back to the white
+    // stand-in, which reads as "all of the sky reaches here".
+    FluxionRHITextureViewHandle wanted = occlusion;
+    if (!FLUXION_HANDLE_IS_VALID(wanted) || !measured)
+    {
+        wanted = Fluxion_TextureDefaults_GetView(FLUXION_DEFAULT_TEXTURE_WHITE);
+        measured = false;
+    }
+
+    // Whether it was measured travels in the frame constants rather than
+    // in the group, so it is stored before the early return below -- the
+    // same trap the environment's intensity is written up in.
+    record->occlusionMeasured = measured;
+
+    // THE GROUP NAMES THE TEXTURE, SO CHANGING THE TEXTURE MEANS A NEW
+    // GROUP -- and a caller handing over the same one every frame, which
+    // is what a frame loop does, would otherwise build one every frame
+    // and leave the old ones to pile up.
+    if (wanted.index == record->occlusionView.index && wanted.generation == record->occlusionView.generation) return;
+
+    FluxionRHIBindGroupHandle group = Fluxion_RenderViewInternal_MakeFrameBindGroup(
+        record->device, record->frameBindGroupLayout, record->frameConstantBuffer,
+        record->environmentView, record->environmentSampler,
+        record->prefilteredView, record->dfgView, record->ownedEnvironmentSampler,
+        record->shadowAtlasView, record->shadowSampler,
+        wanted, record->ownedEnvironmentSampler,
+        record->lightStorage, record->lightCapacity, record->irradianceBuffer, record->shadowStorage);
+    if (!FLUXION_HANDLE_IS_VALID(group)) return;
+
+    Fluxion_RHI_DestroyBindGroup(record->frameBindGroup);
+    record->frameBindGroup = group;
+    record->occlusionView = wanted;
 }
 
 FluxionRHIBufferHandle FluxionRendererInternal_RenderView_GetIrradianceBuffer(FluxionRenderViewHandle view)
@@ -1331,6 +1510,75 @@ bool FluxionRendererInternal_RenderView_GetToneMapping(FluxionRenderViewHandle v
     outToneMapping->y = record->tonemapWhitePoint;
     outToneMapping->z = record->encodeOutputToSRGB ? 1.0f : 0.0f;
     outToneMapping->w = 0.0f;
+    return true;
+}
+
+bool FluxionRendererInternal_RenderView_GetOcclusion(FluxionRenderViewHandle view, FluxionVec4* outSettings)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL || outSettings == NULL) return false;
+
+    outSettings->x = record->occlusionRadius;
+    outSettings->y = record->occlusionStrength;
+    outSettings->z = (f32)record->occlusionSliceCount;
+    outSettings->w = (f32)record->occlusionStepCount;
+    return true;
+}
+
+bool FluxionRendererInternal_RenderView_GetMatrices(FluxionRenderViewHandle view, FluxionMat4* outView, FluxionMat4* outProjection)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL) return false;
+
+    if (outView != NULL) *outView = record->viewMatrix;
+    if (outProjection != NULL) *outProjection = record->projectionMatrix;
+    return true;
+}
+
+bool FluxionRendererInternal_RenderView_GetAutoExposure(FluxionRenderViewHandle view, FluxionVec4* outParams,
+                                                       f32* outDeltaSeconds)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL || outParams == NULL || outDeltaSeconds == NULL) return false;
+
+    outParams->x = record->autoExposureKey;
+    outParams->y = record->autoExposureSpeed;
+    outParams->z = record->autoExposureLowest;
+    outParams->w = record->autoExposureHighest;
+    *outDeltaSeconds = record->deltaSeconds;
+    return true;
+}
+
+bool FluxionRendererInternal_RenderView_GetGrading(FluxionRenderViewHandle view, FluxionVec4* outBalance,
+                                                  FluxionVec4* outLift, FluxionVec4* outGamma, FluxionVec4* outGain)
+{
+    const FluxionRenderViewRecord* record = Fluxion_RenderViewInternal_Resolve(view);
+    if (record == NULL || outBalance == NULL || outLift == NULL || outGamma == NULL || outGain == NULL) return false;
+
+    outBalance->x = record->gradeTemperature;
+    outBalance->y = record->gradeTint;
+
+    // TURNED INTO WHAT THE SHADER MULTIPLIES BY, here rather than there.
+    // The description holds distances from neutral so that an unfilled
+    // field means "as it was"; a shader wants the number itself, and the
+    // conversion belongs on the side that knows why the distances exist.
+    outBalance->z = 1.0f + record->gradeContrast;
+    outBalance->w = 1.0f + record->gradeSaturation;
+
+    outLift->x = record->gradeLift.x;
+    outLift->y = record->gradeLift.y;
+    outLift->z = record->gradeLift.z;
+    outLift->w = 0.0f;
+
+    outGamma->x = 1.0f + record->gradeGamma.x;
+    outGamma->y = 1.0f + record->gradeGamma.y;
+    outGamma->z = 1.0f + record->gradeGamma.z;
+    outGamma->w = 0.0f;
+
+    outGain->x = 1.0f + record->gradeGain.x;
+    outGain->y = 1.0f + record->gradeGain.y;
+    outGain->z = 1.0f + record->gradeGain.z;
+    outGain->w = 0.0f;
     return true;
 }
 

@@ -58,6 +58,7 @@ engine_embed_shader_library(
         Fluxion/Varyings.jsl
         Fluxion/BRDF.jsl
         Fluxion/Lighting.jsl
+        Fluxion/Grading.jsl
         Fluxion/Tonemap.jsl
         Fluxion/Material.jsl
         Fluxion/Pass/Vertex.jsl
@@ -69,6 +70,9 @@ engine_embed_shader_library(
         Fluxion/Pass/DebugUIVertex.jsl
         Fluxion/Pass/DebugUI.jsl
         Fluxion/Pass/BloomDown.jsl
+        Fluxion/Pass/ExposureAdapt.jsl
+        Fluxion/Pass/FXAA.jsl
+        Fluxion/Pass/LuminanceDown.jsl
         Fluxion/Pass/BloomUp.jsl
         Fluxion/Pass/MotionVector.jsl
         Fluxion/Pass/MotionVectorWrite.jsl
@@ -76,6 +80,10 @@ engine_embed_shader_library(
         Fluxion/Pass/ShadowDepthWrite.jsl
         Fluxion/Pass/SpecularPrefilter.jsl
         Fluxion/Pass/DfgIntegrate.jsl
+        Fluxion/Pass/NormalRoughness.jsl
+        Fluxion/Pass/ViewDepth.jsl
+        Fluxion/Pass/GroundTruthOcclusion.jsl
+        Fluxion/Pass/OcclusionDenoise.jsl
         Fluxion/Pass/Forward.jsl
         Fluxion/Pass/DepthOnly.jsl
         Fluxion/Pass/SkyboxVertex.jsl

@@ -166,6 +166,26 @@ bool SurfaceFailsAlphaTest(SurfaceData surface)
 // The microfacet alpha the lighting maths actually wants, from the
 // perceptual value a material stores. One place, so the squaring cannot
 // be done twice in one path and not at all in another.
+// THE OTHER END OF WHAT THE PREPASS WROTE -- see Pass/NormalRoughness.jsl
+// for the mapping and for why it is two numbers rather than three. Here
+// rather than in each of the three passes that read it, because a decode
+// that did not exactly undo the encode would give every one of them a
+// slightly different idea of which way the world faces.
+Vector3 DecodeNormalOctahedral(Vector2 encoded)
+{
+  Vector2 folded = encoded * 2.0 - Vector2(1.0, 1.0);
+
+  Vector3 n = Vector3(folded.x, folded.y, 1.0 - abs(folded.x) - abs(folded.y));
+  if (n.z < 0.0)
+  {
+    float unfoldedX = (1.0 - abs(folded.y)) * (folded.x >= 0.0 ? 1.0 : -1.0);
+    float unfoldedY = (1.0 - abs(folded.x)) * (folded.y >= 0.0 ? 1.0 : -1.0);
+    n = Vector3(unfoldedX, unfoldedY, n.z);
+  }
+
+  return normalize(n);
+}
+
 float SurfaceAlphaRoughness(SurfaceData surface)
 {
     float clamped = clamp(surface.perceptualRoughness, FLUXION_MIN_PERCEPTUAL_ROUGHNESS, 1.0);

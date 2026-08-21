@@ -176,6 +176,11 @@ typedef struct FluxionFrameConstants
     // frame's matrix here, and then nothing has moved -- which is the
     // right answer for a first frame and for a test that draws one.
     FluxionMat4 previousViewProjection;
+
+    // See Fluxion/Frame.jsl: whether the occlusion was measured, and
+    // which way this backend's rows run for a surface reading a texture a
+    // fullscreen pass wrote.
+    FluxionVec4 screenParams;
 } FluxionFrameConstants;
 
 // THE ORDER OF THE FIELDS ABOVE IS THE LAYOUT. It has to be the order
@@ -249,6 +254,121 @@ typedef struct FluxionRenderViewDesc
     // How much of the glow is added back on top of the picture. Zero --
     // the value of a field nobody set -- adds none of it.
     f32 bloomIntensity;
+
+    // --- what the frame's own brightness should do to the camera ----------
+    //
+    // Only meaningful with a pipeline whose auto exposure is on. Without
+    // the passes these are numbers nothing reads, and the exposure above
+    // is the whole answer.
+    //
+    // WHAT THIS MULTIPLIES IS THE EXPOSURE ABOVE, rather than replacing
+    // it. The camera settings a caller worked out stay the camera
+    // settings; what the measurement adds is the part a photographer
+    // would do by opening up in a dark room, and a caller who wants only
+    // one of the two sets the other to its neutral.
+
+    // What fraction of the way to white a middle grey should land at.
+    // Zero is read as the engine's own, which is the eighteen percent
+    // every light meter is built around.
+    f32 autoExposureKey;
+
+    // How fast the camera catches up, as the fraction of the remaining
+    // distance it covers in a second. Zero is read as the engine's own.
+    //
+    // A SPEED RATHER THAN A NUMBER OF FRAMES, and the distinction is the
+    // reason it is written this way: a fraction per frame would adapt at
+    // one rate on a fast machine and another on a slow one, which is a
+    // look that changes with the hardware.
+    f32 autoExposureSpeed;
+
+    // The range the measurement is allowed to ask for. Zero on either
+    // means the engine's own bound rather than none: a scene that is
+    // entirely black would otherwise ask for an exposure of infinity, and
+    // get it.
+    f32 autoExposureLowest;
+    f32 autoExposureHighest;
+
+    // How long the frame before this one lasted. Zero means DO NOT EASE:
+    // the exposure takes the measured answer whole, which is what a
+    // caller who is not running a clock should get rather than a camera
+    // that never moves.
+    f32 deltaSeconds;
+
+    // --- how much of the sky reaches each pixel ---------------------------
+    //
+    // Only meaningful with a pipeline whose occlusion is on. Without the
+    // passes these are numbers nothing reads.
+
+    // How far the search reaches, in the same units the world is in. Zero
+    // is read as the engine's own -- half a metre, which is about the
+    // size of the creases a room has in it.
+    //
+    // BIGGER IS NOT BETTER. A radius covers fewer pixels the further away
+    // a surface is, so a large one is read from coarse levels where it
+    // says little; and everything it reaches has to be on the screen,
+    // which a metre away often is not.
+    f32 occlusionRadius;
+
+    // How much of the answer to believe. Zero is read as one, which is
+    // the amount the arithmetic says; less is a hand on the dial.
+    f32 occlusionStrength;
+
+    // How many directions through the hemisphere, and how many steps
+    // along each side of each. Zero is read as the engine's own.
+    //
+    // MORE SLICES BEATS MORE STEPS at the same total: the noise a shortage
+    // of directions leaves is structured and the eye finds it, where the
+    // noise a shortage of steps leaves is fine and the blur after this
+    // removes it.
+    u32 occlusionSliceCount;
+    u32 occlusionStepCount;
+
+    // --- colour grading ---------------------------------------------------
+    //
+    // EVERY FIELD HERE IS A DISTANCE FROM LEAVING THE PICTURE ALONE, and
+    // that is deliberate. A description is filled in by hand, field by
+    // field, and the ones nobody reached must mean "as it was" -- so
+    // neutral is zero everywhere, rather than one in some places and zero
+    // in others. It also makes the honest values reachable: a saturation
+    // whose neutral was one could never be asked to go to grey without
+    // colliding with "unset".
+    //
+    // WHERE EACH HALF IS APPLIED is not a detail. The white balance is a
+    // property of the light, so it happens to the light -- before the
+    // exposure and the curve. Everything below it is a property of the
+    // picture, so it happens to the picture, after the curve and before
+    // the display's own transfer function.
+
+    // Which way the light leans. Negative is cooler, positive warmer;
+    // tint runs from green to magenta, the axis a white balance cannot
+    // fix with temperature alone.
+    //
+    // A BALANCE BETWEEN THE CHANNELS, NOT A BLACK BODY. There is no
+    // colour temperature in kelvin here and no chromatic adaptation
+    // model: this leans the primaries against each other, which is what
+    // a grading control does and is not what a physically-based white
+    // point would do. Named for what it is so nobody reaches for it
+    // expecting the other thing.
+    f32 gradeTemperature;
+    f32 gradeTint;
+
+    // Added to one. Contrast pivots about the middle of the display
+    // range, so the mid grey stays where it is and the two ends move
+    // apart; saturation at minus one is grey, and there is nothing below
+    // that worth having.
+    f32 gradeContrast;
+    f32 gradeSaturation;
+
+    // The three-way control every grading tool has, under the names it
+    // has them under. Gain scales, lift adds, gamma bends what is left:
+    //
+    //     out = (color * (1 + gain) + lift) ^ (1 / (1 + gamma))
+    //
+    // which is to say gain moves the highlights, lift moves the shadows,
+    // and gamma moves the middle without moving either end.
+    FluxionVec3 gradeLift;
+    FluxionVec3 gradeGamma;
+    FluxionVec3 gradeGain;
 
     // Whether the pass encodes its result for the display before writing
     // it.
@@ -442,6 +562,18 @@ void Fluxion_RenderView_SetLights(FluxionRenderViewHandle view, const FluxionRen
 // empty slot refuses the whole group. `intensity` multiplies both what
 // is seen of the sky and the light it casts: one number, because a sky
 // brighter than it lights does not match its own reflections.
+// HANDS THE VIEW WHAT SOMETHING ELSE MEASURED ABOUT HOW MUCH SKY REACHES
+// EACH PIXEL.
+//
+// A view cannot work this out: it is a screen-space answer, produced by a
+// pass that reads the depth and normals of the frame this view describes.
+// So the renderer produces it and hands it over here, once a frame.
+//
+// An invalid view, or `measured` false, puts back the white texture the
+// view started with -- which reads as "all of it" and multiplies nothing
+// away. There is no state in which the binding is empty.
+void Fluxion_RenderView_SetAmbientOcclusion(FluxionRenderViewHandle view, FluxionRHITextureViewHandle occlusion, bool measured);
+
 void Fluxion_RenderView_SetEnvironment(FluxionRenderViewHandle view, FluxionRHITextureViewHandle cubeView,
                                        FluxionRHISamplerHandle sampler, f32 intensity);
 

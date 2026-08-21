@@ -1,0 +1,161 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_PASS_FXAA_INCLUDED
+#define FLUXION_PASS_FXAA_INCLUDED
+
+#include "Fluxion/Grading.jsl"
+
+// SMOOTHING THE STAIRCASE, AFTER THE FACT AND WITHOUT ASKING THE SCENE.
+//
+// A rasteriser answers "is this pixel inside the triangle" with yes or
+// no, so an edge that is not along a row of pixels comes out as steps.
+// Every real fix for that costs something the scene has to provide: more
+// samples per pixel, or a record of where the geometry was. This one
+// costs neither. It looks at the finished picture, finds where the
+// brightness changes sharply, works out which way the edge runs, and
+// blends ALONG it.
+//
+// WHAT THAT BUYS AND WHAT IT COSTS is worth being plain about. It cannot
+// recover an edge thinner than a pixel, because the picture it is given
+// no longer contains one; it softens text and fine texture that were
+// never edges at all; and it has no memory, so it cannot fix an edge that
+// crawls from frame to frame. What it does do is run in one pass on any
+// hardware, in under a millisecond, with nothing else in the renderer
+// needing to know it is there.
+
+// x, y: one texel of the picture being read.
+// z:    one when this backend's first texture row is the last screen row
+//       -- see PostProcess.jsl. It is here as well as there because
+//       whichever of the two writes the screen is the one that needs it,
+//       and with this pass on, that is this one.
+// w:    unused.
+[Uniform(Global)] Vector4 fxaaStep;
+
+[Texture(Global)] Texture2D fxaaSource;
+
+[Input] Vector2 vUV;
+[Target(0)] Vector4 fragColor;
+
+float FxaaLuma(Vector2 uv)
+{
+  return GradingLuminance(textureLod(fxaaSource, uv, 0.0).xyz);
+}
+
+void main() {
+  Vector2 uv = Vector2(vUV.x, fxaaStep.z > 0.5 ? 1.0 - vUV.y : vUV.y);
+  Vector2 texel = Vector2(fxaaStep.x, fxaaStep.y);
+
+  Vector3 middle = textureLod(fxaaSource, uv, 0.0).xyz;
+
+  float lumaM = GradingLuminance(middle);
+  float lumaN = FxaaLuma(uv + Vector2(0.0, -texel.y));
+  float lumaS = FxaaLuma(uv + Vector2(0.0, texel.y));
+  float lumaW = FxaaLuma(uv + Vector2(-texel.x, 0.0));
+  float lumaE = FxaaLuma(uv + Vector2(texel.x, 0.0));
+
+  float lowest = min(lumaM, min(min(lumaN, lumaS), min(lumaW, lumaE)));
+  float highest = max(lumaM, max(max(lumaN, lumaS), max(lumaW, lumaE)));
+  float range = highest - lowest;
+
+  // TWO THRESHOLDS, AND BOTH ARE NEEDED. The relative one is what makes
+  // this work at any brightness: a step of a tenth means something in a
+  // dark room and nothing in a bright one. The absolute one is what stops
+  // it firing in near-black, where a relative threshold is a threshold on
+  // noise and the whole picture would be smeared.
+  float relativeEdge = 0.125;
+  float darkestEdge = 0.0312;
+
+  Vector3 result = middle;
+
+  if (range >= max(darkestEdge, highest * relativeEdge))
+  {
+    float lumaNW = FxaaLuma(uv + Vector2(-texel.x, -texel.y));
+    float lumaNE = FxaaLuma(uv + Vector2(texel.x, -texel.y));
+    float lumaSW = FxaaLuma(uv + Vector2(-texel.x, texel.y));
+    float lumaSE = FxaaLuma(uv + Vector2(texel.x, texel.y));
+
+    // WHICH WAY THE EDGE RUNS, from the four corners. The horizontal
+    // component compares the top pair against the bottom pair and the
+    // vertical one the left pair against the right -- so the direction
+    // that comes out is ACROSS the edge, and stepping along it is what
+    // gathers the pixels the edge passes between.
+    Vector2 direction = Vector2(-((lumaNW + lumaNE) - (lumaSW + lumaSE)),
+                                ((lumaNW + lumaSW) - (lumaNE + lumaSE)));
+
+    // A FLOOR UNDER HOW SMALL THE DIRECTION MAY BE BEFORE IT IS SCALED
+    // UP. The step below divides by the smaller component to reach as far
+    // as it can along the edge; on an edge that is nearly flat that
+    // divisor approaches nothing, and without this the step would be
+    // enormous and would gather pixels from the far side of the picture.
+    float directionFloor = 0.0078;
+    float reduction = max((lumaNW + lumaNE + lumaSW + lumaSE) * 0.25 * relativeEdge, directionFloor);
+    float smallest = 1.0 / (min(abs(direction.x), abs(direction.y)) + reduction);
+
+    // AND A CEILING ON HOW FAR IT REACHES. Eight texels is far enough to
+    // cover the longest staircase a shallow edge makes and near enough
+    // that what is gathered still belongs to the same edge.
+    float reach = 8.0;
+    direction = Vector2(clamp(direction.x * smallest, -reach, reach) * texel.x,
+                        clamp(direction.y * smallest, -reach, reach) * texel.y);
+
+    // The narrow pair first: two samples a third and two thirds of the
+    // way across, which is the blend that is always safe.
+    Vector3 narrow = (textureLod(fxaaSource, uv + direction * (1.0 / 3.0 - 0.5), 0.0).xyz +
+                      textureLod(fxaaSource, uv + direction * (2.0 / 3.0 - 0.5), 0.0).xyz) * 0.5;
+
+    // Then the wide pair, added to it: the ends of the step, which reach
+    // further and give a smoother edge WHEN THEY LAND ON THE SAME EDGE.
+    Vector3 wide = narrow * 0.5 + (textureLod(fxaaSource, uv + direction * -0.5, 0.0).xyz +
+                                   textureLod(fxaaSource, uv + direction * 0.5, 0.0).xyz) * 0.25;
+
+    // AND THIS IS HOW IT KNOWS WHETHER THEY DID. If the wider blend comes
+    // out brighter or darker than anything in the neighbourhood it was
+    // measured from, it reached past the edge onto something else -- and
+    // the narrow blend, which cannot, is used instead.
+    float lumaWide = GradingLuminance(wide);
+    result = (lumaWide < lowest || lumaWide > highest) ? narrow : wide;
+  }
+
+  return Vector4(result.x, result.y, result.z, 1.0);
+}
+
+#endif

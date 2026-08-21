@@ -181,29 +181,48 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeFrameLay
     desc.entries[8].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
     desc.entries[8].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
+    // THE OCCLUSION, AND THE PLAIN SAMPLER THAT READS IT.
+    //
+    // A texture rather than a number because it is a different answer per
+    // pixel, and in this group rather than one of its own because every
+    // surface that gets lit needs it -- and the frame group is what every
+    // surface already has.
+    desc.entries[9].binding = 9;
+    desc.entries[9].type = FLUXION_RHI_BINDING_TYPE_SAMPLED_TEXTURE;
+    desc.entries[9].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
+    desc.entries[10].binding = 10;
+    desc.entries[10].type = FLUXION_RHI_BINDING_TYPE_SAMPLER;
+    desc.entries[10].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+
     // A storage buffer rather than an array in the uniform block above.
     // An array would need a maximum written into the shader, and that
     // maximum would be a number somebody has to raise -- and raising it
     // costs every frame that does not use it, because a uniform block is
     // paid for whether it is full or not.
-    desc.entries[9].binding = 9;
-    desc.entries[9].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    desc.entries[9].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+    //
+    // THE NUMBERS ARE THE COMPILER'S, NOT THIS FILE'S: a group's uniform
+    // buffer is binding zero, then every texture takes a pair, and
+    // storage buffers come last. Adding a texture above therefore MOVED
+    // these three, and the bind group that fills them moved with it.
+    desc.entries[11].binding = 11;
+    desc.entries[11].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[11].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
     // The sky, as nine coefficients. A second storage buffer rather than
     // more fields in the block at binding 0, because a compute pass is
     // what fills it: a uniform buffer would have to be written from the
     // processor, and by then the numbers are already on the device.
-    desc.entries[10].binding = 10;
-    desc.entries[10].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    desc.entries[10].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+    desc.entries[12].binding = 12;
+    desc.entries[12].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[12].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
     // Where each shadow's light looks from, and which tile holds it.
-    desc.entries[11].binding = 11;
-    desc.entries[11].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
-    desc.entries[11].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
+    desc.entries[13].binding = 13;
+    desc.entries[13].type = FLUXION_RHI_BINDING_TYPE_STORAGE_BUFFER;
+    desc.entries[13].visibility = FLUXION_RHI_SHADER_STAGE_FLAG_FRAGMENT;
 
-    desc.entryCount = 12;
+    desc.entryCount = 14;
     desc.debugName = "Fluxion.Renderer.FrameBindGroupLayout";
     return desc;
 }
@@ -256,6 +275,45 @@ static inline FluxionRHIBindGroupLayoutDesc FluxionRendererInternal_MakeObjectLa
 
 // A step per level down, and one per level but the last on the way up.
 #define FLUXION_RENDERER_MAX_BLOOM_STEPS (FLUXION_RENDERER_MAX_BLOOM_LEVELS * 2 - 1)
+
+// HOW BIG THE PICTURE THE FRAME'S BRIGHTNESS IS MEASURED FROM IS -- and
+// it is a fixed square rather than a fraction of the frame, which is the
+// decision worth writing down.
+//
+// A chain that started at half the window would have a different number
+// of levels at every window size, an odd level size wherever the window
+// was odd, and a cost that grew with the resolution -- all of it to
+// produce ONE NUMBER. A fixed square makes every one of those constant:
+// the same nine halvings, all of them exact, on every machine and at
+// every window size, for a quarter of a megabyte.
+//
+// Two hundred and fifty six across is far more than a single average
+// needs. It is this big because the same chain is what a histogram would
+// later be read from, and because the first step's four taps then cover
+// a whole 1080p frame rather than skipping most of it.
+// HOW MANY TIMES THE DISTANCES ARE HALVED for the occlusion search to
+// read from. Four takes a step of eight texels down to one, which is as
+// far out as a radius of a metre or so reaches at arm's length -- and
+// past that the answer is being read from an average of an average, which
+// says less about the surface than it does about the neighbourhood.
+#define FLUXION_RENDERER_VIEW_DEPTH_LEVELS 4
+
+// Two: what the search produced, and what the denoise made of it. Not a
+// history -- both belong to this frame, and a pass cannot read the
+// texture it is writing.
+#define FLUXION_RENDERER_OCCLUSION_TEXTURES 2
+
+#define FLUXION_RENDERER_LUMINANCE_SIZE 256
+
+// Nine, because two hundred and fifty six halves to one in eight steps
+// and the first level is one of them. Written out rather than worked out
+// so that the array below has a size a reader can see.
+#define FLUXION_RENDERER_LUMINANCE_LEVELS 9
+
+// The two the adapted exposure lives in, alternating: a pass cannot read
+// the texture it is writing, and what this frame's exposure is made from
+// is what last frame's exposure was.
+#define FLUXION_RENDERER_EXPOSURE_HISTORY 2
 
 // How many levels a depth pyramid may have. Sixteen halvings take the
 // largest screen anybody draws down to a single texel, and the array is
@@ -527,6 +585,7 @@ typedef struct FluxionRenderer
     FluxionRHIBindGroupHandle postBindGroup;
     FluxionRHITextureViewHandle postBoundSceneColor;
     FluxionRHITextureViewHandle postBoundGlow;
+    FluxionRHITextureViewHandle postBoundExposure;
 
     // The format of what the resolve writes -- the screen's, not the
     // scene's. Told by the application, because only it knows what it
@@ -563,6 +622,133 @@ typedef struct FluxionRenderer
 
     bool bloomEnabled;
     bool bloomFailed;
+
+    // --- WHAT THE FRAME'S OWN BRIGHTNESS TURNED OUT TO BE ----------------
+    //
+    // The chain measures it and the pair below remembers it. Both are the
+    // RENDERER'S rather than a view's: the whole point of an adapting
+    // exposure is that it carries from one frame to the next, and a view
+    // is made fresh every frame in the ordinary way of writing a loop.
+    FluxionRHITextureHandle luminanceTexture;
+    FluxionRHITextureViewHandle luminanceTargetViews[FLUXION_RENDERER_LUMINANCE_LEVELS];
+    FluxionRHITextureViewHandle luminanceSampleViews[FLUXION_RENDERER_LUMINANCE_LEVELS];
+    bool luminanceNeedsFirstTransition;
+
+    // Two one-texel textures, taking it in turns. exposureCurrent names
+    // the one holding the answer the resolve should read; the other is
+    // what the next frame writes into.
+    FluxionRHITextureHandle exposureTextures[FLUXION_RENDERER_EXPOSURE_HISTORY];
+    FluxionRHITextureViewHandle exposureTargetViews[FLUXION_RENDERER_EXPOSURE_HISTORY];
+    FluxionRHITextureViewHandle exposureSampleViews[FLUXION_RENDERER_EXPOSURE_HISTORY];
+    u32 exposureCurrent;
+    bool exposureNeedsFirstTransition;
+
+    // Whether there is a previous exposure to move away from at all. The
+    // first frame has none -- what is in the texture is whatever the
+    // allocator handed over -- so it takes the measured answer whole.
+    bool exposureHasHistory;
+
+    FluxionShaderProgramHandle luminanceProgram;
+    FluxionShaderProgramHandle exposureAdaptProgram;
+    FluxionRHIPipelineHandle luminancePipeline;
+    FluxionRHIPipelineHandle exposureAdaptPipeline;
+    FluxionRHIBindGroupLayoutHandle luminanceLayout;
+    FluxionRHIBindGroupLayoutHandle exposureAdaptLayout;
+    FluxionRHIBufferHandle luminanceUniformBuffer;
+    FluxionRHIBufferHandle exposureAdaptUniformBuffer;
+    FluxionRHIBindGroupHandle luminanceBindGroups[FLUXION_RENDERER_LUMINANCE_LEVELS];
+    FluxionRHIBindGroupHandle exposureAdaptBindGroups[FLUXION_RENDERER_EXPOSURE_HISTORY];
+    FluxionRHITextureViewHandle luminanceBoundSceneColor;
+
+    bool autoExposureEnabled;
+    bool autoExposureFailed;
+
+    // --- WHICH WAY EVERY PIXEL FACES, AND HOW ROUGH IT IS -----------------
+    //
+    // Written before anything is lit, by the same materials that will be
+    // lit -- see Pass/NormalRoughness.jsl for why "before" rather than
+    // "beside". Occlusion and reflections both read it.
+    FluxionRHITextureHandle prepassTexture;
+    FluxionRHITextureViewHandle prepassTargetView;
+    FluxionRHITextureViewHandle prepassSampleView;
+    u32 prepassWidth;
+    u32 prepassHeight;
+    bool prepassNeedsFirstTransition;
+
+    bool prepassEnabled;
+    bool prepassFailed;
+
+    // --- HOW MUCH OF THE SKY REACHES EACH PIXEL --------------------------
+    //
+    // The distances, halved a few times so a far sample can be read from
+    // a level where far is a texel; then the search itself; then the
+    // noise taken back out. All of it the renderer's, because all of it
+    // is the size of the window rather than the size of anything a view
+    // describes.
+    FluxionRHITextureHandle viewDepthTexture;
+    FluxionRHITextureViewHandle viewDepthTargetViews[FLUXION_RENDERER_VIEW_DEPTH_LEVELS];
+    FluxionRHITextureViewHandle viewDepthLevelViews[FLUXION_RENDERER_VIEW_DEPTH_LEVELS];
+
+    // One view over every level, because the search names the level it
+    // wants per sample and a view of one level cannot reach the others.
+    FluxionRHITextureViewHandle viewDepthChainView;
+    FluxionRHIBindGroupHandle viewDepthBindGroups[FLUXION_RENDERER_VIEW_DEPTH_LEVELS];
+    bool viewDepthNeedsFirstTransition;
+
+    FluxionRHITextureHandle occlusionTextures[FLUXION_RENDERER_OCCLUSION_TEXTURES];
+    FluxionRHITextureViewHandle occlusionTargetViews[FLUXION_RENDERER_OCCLUSION_TEXTURES];
+    FluxionRHITextureViewHandle occlusionSampleViews[FLUXION_RENDERER_OCCLUSION_TEXTURES];
+    u32 occlusionWidth;
+    u32 occlusionHeight;
+    bool occlusionNeedsFirstTransition;
+
+    FluxionShaderProgramHandle viewDepthProgram;
+    FluxionShaderProgramHandle occlusionProgram;
+    FluxionShaderProgramHandle denoiseProgram;
+    FluxionRHIPipelineHandle viewDepthPipeline;
+    FluxionRHIPipelineHandle occlusionPipeline;
+    FluxionRHIPipelineHandle denoisePipeline;
+    FluxionRHIBindGroupLayoutHandle viewDepthLayout;
+    FluxionRHIBindGroupLayoutHandle occlusionLayout;
+    FluxionRHIBindGroupLayoutHandle denoiseLayout;
+    FluxionRHIBufferHandle viewDepthUniformBuffer;
+    FluxionRHIBufferHandle occlusionUniformBuffer;
+    FluxionRHIBufferHandle denoiseUniformBuffer;
+    FluxionRHIBindGroupHandle occlusionBindGroup;
+    FluxionRHIBindGroupHandle denoiseBindGroup;
+    FluxionRHISamplerHandle occlusionSampler;
+    FluxionRHITextureViewHandle occlusionBoundDepthView;
+
+    bool occlusionEnabled;
+    bool occlusionFailed;
+
+    // --- THE PASS THAT SMOOTHS THE STAIRCASE -----------------------------
+    //
+    // With it on, the resolve writes into fxaaTexture instead of the
+    // target the view named, and this pass writes that target -- so the
+    // scene reaches the screen through one more step, and the step is
+    // the one that reads the finished picture.
+    //
+    // Both are the same format, which is what makes turning this on and
+    // off safe while running: a pipeline is built for a format, and the
+    // resolve's does not change when its destination does.
+    FluxionRHITextureHandle fxaaTexture;
+    FluxionRHITextureViewHandle fxaaTargetView;
+    FluxionRHITextureViewHandle fxaaSampleView;
+    u32 fxaaWidth;
+    u32 fxaaHeight;
+    bool fxaaNeedsFirstTransition;
+
+    FluxionShaderProgramHandle fxaaProgram;
+    FluxionRHIPipelineHandle fxaaPipeline;
+    FluxionRHIBindGroupLayoutHandle fxaaLayout;
+    FluxionRHIBufferHandle fxaaUniformBuffer;
+    FluxionRHIBindGroupHandle fxaaBindGroup;
+    FluxionRHITextureViewHandle fxaaBoundSource;
+    FluxionRHIFormat fxaaBuiltForFormat;
+
+    bool fxaaEnabled;
+    bool fxaaFailed;
 
     // WHETHER THE SCENE GOES THROUGH THE CHAIN AT ALL. Off by default,
     // because it changes what every pipeline drawing the scene must be
@@ -798,6 +984,11 @@ bool FluxionRendererInternal_RenderView_GetViewport(FluxionRenderViewHandle view
 // with the program's own MATERIAL layout.
 FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_Resolve(FluxionRenderPipelineHandle pipeline, FluxionRHIDeviceHandle device, const FluxionRHIVertexLayout* vertexLayout);
 
+// The same, for the pass that records the surface before it is lit.
+// Invalid when this pipeline was never given a program for that pass --
+// which is how a draw is left out of it rather than drawn wrongly.
+FluxionRHIPipelineHandle FluxionRendererInternal_RenderPipeline_ResolvePrepass(FluxionRenderPipelineHandle pipeline, FluxionRHIDeviceHandle device, const FluxionRHIVertexLayout* vertexLayout, FluxionRHIFormat colorFormat);
+
 // Throws away every pipeline built from this program, across every
 // FluxionRenderPipeline that names it. Resolve above bakes the program's
 // shaders into a native pipeline object once and never looks at them
@@ -830,6 +1021,78 @@ bool FluxionRendererInternal_PostProcess_EnsureSceneColor(FluxionRenderer* rende
 void FluxionRendererInternal_PostProcess_ReleaseSceneColor(FluxionRenderer* renderer);
 void FluxionRendererInternal_PostProcess_Shutdown(FluxionRenderer* renderer);
 
+// The three vertices every fullscreen pass draws, made once for the whole
+// renderer. Any pass that draws one has to ask for it before it does --
+// see the definition for what happened when only the resolve did.
+void FluxionRendererInternal_EnsureFullscreenTriangle(FluxionRenderer* renderer);
+
+// --- what the frame's own brightness turned out to be (AutoExposure.c) ---
+
+// Measures this frame and moves the camera part of the way towards what
+// it asks for. Returns whether there is an answer for the resolve to
+// read; false is the ordinary case of the whole thing being switched off,
+// and then the exposure the view asked for is all there is.
+//
+// CALLED BEFORE THE RESOLVE AND AFTER THE SCENE, because it reads the
+// scene and the resolve reads it.
+bool FluxionRendererInternal_AutoExposure_Build(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList);
+
+// The one texel holding the answer, for the resolve to bind.
+FluxionRHITextureViewHandle FluxionRendererInternal_AutoExposure_GetView(const FluxionRenderer* renderer);
+
+void FluxionRendererInternal_AutoExposure_Release(FluxionRenderer* renderer);
+
+// --- the surface, recorded before it is lit (NormalRoughnessPass.c) ------
+
+// Draws the frame's opaque geometry into the normal-roughness texture and
+// into the view's own depth attachment. Returns whether there is anything
+// recorded for later passes to read.
+//
+// CALLED BEFORE THE FORWARD PASS AND AFTER THE SCENE IS UPLOADED. The
+// depth it leaves behind is the depth the forward pass tests against.
+bool FluxionRendererInternal_NormalRoughness_Build(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList);
+
+FluxionRHITextureViewHandle FluxionRendererInternal_NormalRoughness_GetView(const FluxionRenderer* renderer);
+FluxionRHITextureHandle FluxionRendererInternal_NormalRoughness_GetTexture(const FluxionRenderer* renderer);
+void FluxionRendererInternal_NormalRoughness_Release(FluxionRenderer* renderer);
+
+// --- how much of the sky reaches each pixel (AmbientOcclusionPass.c) -----
+
+// Turns the frame's depth into distances, searches the horizon around
+// every pixel, and takes the noise back out. Returns whether there is an
+// answer for the lighting to read.
+//
+// CALLED AFTER THE SURFACES ARE RECORDED AND BEFORE ANYTHING IS LIT --
+// it reads the first and the second reads it.
+bool FluxionRendererInternal_Occlusion_Build(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList,
+                                             FluxionRHITextureViewHandle depthView);
+
+FluxionRHITextureViewHandle FluxionRendererInternal_Occlusion_GetView(const FluxionRenderer* renderer);
+FluxionRHITextureHandle FluxionRendererInternal_Occlusion_GetTexture(const FluxionRenderer* renderer);
+void FluxionRendererInternal_Occlusion_Release(FluxionRenderer* renderer);
+void FluxionRendererInternal_Occlusion_Destroy(FluxionRenderer* renderer);
+
+// What the view says the search should do, and the two matrices it needs
+// to turn a place on the screen into a place in front of the eye.
+bool FluxionRendererInternal_RenderView_GetOcclusion(FluxionRenderViewHandle view, FluxionVec4* outSettings);
+bool FluxionRendererInternal_RenderView_GetMatrices(FluxionRenderViewHandle view, FluxionMat4* outView, FluxionMat4* outProjection);
+
+// --- smoothing the staircase (FXAAPass.c) --------------------------------
+
+// Makes ready what this pass needs at the given size, and says whether
+// the resolve should write into it rather than into the screen. False is
+// the ordinary case of the whole thing being switched off.
+bool FluxionRendererInternal_FXAA_Begin(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList, u32 width, u32 height);
+
+// Where the resolve writes when the above said yes.
+FluxionRHITextureViewHandle FluxionRendererInternal_FXAA_GetTargetView(const FluxionRenderer* renderer);
+
+// Reads what the resolve wrote and writes the target the view named.
+void FluxionRendererInternal_FXAA_Resolve(FluxionRenderer* renderer, FluxionRHICommandListHandle commandList,
+                                          FluxionRHITextureViewHandle outputView, u32 width, u32 height);
+
+void FluxionRendererInternal_FXAA_Release(FluxionRenderer* renderer);
+
 // What the scene passes attach instead of the target the caller gave the
 // view. Invalid before the first frame has sized it.
 FluxionRHITextureViewHandle FluxionRendererInternal_PostProcess_GetSceneColorView(const FluxionRenderer* renderer);
@@ -849,6 +1112,20 @@ void FluxionRendererInternal_RenderView_SetToneMappingDeferred(FluxionRenderView
 // What glows and by how much: x the threshold, y the knee, z how much of
 // the glow is added back. The same three the caller set on the view.
 bool FluxionRendererInternal_RenderView_GetBloom(FluxionRenderViewHandle view, FluxionVec4* outBloom);
+
+// The grading, as the four vectors the resolve reads: the balance
+// (temperature, tint, contrast, saturation) and the three-way control.
+// Already turned from distances into multipliers -- see the definition.
+// What the measured brightness is allowed to do to the camera: the key,
+// the speed, and the two ends of the range -- already filled in with the
+// engine's own where the description said nothing. The frame's length
+// comes back separately because zero is a real answer for it and not a
+// missing one.
+bool FluxionRendererInternal_RenderView_GetAutoExposure(FluxionRenderViewHandle view, FluxionVec4* outParams,
+                                                       f32* outDeltaSeconds);
+
+bool FluxionRendererInternal_RenderView_GetGrading(FluxionRenderViewHandle view, FluxionVec4* outBalance,
+                                                  FluxionVec4* outLift, FluxionVec4* outGamma, FluxionVec4* outGain);
 
 // Said by the pipeline asset, through the renderer.
 void FluxionRendererInternal_Renderer_SetBloomEnabled(FluxionRenderer* renderer, bool enabled);

@@ -446,6 +446,7 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     renderer->postBoundSceneColor = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->postOutputFormat = FLUXION_RHI_FORMAT_R8G8B8A8_UNORM;
     renderer->postBoundGlow = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->postBoundExposure = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->bloomTexture = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->bloomDownProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     renderer->bloomUpProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -463,6 +464,84 @@ extern "C" FluxionRendererHandle Fluxion_Renderer_Create(FluxionRHIDeviceHandle 
     {
         renderer->bloomBindGroups[step] = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
     }
+    renderer->luminanceTexture = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->luminanceProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->exposureAdaptProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->luminancePipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->exposureAdaptPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->luminanceLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->exposureAdaptLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->luminanceUniformBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->exposureAdaptUniformBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->luminanceBoundSceneColor = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    for (u32 level = 0; level < FLUXION_RENDERER_LUMINANCE_LEVELS; ++level)
+    {
+        renderer->luminanceTargetViews[level] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->luminanceSampleViews[level] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->luminanceBindGroups[level] = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
+    for (u32 slot = 0; slot < FLUXION_RENDERER_EXPOSURE_HISTORY; ++slot)
+    {
+        renderer->exposureTextures[slot] = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->exposureTargetViews[slot] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->exposureSampleViews[slot] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->exposureAdaptBindGroups[slot] = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
+    renderer->luminanceNeedsFirstTransition = true;
+    renderer->exposureNeedsFirstTransition = true;
+    renderer->exposureHasHistory = false;
+    renderer->exposureCurrent = 0;
+
+    renderer->fxaaTexture = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->fxaaTargetView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->fxaaSampleView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->fxaaProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->fxaaPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->fxaaLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->fxaaUniformBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->fxaaBindGroup = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->fxaaBoundSource = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->fxaaBuiltForFormat = FLUXION_RHI_FORMAT_UNKNOWN;
+    renderer->fxaaNeedsFirstTransition = true;
+
+    renderer->prepassTexture = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->prepassTargetView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->prepassSampleView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->prepassNeedsFirstTransition = true;
+
+    renderer->viewDepthTexture = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->viewDepthChainView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->viewDepthProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->occlusionProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->denoiseProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->viewDepthPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->occlusionPipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->denoisePipeline = FluxionRHIPipelineHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->viewDepthLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->occlusionLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->denoiseLayout = FluxionRHIBindGroupLayoutHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->viewDepthUniformBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->occlusionUniformBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->denoiseUniformBuffer = FluxionRHIBufferHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->occlusionBindGroup = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->denoiseBindGroup = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->occlusionSampler = FluxionRHISamplerHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    renderer->occlusionBoundDepthView = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    for (u32 level = 0; level < FLUXION_RENDERER_VIEW_DEPTH_LEVELS; ++level)
+    {
+        renderer->viewDepthTargetViews[level] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->viewDepthLevelViews[level] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->viewDepthBindGroups[level] = FluxionRHIBindGroupHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
+    for (u32 slot = 0; slot < FLUXION_RENDERER_OCCLUSION_TEXTURES; ++slot)
+    {
+        renderer->occlusionTextures[slot] = FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->occlusionTargetViews[slot] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+        renderer->occlusionSampleViews[slot] = FluxionRHITextureViewHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    }
+    renderer->viewDepthNeedsFirstTransition = true;
+    renderer->occlusionNeedsFirstTransition = true;
+
     renderer->irradianceFailed = false;
 
     renderer->prefilterProgram = FluxionShaderProgramHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
@@ -571,6 +650,10 @@ extern "C" void Fluxion_Renderer_Destroy(FluxionRendererHandle rendererHandle)
     }
 
     // The sky goes with the renderer that built it.
+    FluxionRendererInternal_Occlusion_Destroy(renderer);
+    FluxionRendererInternal_NormalRoughness_Release(renderer);
+    FluxionRendererInternal_FXAA_Release(renderer);
+    FluxionRendererInternal_AutoExposure_Release(renderer);
     FluxionRendererInternal_PostProcess_Shutdown(renderer);
     FluxionRendererInternal_Skybox_Destroy(renderer);
     FluxionRendererInternal_Irradiance_Destroy(renderer);
@@ -696,6 +779,77 @@ extern "C" void Fluxion_Renderer_SetPostProcessEnabled(FluxionRendererHandle ren
     // Off again means the scene goes straight to the caller's target once
     // more, and what was made for the chain has nothing left to hold.
     if (!enabled) FluxionRendererInternal_PostProcess_ReleaseSceneColor(renderer);
+}
+
+extern "C" void Fluxion_Renderer_SetAmbientOcclusionEnabled(FluxionRendererHandle rendererHandle, bool enabled)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return;
+
+    if (enabled && !renderer->occlusionEnabled) renderer->occlusionFailed = false;
+    renderer->occlusionEnabled = enabled;
+}
+
+extern "C" FluxionRHITextureHandle Fluxion_Renderer_GetAmbientOcclusionTexture(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    return FluxionRendererInternal_Occlusion_GetTexture(renderer);
+}
+
+extern "C" void Fluxion_Renderer_SetSurfacePrepassEnabled(FluxionRendererHandle rendererHandle, bool enabled)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return;
+
+    if (enabled && !renderer->prepassEnabled) renderer->prepassFailed = false;
+    renderer->prepassEnabled = enabled;
+}
+
+extern "C" bool Fluxion_Renderer_HasSurfacePrepass(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    return renderer != nullptr && renderer->prepassEnabled && !renderer->prepassFailed &&
+           FLUXION_HANDLE_IS_VALID(renderer->prepassTexture);
+}
+
+extern "C" FluxionRHITextureHandle Fluxion_Renderer_GetNormalRoughnessTexture(FluxionRendererHandle rendererHandle)
+{
+    const FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return FluxionRHITextureHandle{ FLUXION_HANDLE_INVALID_INDEX, 0 };
+    return renderer->prepassTexture;
+}
+
+extern "C" void Fluxion_Renderer_SetFXAAEnabled(FluxionRendererHandle rendererHandle, bool enabled)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return;
+
+    // Turning it back on after a failure asks again -- what failed was a
+    // shader or a texture, and a reload can change that answer.
+    if (enabled && !renderer->fxaaEnabled) renderer->fxaaFailed = false;
+
+    renderer->fxaaEnabled = enabled;
+}
+
+extern "C" void Fluxion_Renderer_SetAutoExposureEnabled(FluxionRendererHandle rendererHandle, bool enabled)
+{
+    FluxionRenderer* renderer = Resolve(rendererHandle);
+    if (renderer == nullptr) return;
+
+    // TURNING IT BACK ON AFTER A FAILURE ASKS AGAIN. What failed was a
+    // shader or a texture, and both of those can succeed on a second
+    // attempt after a reload -- a permanent refusal here would mean the
+    // only way back was a new renderer.
+    if (enabled && !renderer->autoExposureEnabled) renderer->autoExposureFailed = false;
+
+    // AND THE CAMERA FORGETS WHERE IT WAS. What is in the texture is the
+    // setting from whenever this was last on, which may be a scene ago;
+    // easing towards the new frame from it would be a fade that has
+    // nothing to do with either picture.
+    if (enabled != renderer->autoExposureEnabled) renderer->exposureHasHistory = false;
+
+    renderer->autoExposureEnabled = enabled;
 }
 
 extern "C" void Fluxion_Renderer_SetBloomEnabled(FluxionRendererHandle rendererHandle, bool enabled)

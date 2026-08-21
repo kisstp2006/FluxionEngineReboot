@@ -1,0 +1,328 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+
+#ifndef FLUXION_PASS_GROUND_TRUTH_OCCLUSION_INCLUDED
+#define FLUXION_PASS_GROUND_TRUTH_OCCLUSION_INCLUDED
+
+#include "Fluxion/Math.jsl"
+#include "Fluxion/Surface.jsl"
+
+// HOW MUCH OF THE SKY A PIXEL CAN ACTUALLY SEE.
+//
+// Indirect light arrives from everywhere, and the lighting up to now has
+// assumed everywhere is available. In a corner it is not: the two walls
+// take most of the hemisphere, and the crease between them should be
+// darker than the middle of either. Nothing in a forward renderer knows
+// that -- the surface has no idea what is next to it.
+//
+// What this pass has instead is the picture's own depth. Walking outwards
+// from a pixel along a line and asking "how high does the surface rise
+// against the sky" gives a HORIZON ANGLE, and the sky above that horizon
+// is what reaches the pixel. Do it along a few lines through the
+// hemisphere and the answer converges.
+//
+// WHY THE HORIZON AND NOT A COUNT OF BLOCKED SAMPLES. The older way --
+// scatter points in a sphere, count how many land inside geometry -- is
+// answering a different question and answering it approximately: it has
+// no notion of how much of the sky a blocker actually covers, so a thin
+// pole a hand's width away darkens as much as a wall. Integrating between
+// the two horizons is the real quantity, which is where the name comes
+// from, and it costs the same samples.
+//
+// WHAT IT STILL CANNOT DO, said plainly: it only knows what is on the
+// screen. A wall just out of frame casts nothing, and a surface behind
+// another one is invisible to it -- the depth buffer holds one distance
+// per pixel and this reads that one. Those are the terms of every
+// screen-space effect and no amount of sampling fixes them.
+
+// x, y: one texel of the picture.
+// z:    how far the effect reaches, in metres.
+// w:    how strongly the answer is applied -- one is the honest amount.
+[Uniform(Global)] Vector4 occlusionParams;
+
+// x: how many slices through the hemisphere.
+// y: how many steps along each side of each slice.
+// z: the distance at which a sample stops counting at all, in metres.
+// w: one when this backend's rows run the other way -- the same flag
+//    every fullscreen pass in this engine carries, and NOT the same
+//    question the frame's own screenParams answers. That one is asked by
+//    a DRAWN SURFACE reading a screen-space texture; this one is asked by
+//    a fullscreen pass, and the two come out opposite.
+[Uniform(Global)] Vector4 occlusionSampling;
+
+// x, y: ONE OVER the projection's first and second diagonal terms. These
+//       turn a place on the screen back into a direction in front of the
+//       eye, which is a division by the focal length.
+//
+// z:    the first diagonal term ITSELF, which is the other direction:
+//       how big something in the world looks on the screen. Both are
+//       here because both are needed and one is not the other -- using
+//       the reciprocal where the plain term belongs was tried, and made
+//       the search a fraction of the size it was asked for.
+//
+// w:    unused.
+[Uniform(Global)] Vector4 occlusionProjection;
+
+// Turns a world direction into a view one. The normals were recorded in
+// world space, because that is what the lighting works in; the horizon
+// search happens in view space, because that is where the depth is.
+[Uniform(Global)] Matrix4x4 occlusionView;
+
+// How far away each pixel is, in metres, with the same at half size above
+// it -- see Pass/ViewDepth.jsl.
+[Texture(Global)] Texture2D occlusionDepth;
+
+// Which way each pixel faces and how rough it is -- see
+// Pass/NormalRoughness.jsl. Only the facing is read here.
+[Texture(Global)] Texture2D occlusionSurface;
+
+[Input] Vector2 vUV;
+[Target(0)] Vector4 fragOcclusion;
+
+// WHERE A PIXEL IS, IN FRONT OF THE EYE, from how far away it is and
+// where on the screen it sits. The screen position gives a direction and
+// the distance gives how far along it to go.
+Vector3 OcclusionViewPosition(Vector2 uv, float distance)
+{
+  // NO TURNING OVER HERE, and that is worth writing down because the
+  // reads a few lines below DO turn over.
+  //
+  // The two cancel. A drawn surface at a clip height of h lands at a
+  // texture row of (h+1)/2 on one backend and (1-h)/2 on the others; a
+  // fullscreen pass writing at its own coordinate u lands at u and at
+  // 1-u respectively. Going from this pass's coordinate to the clip
+  // height it stands for therefore comes out as the same expression on
+  // every backend -- the difference is entirely in WHICH ROW to read,
+  // which is what the flag is used for and the only thing it is used for.
+  //
+  // Measured, with a flip in here as well: the same scene came out with a
+  // fully occluded pixel and half the floor darkened on two backends, and
+  // a quarter of it on the third. The three now agree.
+  // The clip height this pass's own coordinate stands for. The vertical
+  // one is subtracted rather than added because the fullscreen stage
+  // hands over a coordinate already turned the right way up for reading
+  // a texture -- see Pass/FullscreenVertex.jsl.
+  Vector2 ndc = Vector2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+
+  // Negative because the eye looks down the negative axis: a point in
+  // front of the camera is at a negative depth in its own space, and the
+  // distance above is the positive version of that.
+  return Vector3(ndc.x * occlusionProjection.x * distance,
+                 ndc.y * occlusionProjection.y * distance,
+                 -distance);
+}
+
+// A NUMBER THAT LOOKS RANDOM AND IS NOT.
+//
+// Every pixel turns its slices by a different amount, so that the few
+// directions each one samples do not all line up into bands across the
+// picture. It has to be the same number every frame for the same pixel,
+// or the noise crawls; and it has to have no pattern a viewer can see,
+// which is why it is a hash of the position rather than anything regular.
+float OcclusionNoise(Vector2 pixel)
+{
+  return fract(52.9829189 * fract(0.06711056 * pixel.x + 0.00583715 * pixel.y));
+}
+
+void main() {
+  float rowsFlipped = occlusionSampling.w;
+
+  Vector2 surfaceUV = Vector2(vUV.x, rowsFlipped > 0.5 ? 1.0 - vUV.y : vUV.y);
+
+  Vector4 recorded = textureLod(occlusionSurface, surfaceUV, 0.0);
+
+  // NOTHING WAS RECORDED HERE, so there is nothing to occlude: the sky,
+  // or a material whose pipeline was never given a program for the pass
+  // that records surfaces. One, meaning all of the sky reaches it.
+  if (recorded.w < 0.5)
+  {
+    return Vector4(1.0, 1.0, 1.0, 1.0);
+  }
+
+  float centreDistance = textureLod(occlusionDepth, surfaceUV, 0.0).x;
+
+  Vector3 centre = OcclusionViewPosition(vUV, centreDistance);
+
+  // From the point towards the eye, which is where the hemisphere is
+  // measured from.
+  Vector3 toEye = normalize(-centre);
+
+  Vector3 worldNormal = DecodeNormalOctahedral(Vector2(recorded.x, recorded.y));
+  Vector3 normal = normalize((occlusionView * Vector4(worldNormal, 0.0)).xyz);
+
+  // HOW BIG THE EFFECT IS ON THE SCREEN, in three units, because three
+  // different things below want it in three different ways.
+  //
+  // A length in the world covers less of the screen the further away it
+  // is, and how much less is the focal term over the distance. That is
+  // in clip units, which run across two; a texture coordinate runs
+  // across one, so half of it; and the level to read from is counted in
+  // texels, which is that over the size of one.
+  //
+  // A radius in metres covers fewer pixels the further away the surface
+  // is, which is exactly right: a crease across the room should not be
+  // sampled as widely as one under the camera.
+  float radiusClip = occlusionParams.z * occlusionProjection.z / max(centreDistance, 0.0001);
+  float radiusUV = radiusClip * 0.5;
+  float radiusTexels = radiusUV / max(occlusionParams.x, 0.000001);
+
+  int sliceCount = int(occlusionSampling.x);
+  int stepCount = int(occlusionSampling.y);
+
+  float noise = OcclusionNoise(Vector2(vUV.x / occlusionParams.x, vUV.y / occlusionParams.y));
+
+  float visibility = 0.0;
+
+  for (int slice = 0; slice < sliceCount; slice = slice + 1)
+  {
+    float phi = FLUXION_PI * (float(slice) + noise) / float(sliceCount);
+    Vector2 direction = Vector2(cos(phi), sin(phi));
+
+    // The plane this slice cuts through the hemisphere, and the part of
+    // the normal that lies in it. A slice the normal barely leans into
+    // contributes barely anything, which is what its length says.
+    Vector3 sliceDirection = Vector3(direction.x, direction.y, 0.0);
+    Vector3 sliceNormal = normalize(cross(sliceDirection, toEye));
+    Vector3 projectedNormal = normal - sliceNormal * dot(normal, sliceNormal);
+    float projectedLength = length(projectedNormal);
+
+    // A SLICE THE NORMAL DOES NOT LEAN INTO AT ALL contributes nothing,
+    // and the length below is what says so -- so rather than leaving the
+    // loop early, which this language has no word for, the divisor is
+    // held away from zero and the contribution comes out as zero on its
+    // own.
+    Vector3 projectedUnit = projectedNormal / max(projectedLength, 0.0001);
+
+    // Where the normal points within the slice, measured from the
+    // direction of the eye. Everything below is an angle relative to
+    // this.
+    float cosN = clamp(dot(projectedUnit, toEye), -1.0, 1.0);
+    float signN = dot(projectedUnit, sliceDirection) < 0.0 ? -1.0 : 1.0;
+    float n = signN * acos(cosN);
+
+    // The two sides of the slice, walked outwards from the pixel.
+    float horizonCos0 = -1.0;
+    float horizonCos1 = -1.0;
+
+    for (int step = 1; step <= stepCount; step = step + 1)
+    {
+      // HOW FAR ALONG THE SLICE THIS STEP GOES, never past the end of it.
+      // The turn each pixel is given is added here as well, so that the
+      // steps of neighbouring pixels do not all fall on the same rings --
+      // and clamped, because a step past the radius is a sample from
+      // outside what the caller asked to be considered.
+      float along = min((float(step) - 0.5 + noise) / float(stepCount), 1.0);
+
+      // FURTHER STEPS READ A COARSER LEVEL. A sample eight texels away
+      // read from the full-size picture is eight texels of noise; read
+      // from the level where eight texels have become one, it is the
+      // average of what is there, which is the answer this wants.
+      // COUNTED IN TEXELS, which is what a level means. A sample eight
+      // texels away read from the full-size picture is eight texels of
+      // noise; read from the level where eight texels have become one, it
+      // is the average of what is there.
+      float level = clamp(log2(max(along * radiusTexels, 1.0)) - 1.0, 0.0, 3.0);
+
+      Vector2 offset = Vector2(direction.x * along * radiusUV, direction.y * along * radiusUV);
+
+      Vector2 uv0 = vUV + offset;
+      Vector2 uv1 = vUV - offset;
+
+      Vector2 read0 = Vector2(uv0.x, rowsFlipped > 0.5 ? 1.0 - uv0.y : uv0.y);
+      Vector2 read1 = Vector2(uv1.x, rowsFlipped > 0.5 ? 1.0 - uv1.y : uv1.y);
+
+
+      float distance0 = textureLod(occlusionDepth, read0, level).x;
+      float distance1 = textureLod(occlusionDepth, read1, level).x;
+
+      Vector3 delta0 = OcclusionViewPosition(uv0, distance0) - centre;
+      Vector3 delta1 = OcclusionViewPosition(uv1, distance1) - centre;
+
+      float length0 = length(delta0);
+      float length1 = length(delta1);
+
+      // HOW HIGH THIS SAMPLE RISES AGAINST THE SKY, as a cosine so that
+      // nothing has to take an angle inside the loop.
+      float cos0 = length0 > 0.0001 ? dot(delta0 / length0, toEye) : -1.0;
+      float cos1 = length1 > 0.0001 ? dot(delta1 / length1, toEye) : -1.0;
+
+      // AND IT STOPS COUNTING AS IT GETS FAR AWAY, rather than at a hard
+      // edge. A sample that simply stopped mattering at a fixed distance
+      // draws a visible ring on every large flat surface -- the radius
+      // itself becomes a shape in the picture.
+      float fade0 = clamp((length0 - occlusionParams.z) / max(occlusionSampling.z - occlusionParams.z, 0.0001), 0.0, 1.0);
+      float fade1 = clamp((length1 - occlusionParams.z) / max(occlusionSampling.z - occlusionParams.z, 0.0001), 0.0, 1.0);
+
+      horizonCos0 = max(horizonCos0, mix(cos0, -1.0, fade0));
+      horizonCos1 = max(horizonCos1, mix(cos1, -1.0, fade1));
+    }
+
+    // The horizons as angles either side of the eye direction, each held
+    // inside the quarter turn its own side of the hemisphere occupies.
+    float h0 = -acos(clamp(horizonCos0, -1.0, 1.0));
+    float h1 = acos(clamp(horizonCos1, -1.0, 1.0));
+
+    h0 = n + max(h0 - n, -FLUXION_HALF_PI);
+    h1 = n + min(h1 - n, FLUXION_HALF_PI);
+
+    // THE INTEGRAL ITSELF: how much light arrives from between the two
+    // horizons, weighted by how much the surface faces each direction.
+    // The closed form is what makes this affordable -- the alternative is
+    // summing the same quantity over many more samples.
+    float sinN = sin(n);
+    float arc0 = 0.25 * (-cos(2.0 * h0 - n) + cos(n) + 2.0 * h0 * sinN);
+    float arc1 = 0.25 * (-cos(2.0 * h1 - n) + cos(n) + 2.0 * h1 * sinN);
+
+    visibility = visibility + projectedLength * (arc0 + arc1);
+  }
+
+  visibility = visibility / float(sliceCount);
+  visibility = clamp(visibility, 0.0, 1.0);
+
+  // HOW MUCH OF IT TO BELIEVE. One is the amount the integral says; less
+  // is a hand on the dial, and more is a look rather than a measurement.
+  visibility = mix(1.0, visibility, occlusionParams.w);
+
+  return Vector4(visibility, visibility, visibility, 1.0);
+}
+
+#endif

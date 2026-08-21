@@ -1,0 +1,130 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+
+#ifndef FLUXION_PASS_VIEW_DEPTH_INCLUDED
+#define FLUXION_PASS_VIEW_DEPTH_INCLUDED
+
+// HOW FAR AWAY EACH PIXEL IS, IN METRES, AND THEN THE SAME AT HALF SIZE.
+//
+// A depth buffer does not hold distance. It holds a number chosen so that
+// the hardware can compare and interpolate it cheaply, and the relation
+// between it and distance is a division -- most of its precision sits in
+// the first few metres. Everything that measures the SHAPE of a surface
+// wants the distance itself: two depths a hundredth apart are half a
+// millimetre at arm's length and ten metres away across a field.
+//
+// So this converts once, and then halves. The levels exist so that a
+// sample taken far from the pixel being shaded can be read from a level
+// where far is only a few texels -- which is both cheaper and quieter
+// than reading the full-size picture in a wide circle.
+//
+// AVERAGED ON THE WAY DOWN, unlike the depth pyramid next door, which
+// keeps the farthest. That one answers "is all of this behind something",
+// where only the extreme will do; this one answers "roughly how far away
+// is this area", where the extreme is the worst answer available.
+
+// x, y: how many texels the level being READ has.
+// z, w: how many this one has.
+[Uniform(Global)] Vector4 viewDepthSizes;
+
+// x, y: the two numbers that turn a depth into a distance, taken from the
+//       projection this frame was drawn with: distance = y / (depth + x).
+//       Both come from the matrix rather than from a near and a far plane
+//       -- a caller may hand over any projection it likes, and these two
+//       are what it actually says.
+//
+// z:    one when what is being read is the depth buffer rather than a
+//       level of this chain. Every level after the first is already in
+//       metres and only needs averaging.
+//
+// w:    one when this backend's rows run the other way -- see the read
+//       below. Every fullscreen pass in this engine carries one of these.
+[Uniform(Global)] Vector4 viewDepthParams;
+
+[Texture(Global)] Texture2D viewDepthSource;
+
+[Input] Vector2 vUV;
+[Target(0)] Vector4 fragViewDepth;
+
+void main() {
+  Vector2 sourceSize = Vector2(viewDepthSizes.x, viewDepthSizes.y);
+  Vector2 texel = Vector2(1.0 / sourceSize.x, 1.0 / sourceSize.y);
+
+  // WHERE TO READ, which is not always where this pass is writing. On the
+  // backend whose framebuffer starts at the bottom, a fullscreen pass
+  // lands in the row that counts from the other end -- so it reads from
+  // the other end too, and what it writes stays lined up with what drew
+  // the scene. The same flag every fullscreen pass in this engine carries.
+  Vector2 uv = Vector2(vUV.x, viewDepthParams.w > 0.5 ? 1.0 - vUV.y : vUV.y);
+
+  Vector4 gathered = Vector4(
+    textureLod(viewDepthSource, uv + Vector2(-0.5 * texel.x, -0.5 * texel.y), 0.0).x,
+    textureLod(viewDepthSource, uv + Vector2(0.5 * texel.x, -0.5 * texel.y), 0.0).x,
+    textureLod(viewDepthSource, uv + Vector2(-0.5 * texel.x, 0.5 * texel.y), 0.0).x,
+    textureLod(viewDepthSource, uv + Vector2(0.5 * texel.x, 0.5 * texel.y), 0.0).x);
+
+  float result = 0.0;
+
+  if (viewDepthParams.z > 0.5)
+  {
+    // FOUR DEPTHS TURNED INTO FOUR DISTANCES AND THEN AVERAGED -- in that
+    // order, and it matters. The relation is a division, so the average
+    // of four depths is not the depth of the average distance; averaging
+    // first would put the first level's every texel somewhere no surface
+    // is, and by more the steeper the surface.
+    Vector4 distances = Vector4(
+      viewDepthParams.y / (gathered.x + viewDepthParams.x),
+      viewDepthParams.y / (gathered.y + viewDepthParams.x),
+      viewDepthParams.y / (gathered.z + viewDepthParams.x),
+      viewDepthParams.y / (gathered.w + viewDepthParams.x));
+
+    result = (distances.x + distances.y + distances.z + distances.w) * 0.25;
+  }
+  else
+  {
+    result = (gathered.x + gathered.y + gathered.z + gathered.w) * 0.25;
+  }
+
+  return Vector4(result, result, result, 1.0);
+}
+
+#endif

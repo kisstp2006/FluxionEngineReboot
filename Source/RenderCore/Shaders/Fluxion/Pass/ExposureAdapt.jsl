@@ -1,0 +1,104 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+#ifndef FLUXION_PASS_EXPOSURE_ADAPT_INCLUDED
+#define FLUXION_PASS_EXPOSURE_ADAPT_INCLUDED
+
+// THE ONE TEXEL THE CAMERA IS SET FROM.
+//
+// What arrives is the frame's average brightness in stops and what the
+// camera was set to last frame. What leaves is what it is set to now --
+// which is not the same thing, and that is the entire pass.
+//
+// A CAMERA THAT ARRIVED INSTANTLY WOULD BE WRONG, not merely unpleasant.
+// Walking past a window would make the whole room go dark for one frame
+// and back for the next; a cloud crossing the sun would strobe. What an
+// eye does, and what a camera with automatic exposure does, is take a
+// moment -- so this covers a fraction of the remaining distance and
+// leaves the rest for the frames after it.
+
+// x: where middle grey should land.
+// y: how much of the remaining distance is covered THIS FRAME. Worked
+//    out from the speed and the length of the frame before this one, so
+//    that the same look comes out at any frame rate -- see the pass.
+// z, w: the lowest and highest the camera may be set to.
+[Uniform(Global)] Vector4 adaptParams;
+
+// The end of the chain: one texel, holding the average of the logarithm
+// of the frame's brightness.
+[Texture(Global)] Texture2D adaptMeasured;
+
+// What the camera was set to last frame. On the first frame there is no
+// last frame, and the fraction above is then one -- which reads this and
+// throws it away rather than trusting whatever is in the texture.
+[Texture(Global)] Texture2D adaptPrevious;
+
+[Input] Vector2 vUV;
+[Target(0)] Vector4 fragColor;
+
+void main() {
+  Vector2 middle = Vector2(0.5, 0.5);
+
+  float averageStops = textureLod(adaptMeasured, middle, 0.0).x;
+  float averageLight = exp2(averageStops);
+
+  // A FLOOR UNDER THE DIVISION, and it is not the same floor as the
+  // chain's. That one keeps a logarithm defined; this one keeps a
+  // division finite -- a frame with nothing in it would otherwise ask for
+  // an infinite exposure, and the range below cannot clamp an infinity
+  // that has already become a not-a-number.
+  float wanted = adaptParams.x / max(averageLight, 0.0001);
+  wanted = clamp(wanted, adaptParams.z, adaptParams.w);
+
+  float previous = textureLod(adaptPrevious, middle, 0.0).x;
+
+  // AND THE PREVIOUS ONE IS CLAMPED TOO. It came out of this same pass
+  // and so is already in range -- except on the first frame, where it is
+  // whatever the allocator left in the texture, and a single not-a-number
+  // there would poison every frame after it through this very line.
+  previous = clamp(previous, adaptParams.z, adaptParams.w);
+
+  float exposure = previous + (wanted - previous) * adaptParams.y;
+
+  return Vector4(exposure, exposure, exposure, 1.0);
+}
+
+#endif

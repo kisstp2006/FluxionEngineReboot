@@ -67,6 +67,10 @@
 [Output] Vector3 vWorldNormal;
 [Output] Vector4 vWorldTangent;
 [Output] Vector2 vUV;
+
+// The same position the rasteriser is given, handed on so the fragment
+// stage can work out where on the screen it landed -- see Varyings.jsl.
+[Output] Vector4 vClipPosition;
 [Output] Vector4 Position;
 
 void main() {
@@ -87,6 +91,11 @@ void main() {
 
   vUV = uv;
   Position = viewProjection * worldPosition;
+
+  // The same value, handed on. It cannot be read back from Position in
+  // the fragment stage: what arrives there has already been divided and
+  // mapped by the hardware, differently on each of these backends.
+  vClipPosition = Position;
 }
 
 #endif

@@ -57,6 +57,11 @@
 // it looks slightly dark.
 
 const float FLUXION_PI = 3.14159265359;
+
+// A quarter turn. Written down rather than divided at every use: what it
+// bounds is a hemisphere's half, and a reader should see that rather than
+// work it out.
+const float FLUXION_HALF_PI = 1.57079632679;
 const float FLUXION_INV_PI = 0.31830988618;
 
 // A very small number to divide by rather than risk dividing by zero.

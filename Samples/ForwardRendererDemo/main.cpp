@@ -1736,6 +1736,49 @@ int main(int argc, char** argv)
     f32 uiBloomThreshold = 0.0f; // filled from the exposure on the first frame
     f32 uiBloomKnee = 0.0f;
     f32 uiTonemapWhitePoint = 4.0f;
+    // What the colourist's half of the panel is set to. Every one of them
+    // is a distance from leaving the picture alone, exactly as the view's
+    // description holds them -- so "all sliders centred" and "no grading"
+    // are the same state rather than two that have to be kept in step.
+    f32 uiGradeTemperature = 0.0f;
+    f32 uiGradeTint = 0.0f;
+    f32 uiGradeContrast = 0.0f;
+    f32 uiGradeSaturation = 0.0f;
+    f32 uiGradeLift = 0.0f;
+    f32 uiGradeGamma = 0.0f;
+    f32 uiGradeGain = 0.0f;
+
+    // Whether the camera works its own exposure out from what the frame
+    // came out at. Off to begin with, so that what is on the screen at
+    // startup is the exposure this file chose -- and turning it on is a
+    // visible thing rather than something that was always happening.
+    bool uiAutoExposure = false;
+
+    // Whether the finished picture is smoothed before it is shown. On,
+    // because the staircase it removes is the thing somebody comparing
+    // the two states is looking for -- and turning it OFF is the way to
+    // see what it was doing.
+    bool uiFXAA = true;
+
+    // Whether the frame's surfaces are recorded before they are lit. On,
+    // because everything built on it is: what it costs is one more pass
+    // over the geometry, and what it buys back is that the lighting pass
+    // shades nothing hidden.
+    bool uiSurfacePrepass = true;
+
+    // Whether the lighting knows how much of the sky each pixel can see.
+    // On, because the whole point of recording the surfaces is what reads
+    // them -- and turning it off is how somebody sees what it was doing.
+    bool uiOcclusion = true;
+
+    // How far the occlusion search reaches, and how much of its answer is
+    // believed. Both on the panel because both are what somebody looking
+    // at a picture wants to move: the radius decides what SIZE of crease
+    // the effect is about, and the strength separates "the measurement is
+    // wrong" from "the measurement is right and too strong".
+    f32 uiOcclusionRadius = 0.5f;
+    f32 uiOcclusionStrength = 1.0f;
+
     bool uiPanelWanted = true;
 
     // Held across frames rather than acquired inside one: an asset takes
@@ -2079,6 +2122,28 @@ int main(int argc, char** argv)
         viewDesc.bloomKnee = uiBloomKnee;
         viewDesc.bloomIntensity = uiBloomIntensity;
 
+        // HOW LONG THE LAST FRAME TOOK, which is the only reason the
+        // camera moves at a rate rather than in steps. The same clock the
+        // scene is ticked with, so a paused frame does not adapt either.
+        viewDesc.occlusionRadius = uiOcclusionRadius;
+        viewDesc.occlusionStrength = uiOcclusionStrength;
+
+        viewDesc.deltaSeconds = Fluxion_Time_GetDeltaTime();
+
+        viewDesc.gradeTemperature = uiGradeTemperature;
+        viewDesc.gradeTint = uiGradeTint;
+        viewDesc.gradeContrast = uiGradeContrast;
+        viewDesc.gradeSaturation = uiGradeSaturation;
+
+        // ONE SLIDER FOR ALL THREE CHANNELS, on purpose. A three-way
+        // control is really nine numbers, and nine sliders in a demo
+        // panel is a colour grading tool rather than a way to see that
+        // the pass works. What is here moves the neutral axis; the
+        // channels are reachable through the description.
+        viewDesc.gradeLift = FluxionVec3{ uiGradeLift, uiGradeLift, uiGradeLift };
+        viewDesc.gradeGamma = FluxionVec3{ uiGradeGamma, uiGradeGamma, uiGradeGamma };
+        viewDesc.gradeGain = FluxionVec3{ uiGradeGain, uiGradeGain, uiGradeGain };
+
         // The swapchain here is an ordinary eight-bit format with no
         // curve of its own, so the pass has to encode for the display.
         // Written down beside the format that made it true.
@@ -2107,6 +2172,10 @@ int main(int argc, char** argv)
         // dim the picture, it would end it. What a panel can honestly
         // offer is what the chain DOES, one effect at a time.
         Fluxion_Renderer_SetBloomEnabled(renderer, uiBloom);
+        Fluxion_Renderer_SetAutoExposureEnabled(renderer, uiAutoExposure);
+        Fluxion_Renderer_SetFXAAEnabled(renderer, uiFXAA);
+        Fluxion_Renderer_SetSurfacePrepassEnabled(renderer, uiSurfacePrepass);
+        Fluxion_Renderer_SetAmbientOcclusionEnabled(renderer, uiOcclusion);
 
         // The living view is told this frame's description. It refuses
         // only when the description asks for a shadow atlas of a size it
@@ -2431,10 +2500,38 @@ int main(int argc, char** argv)
 
             Fluxion_DebugUI_BeginFrame(&uiInput, surfaceWidth, surfaceHeight);
 
-            if (uiPanelWanted && Fluxion_DebugUI_BeginPanel("Post-processing", 16.0f, 16.0f, 320.0f, 300.0f))
+            if (uiPanelWanted && Fluxion_DebugUI_BeginPanel("Post-processing", 16.0f, 16.0f, 320.0f, 560.0f))
             {
                 Fluxion_DebugUI_Row(24.0f, 1);
                 Fluxion_DebugUI_Checkbox("Bloom", &uiBloom);
+
+                Fluxion_DebugUI_Row(24.0f, 1);
+                Fluxion_DebugUI_Checkbox("Camera sets itself", &uiAutoExposure);
+
+                Fluxion_DebugUI_Row(24.0f, 1);
+                Fluxion_DebugUI_Checkbox("Smooth edges", &uiFXAA);
+
+                Fluxion_DebugUI_Row(24.0f, 1);
+                Fluxion_DebugUI_Checkbox("Record surfaces first", &uiSurfacePrepass);
+
+                Fluxion_DebugUI_Row(24.0f, 1);
+                Fluxion_DebugUI_Checkbox("Occlude the sky", &uiOcclusion);
+
+                Fluxion_DebugUI_Row(22.0f, 1);
+                char occlusionText[64];
+                snprintf(occlusionText, sizeof(occlusionText), "Occlusion reaches %.2f m", (f64)uiOcclusionRadius);
+                Fluxion_DebugUI_Label(occlusionText);
+
+                Fluxion_DebugUI_Row(24.0f, 1);
+                Fluxion_DebugUI_SliderFloat(nullptr, &uiOcclusionRadius, 0.05f, 3.0f, 0.05f);
+
+                Fluxion_DebugUI_Row(22.0f, 1);
+                char occlusionStrengthText[64];
+                snprintf(occlusionStrengthText, sizeof(occlusionStrengthText), "Occlusion strength %.2f", (f64)uiOcclusionStrength);
+                Fluxion_DebugUI_Label(occlusionStrengthText);
+
+                Fluxion_DebugUI_Row(24.0f, 1);
+                Fluxion_DebugUI_SliderFloat(nullptr, &uiOcclusionStrength, 0.0f, 1.0f, 0.01f);
 
                 // THE THRESHOLD IS SHOWN IN STOPS ABOVE WHITE, not in the
                 // engine's own units. A number like 151 means nothing to
@@ -2470,6 +2567,42 @@ int main(int argc, char** argv)
 
                 Fluxion_DebugUI_Row(24.0f, 1);
                 Fluxion_DebugUI_SliderFloat(nullptr, &uiTonemapWhitePoint, 1.0f, 16.0f, 0.1f);
+
+                // --- and the colourist's half ----------------------------
+                //
+                // EVERY ONE OF THESE IS CENTRED AT ZERO, and that is worth
+                // seeing on the screen: a panel whose neutral position is
+                // the middle of every slider says what neutral is, where
+                // a mixture of ones and zeroes would leave somebody
+                // guessing which way is "off".
+                struct GradeSlider
+                {
+                    const char* name;
+                    f32* value;
+                    f32 lowest;
+                    f32 highest;
+                };
+
+                const GradeSlider grading[] = {
+                    { "Warmth", &uiGradeTemperature, -1.0f, 1.0f },
+                    { "Green to magenta", &uiGradeTint, -1.0f, 1.0f },
+                    { "Contrast", &uiGradeContrast, -0.9f, 1.0f },
+                    { "Colour", &uiGradeSaturation, -1.0f, 1.0f },
+                    { "Shadows", &uiGradeLift, -0.2f, 0.4f },
+                    { "Midtones", &uiGradeGamma, -0.8f, 1.5f },
+                    { "Highlights", &uiGradeGain, -0.8f, 1.5f },
+                };
+
+                for (const GradeSlider& slider : grading)
+                {
+                    Fluxion_DebugUI_Row(22.0f, 1);
+                    char gradeText[64];
+                    snprintf(gradeText, sizeof(gradeText), "%s %+.2f", slider.name, (f64)*slider.value);
+                    Fluxion_DebugUI_Label(gradeText);
+
+                    Fluxion_DebugUI_Row(24.0f, 1);
+                    Fluxion_DebugUI_SliderFloat(nullptr, slider.value, slider.lowest, slider.highest, 0.01f);
+                }
             }
             Fluxion_DebugUI_EndPanel();
 

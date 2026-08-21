@@ -1,0 +1,136 @@
+// The contents of this file are subject to the Common Public Attribution
+// License Version 1.0 (the "License"); you may not use this file except in
+// compliance with the License. You may obtain a copy of the License at
+// https://opensource.org/license/cpal-1-0. The License is based on the
+// Mozilla Public License Version 1.1 but Sections 14 and 15 have been added
+// to cover use of software over a computer network and provide for limited
+// attribution for the Original Developer. In addition, Exhibit A has been
+// modified to be consistent with Exhibit B.
+//
+// Software distributed under the License is distributed on an "AS IS" basis,
+// WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
+// for the specific language governing rights and limitations under the
+// License.
+//
+// The Original Code is Fluxion Engine.
+//
+// The Original Developer is not the Initial Developer and is __________. If
+// left blank, the Original Developer is the Initial Developer.
+//
+// The Initial Developer of the Original Code is Kiss Tibor Péter. All
+// portions of the code written by Kiss Tibor Péter are Copyright (c) 2026.
+// All Rights Reserved.
+//
+// Contributor ______________________.
+//
+// Alternatively, the contents of this file may be used under the terms of
+// the Fluxion Engine Commercial License Agreement Version 1.0, separately
+// obtained from and valid as granted by Kiss Tibor Péter (the "Commercial
+// License"), in which case the provisions of the Commercial License are
+// applicable instead of those above.
+//
+// If you wish to allow use of your version of this file only under the terms
+// of the Commercial License and not to allow others to use your version of
+// this file under the CPAL, indicate your decision by deleting the
+// provisions above and replace them with the notice and other provisions
+// required by the Commercial License. If you do not delete the provisions
+// above, a recipient may use your version of this file under either the CPAL
+// or the Commercial License.
+//
+// SPDX-License-Identifier: CPAL-1.0
+
+
+#ifndef FLUXION_GRADING_INCLUDED
+#define FLUXION_GRADING_INCLUDED
+
+#include "Fluxion/Tonemap.jsl"
+
+// WHAT A COLOURIST DOES, AND WHERE EACH PART OF IT BELONGS.
+//
+// Grading is two jobs wearing one name. One of them is about the light:
+// what colour the illumination was, which is a question with an answer
+// before any camera is pointed at it. The other is about the picture:
+// how much contrast, how much colour, where the shadows sit -- questions
+// that only mean anything once a curve has decided what a screen shows.
+//
+// So they are two functions here, applied at two different points, and
+// the pass that calls them puts the exposure and the tone curve between.
+// Applied together in one place, either the white balance would be
+// working on values a curve had already compressed, or the contrast
+// would be pivoting about a middle grey that the display never sees.
+
+// WHAT THE EYE WEIGHS A COLOUR AT. The green coefficient is the largest
+// because most of the brightness a person sees in a picture comes from
+// it -- an average of the three channels instead would make a saturation
+// control darken blues and lighten greens as a side effect.
+float GradingLuminance(Vector3 color)
+{
+  return dot(color, Vector3(0.2126, 0.7152, 0.0722));
+}
+
+// THE LIGHT'S OWN COLOUR -- called BEFORE the exposure and the curve.
+//
+// A balance between the primaries rather than a colour temperature: warm
+// lifts the red end and drops the blue, tint moves green against the
+// other two. There is no black-body curve here and no chromatic
+// adaptation matrix, which is why the parameters are named for the
+// direction they push and not for kelvin.
+//
+// The scaling is kept centred: what one channel gains the others give
+// up, so a balanced picture does not also become a brighter one and the
+// exposure downstream still means what it meant.
+Vector3 ApplyWhiteBalance(Vector3 color, float temperature, float tint)
+{
+  // How far the ends of the axis are allowed to travel. Half rather than
+  // all of it: a control that could double one primary and delete
+  // another would be a colour filter, and there would be no useful room
+  // left in the middle of its range.
+  float reach = 0.5;
+  Vector3 scale = Vector3(1.0 + temperature * reach,
+                          1.0 + tint * reach,
+                          1.0 - temperature * reach);
+
+  // The green axis moves against BOTH of the others, which is what makes
+  // it the second axis rather than a third way of saying warm.
+  // Half again on each of the other two, so that what green gains they
+  // give up between them and the picture keeps its brightness.
+  float share = reach * 0.5;
+  scale = Vector3(scale.x - tint * share, scale.y, scale.z - tint * share);
+
+  return color * scale;
+}
+
+// THE PICTURE'S OWN LOOK -- called AFTER the curve and before the
+// display's transfer function.
+//
+// The order is the order a grading tool applies it in, and it is not
+// interchangeable: the three-way control decides where the tones sit,
+// contrast pushes them apart about the middle, and saturation is last
+// because it is measured against a luminance that the two before it have
+// already moved.
+Vector3 ApplyGrading(Vector3 color, Vector3 lift, Vector3 gamma, Vector3 gain, float contrast, float saturation)
+{
+  // Gain scales, lift adds, gamma bends what is left. Clamped at zero
+  // before the power: a negative lift can push a dark pixel below black,
+  // and a negative base raised to a fractional power is not a colour.
+  Vector3 graded = color * gain + lift;
+  graded = Vector3(max(graded.x, 0.0), max(graded.y, 0.0), max(graded.z, 0.0));
+  graded = pow(graded, Vector3(1.0 / gamma.x, 1.0 / gamma.y, 1.0 / gamma.z));
+
+  // ABOUT THE MIDDLE OF THE DISPLAY RANGE, not about the middle grey of
+  // the scene. By this point the curve has run and the numbers are what
+  // a screen will show, so the pivot that keeps a mid tone in place is
+  // the middle of that, and no longer the 0.18 that light works in.
+  Vector3 pivot = Vector3(0.5, 0.5, 0.5);
+  graded = (graded - pivot) * contrast + pivot;
+
+  // Grey is what the picture weighs, so that dropping the colour out of
+  // it leaves the brightness where it was rather than leaving a picture
+  // that is also darker.
+  float grey = GradingLuminance(graded);
+  graded = Vector3(grey, grey, grey) + (graded - Vector3(grey, grey, grey)) * saturation;
+
+  return graded;
+}
+
+#endif
